@@ -11,20 +11,21 @@
 //!   (from the first one) a lock of `lock`, then the full allowance again –
 //!   for checks like "5 failed attempts → 30 s lock" (setup token).
 //!
-//! [`RateLimiter::acquire`] takes an attempt before the check – even with
-//! many concurrent requests, never more get through than the rule allows. If
-//! the result does not count (success, or an already used TOTP code that
-//! gives nothing away), [`RateLimiter::refund`] returns the attempt right
-//! after the check. For checks that take longer, [`RateLimiter::reserve`]
-//! holds the attempt as pending: it occupies the allowance, but only counts
-//! once the check fails ([`Reservation::count`]); otherwise it simply ends.
-//! The counters are lost on a restart; with one process per instance that is
-//! acceptable.
+//! [`RateLimiter::acquire`] takes an attempt that always counts (such as
+//! "resend mail"). For a check whose result decides whether the attempt counts
+//! (a password, a setup token, a TOTP code that was already used gives
+//! nothing away), [`RateLimiter::reserve`] holds the attempt as pending: it
+//! occupies the allowance – even with many concurrent requests, never more
+//! get through than the rule allows – but only counts once the check fails
+//! ([`Reservation::count`]); otherwise it ends without a trace. The counters
+//! are lost on a restart; with one process per instance that is acceptable.
+//! The clock is read under the lock, so that a thread that waited for it
+//! cannot store a time that has already passed.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/rate_limit.rs`) without the
-//! counter per mail server. Unlike Mail, a reservation does not take its
-//! attempt up front and give it back later: with GCRA, taking an attempt back
-//! after other attempts can erase theirs.
+//! counter per mail server. Unlike Mail there is no `refund`: an attempt taken
+//! and given back later could erase another one counted in between (GCRA
+//! after a pause, or a lockout window that started over).
 
 use std::{
     collections::HashMap,
@@ -103,8 +104,6 @@ enum State {
     /// Theoretical time of the next event (GCRA).
     Rate { next: Instant },
     /// Attempts in the window until `window_end`; locked until `locked_until`.
-    /// The window is kept alongside the lock, so that a refunded attempt that
-    /// had caused the lock does not extend it.
     Lockout {
         count: u32,
         window_end: Instant,
@@ -186,12 +185,19 @@ fn allowance(
                 Some(State::Rate { next }) => Some(next),
                 _ => None,
             };
-            let (next, allowed_until, interval) = gcra(burst, period, next, now);
-            // Each pending reservation moves `next` on by one interval.
-            let next = next + interval.saturating_mul(pending);
+            let (recorded, allowed_until, interval) = gcra(burst, period, next, now);
+            if recorded > allowed_until {
+                return Err(Limited {
+                    retry_after: recorded - allowed_until,
+                });
+            }
+            // Each pending reservation moves `next` on by one interval. If
+            // they alone stand in the way, time does not help, but their end
+            // within moments does.
+            let next = recorded + interval.saturating_mul(pending);
             if next > allowed_until {
                 return Err(Limited {
-                    retry_after: next - allowed_until,
+                    retry_after: PENDING_RETRY,
                 });
             }
             let steps = (allowed_until - next).as_nanos() / interval.as_nanos().max(1);
@@ -317,24 +323,17 @@ impl Inner {
 }
 
 impl RateLimiter {
-    /// Takes an attempt if the rule allows it.
+    /// Takes an attempt that counts, if the rule allows it.
     pub fn acquire(&self, policy: &Policy, key: Key) -> Result<(), Limited> {
-        self.acquire_at(policy, key, Instant::now())
+        self.acquire_with(policy, key, Instant::now)
     }
 
-    /// Returns an attempt from [`Self::acquire`] that does not count. Call it
-    /// right after the check; for checks that take longer, use
-    /// [`Self::reserve`].
-    pub fn refund(&self, policy: &Policy, key: &Key) {
-        self.refund_at(policy, key, Instant::now());
-    }
-
-    /// Like [`Self::acquire`], but for checks that take longer (such as a
-    /// password hash): the attempt is held as pending and only counts with
-    /// [`Reservation::count`]; otherwise it ends without a trace – even if the
-    /// request is aborted before.
+    /// Opens an attempt for a check whose result decides whether it counts:
+    /// held as pending and counted only with [`Reservation::count`];
+    /// otherwise it ends without a trace – even if the request is aborted
+    /// before.
     pub fn reserve<'a>(&'a self, policy: &'a Policy, key: Key) -> Result<Reservation<'a>, Limited> {
-        let counter = self.begin_at(policy, key.clone(), Instant::now())?;
+        let counter = self.begin_with(policy, key.clone(), Instant::now)?;
         Ok(Reservation {
             limiter: self,
             policy,
@@ -350,15 +349,7 @@ impl RateLimiter {
     /// locks the following events correspondingly longer; with
     /// [`Policy::lockout`] it counts towards the lock, and a lock stays.
     pub fn charge(&self, policy: &Policy, key: Key) {
-        self.charge_at(policy, key, Instant::now());
-    }
-
-    fn charge_at(&self, policy: &Policy, key: Key, now: Instant) {
-        let mut inner = self.lock();
-        inner.sweep(now);
-        let mut counter = inner.counter(&(policy.name, key.clone()), now);
-        counter.state = Some(record(policy.limit, counter.state, now));
-        inner.store((policy.name, key), counter, now);
+        self.charge_with(policy, key, Instant::now);
     }
 
     /// Resets the counter (e.g. after a successful setup).
@@ -370,11 +361,30 @@ impl RateLimiter {
     /// count), e.g. for "3 attempts left"; [`Limited`] as long as none is
     /// allowed.
     pub fn remaining(&self, policy: &Policy, key: &Key) -> Result<u32, Limited> {
-        self.remaining_at(policy, key, Instant::now())
+        self.remaining_with(policy, key, Instant::now)
     }
 
-    fn remaining_at(&self, policy: &Policy, key: &Key, now: Instant) -> Result<u32, Limited> {
+    // The `…_with` functions take the clock and read it only once they hold
+    // the lock.
+
+    fn charge_with(&self, policy: &Policy, key: Key, clock: impl FnOnce() -> Instant) {
+        let mut inner = self.lock();
+        let now = clock();
+        inner.sweep(now);
+        let slot = (policy.name, key);
+        let mut counter = inner.counter(&slot, now);
+        counter.state = Some(record(policy.limit, counter.state, now));
+        inner.store(slot, counter, now);
+    }
+
+    fn remaining_with(
+        &self,
+        policy: &Policy,
+        key: &Key,
+        clock: impl FnOnce() -> Instant,
+    ) -> Result<u32, Limited> {
         let inner = self.lock();
+        let now = clock();
         let (state, pending) = inner
             .states
             .get(&(policy.name, key.clone()))
@@ -385,8 +395,14 @@ impl RateLimiter {
         allowance(policy.limit, state, pending, now)
     }
 
-    fn acquire_at(&self, policy: &Policy, key: Key, now: Instant) -> Result<(), Limited> {
+    fn acquire_with(
+        &self,
+        policy: &Policy,
+        key: Key,
+        clock: impl FnOnce() -> Instant,
+    ) -> Result<(), Limited> {
         let mut inner = self.lock();
+        let now = clock();
         inner.sweep(now);
         let slot = (policy.name, key);
         let mut counter = inner.counter(&slot, now);
@@ -398,8 +414,14 @@ impl RateLimiter {
 
     /// Opens a reservation if the rule allows another attempt; returns the
     /// ID of its counter.
-    fn begin_at(&self, policy: &Policy, key: Key, now: Instant) -> Result<u64, Limited> {
+    fn begin_with(
+        &self,
+        policy: &Policy,
+        key: Key,
+        clock: impl FnOnce() -> Instant,
+    ) -> Result<u64, Limited> {
         let mut inner = self.lock();
+        let now = clock();
         inner.sweep(now);
         let slot = (policy.name, key);
         let mut counter = inner.counter(&slot, now);
@@ -413,8 +435,16 @@ impl RateLimiter {
     /// Ends a reservation of counter `id`; with `counted` its attempt counts
     /// now. If the counter was reset in between, only a counted attempt
     /// reaches the new one.
-    fn finish_at(&self, policy: &Policy, key: Key, id: u64, counted: bool, now: Instant) {
+    fn finish_with(
+        &self,
+        policy: &Policy,
+        key: Key,
+        id: u64,
+        counted: bool,
+        clock: impl FnOnce() -> Instant,
+    ) {
         let mut inner = self.lock();
+        let now = clock();
         let slot = (policy.name, key);
         let mut counter = inner.counter(&slot, now);
         if counter.id == id {
@@ -428,45 +458,38 @@ impl RateLimiter {
         inner.store(slot, counter, now);
     }
 
-    fn refund_at(&self, policy: &Policy, key: &Key, now: Instant) {
-        let mut inner = self.lock();
-        let slot = (policy.name, key.clone());
-        let Some(mut counter) = inner.states.get(&slot).copied() else {
-            return;
-        };
-        counter.state = match (policy.limit, counter.state) {
-            (Limit::Rate { burst, period }, Some(State::Rate { next })) => {
-                let next = next.checked_sub(period / burst.max(1)).unwrap_or(now);
-                (next > now).then_some(State::Rate { next })
-            }
-            (
-                Limit::Lockout { .. },
-                Some(State::Lockout {
-                    count, window_end, ..
-                }),
-            ) => {
-                // A lock caused by exactly this attempt is lifted; the window
-                // stays as it was (if it has expired, the counter counts as
-                // empty).
-                (count > 1).then_some(State::Lockout {
-                    count: count - 1,
-                    window_end,
-                    locked_until: None,
-                })
-            }
-            _ => None,
-        };
-        inner.store(slot, counter, now);
-    }
-
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // A panic under the lock only leaves counters behind; carry on.
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
 
-    #[cfg(test)]
+/// The same with a fixed time, for tests across refill and window
+/// boundaries.
+#[cfg(test)]
+impl RateLimiter {
     fn len(&self) -> usize {
         self.lock().states.len()
+    }
+
+    fn acquire_at(&self, policy: &Policy, key: Key, now: Instant) -> Result<(), Limited> {
+        self.acquire_with(policy, key, || now)
+    }
+
+    fn charge_at(&self, policy: &Policy, key: Key, now: Instant) {
+        self.charge_with(policy, key, || now);
+    }
+
+    fn remaining_at(&self, policy: &Policy, key: &Key, now: Instant) -> Result<u32, Limited> {
+        self.remaining_with(policy, key, || now)
+    }
+
+    fn begin_at(&self, policy: &Policy, key: Key, now: Instant) -> Result<u64, Limited> {
+        self.begin_with(policy, key, || now)
+    }
+
+    fn finish_at(&self, policy: &Policy, key: Key, id: u64, counted: bool, now: Instant) {
+        self.finish_with(policy, key, id, counted, || now);
     }
 }
 
@@ -485,7 +508,7 @@ impl Reservation<'_> {
     pub fn count(mut self) {
         if let Some(key) = self.key.take() {
             self.limiter
-                .finish_at(self.policy, key, self.counter, true, Instant::now());
+                .finish_with(self.policy, key, self.counter, true, Instant::now);
         }
     }
 }
@@ -494,7 +517,7 @@ impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         if let Some(key) = self.key.take() {
             self.limiter
-                .finish_at(self.policy, key, self.counter, false, Instant::now());
+                .finish_with(self.policy, key, self.counter, false, Instant::now);
         }
     }
 }
@@ -504,7 +527,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reservation_refunds_unless_counted() {
+    fn reservation_counts_only_when_told() {
         let limiter = RateLimiter::default();
         let policy = Policy::lockout(
             "reserve",
@@ -569,12 +592,15 @@ mod tests {
         let limiter = RateLimiter::default();
         let t0 = Instant::now();
         let a = limiter.begin_at(&once, Key::Global, t0).unwrap();
-        assert!(
-            limiter
-                .acquire_at(&once, Key::Global, t0 + secs(60))
-                .is_err()
-        );
-        assert!(limiter.begin_at(&once, Key::Global, t0 + secs(60)).is_err());
+        // Only the open reservation stands in the way: retry within moments,
+        // not after a whole period.
+        let short = Limited {
+            retry_after: PENDING_RETRY,
+        };
+        let later = t0 + secs(60);
+        assert_eq!(limiter.acquire_at(&once, Key::Global, later), Err(short));
+        assert_eq!(limiter.begin_at(&once, Key::Global, later), Err(short));
+        assert_eq!(limiter.remaining_at(&once, &Key::Global, later), Err(short));
         // Ending without counting leaves nothing behind.
         limiter.finish_at(&once, Key::Global, a, false, t0 + secs(61));
         assert_eq!(limiter.len(), 0);
@@ -594,6 +620,74 @@ mod tests {
             })
         );
         assert!(limiter.remaining_at(&SETUP, &Key::Global, t0).is_err());
+    }
+
+    /// A recorded attempt still reports its refill time.
+    #[test]
+    fn recorded_attempts_keep_their_refill_time() {
+        let once = Policy::rate("once", 1, secs(30));
+        let limiter = RateLimiter::default();
+        let t0 = Instant::now();
+        limiter.acquire_at(&once, Key::Global, t0).unwrap();
+        limiter.begin_at(&once, Key::Global, t0 + secs(30)).unwrap();
+        assert_eq!(
+            limiter.acquire_at(&once, Key::Global, t0 + secs(30)),
+            Err(Limited {
+                retry_after: PENDING_RETRY
+            })
+        );
+        let limiter = RateLimiter::default();
+        limiter.acquire_at(&once, Key::Global, t0).unwrap();
+        assert_eq!(
+            limiter.acquire_at(&once, Key::Global, t0 + secs(10)),
+            Err(Limited {
+                retry_after: secs(20)
+            })
+        );
+    }
+
+    /// The case from the review: an attempt that ends after its lockout
+    /// window started over must not erase a failure of the new window.
+    #[test]
+    fn reservation_across_a_window_rollover_keeps_the_new_failure() {
+        let three = Policy::lockout("three", 3, secs(600), secs(60));
+        let limiter = RateLimiter::default();
+        let t0 = Instant::now();
+        limiter.acquire_at(&three, Key::Global, t0).unwrap();
+        let a = limiter
+            .begin_at(&three, Key::Global, t0 + secs(599))
+            .unwrap();
+        // The window has passed; B fails in the new one.
+        let b = limiter
+            .begin_at(&three, Key::Global, t0 + secs(601))
+            .unwrap();
+        limiter.finish_at(&three, Key::Global, b, true, t0 + secs(601));
+        limiter.finish_at(&three, Key::Global, a, false, t0 + secs(602));
+        assert_eq!(
+            limiter.remaining_at(&three, &Key::Global, t0 + secs(602)),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn reads_the_clock_while_holding_the_lock() {
+        let limiter = RateLimiter::default();
+        let clock = || {
+            assert!(
+                limiter.inner.try_lock().is_err(),
+                "clock read before the lock"
+            );
+            Instant::now()
+        };
+        limiter
+            .acquire_with(&FIVE_PER_MINUTE, user(), clock)
+            .unwrap();
+        limiter.charge_with(&FIVE_PER_MINUTE, user(), clock);
+        limiter
+            .remaining_with(&FIVE_PER_MINUTE, &user(), clock)
+            .unwrap();
+        let id = limiter.begin_with(&FIVE_PER_MINUTE, user(), clock).unwrap();
+        limiter.finish_with(&FIVE_PER_MINUTE, user(), id, false, clock);
     }
 
     #[test]
@@ -667,13 +761,13 @@ mod tests {
     }
 
     #[test]
-    fn refund_returns_attempts_that_do_not_count() {
+    fn reservations_that_do_not_count_leave_nothing() {
         let limiter = RateLimiter::default();
         let t0 = Instant::now();
-        // Ten successful attempts: each one is refunded.
+        // Ten successful attempts: none of them counts.
         for _ in 0..10 {
-            limiter.acquire_at(&FIVE_PER_MINUTE, user(), t0).unwrap();
-            limiter.refund_at(&FIVE_PER_MINUTE, &user(), t0);
+            let id = limiter.begin_at(&FIVE_PER_MINUTE, user(), t0).unwrap();
+            limiter.finish_at(&FIVE_PER_MINUTE, user(), id, false, t0);
         }
         assert_eq!(limiter.len(), 0);
         for _ in 0..5 {
@@ -720,15 +814,15 @@ mod tests {
     }
 
     #[test]
-    fn lockout_forgets_refunds_and_old_failures() {
+    fn lockout_forgets_successes_and_old_failures() {
         let limiter = RateLimiter::default();
         let t0 = Instant::now();
         for _ in 0..4 {
             limiter.acquire_at(&SETUP, Key::Global, t0).unwrap();
         }
         // The fifth attempt is a success and does not count.
-        limiter.acquire_at(&SETUP, Key::Global, t0).unwrap();
-        limiter.refund_at(&SETUP, &Key::Global, t0);
+        let id = limiter.begin_at(&SETUP, Key::Global, t0).unwrap();
+        limiter.finish_at(&SETUP, Key::Global, id, false, t0);
         limiter.acquire_at(&SETUP, Key::Global, t0).unwrap();
         assert!(limiter.acquire_at(&SETUP, Key::Global, t0).is_err());
 
@@ -746,15 +840,15 @@ mod tests {
 
     #[test]
     fn lockout_window_starts_with_the_first_failure() {
-        // One failure, then successes (refunded) every five minutes: they do
+        // One failure, then successes (not counted) every five minutes: they do
         // not extend the window, after ten minutes the failure is gone.
         let limiter = RateLimiter::default();
         let t0 = Instant::now();
         limiter.acquire_at(&SETUP, Key::Global, t0).unwrap();
         for minute in [5, 9] {
             let at = t0 + secs(minute * 60);
-            limiter.acquire_at(&SETUP, Key::Global, at).unwrap();
-            limiter.refund_at(&SETUP, &Key::Global, at);
+            let id = limiter.begin_at(&SETUP, Key::Global, at).unwrap();
+            limiter.finish_at(&SETUP, Key::Global, id, false, at);
         }
         let later = t0 + secs(601);
         for _ in 0..5 {
@@ -764,9 +858,9 @@ mod tests {
     }
 
     #[test]
-    fn refunding_the_locking_attempt_keeps_the_window() {
-        // Four failures, then correct tokens (each reserved, locking the
-        // window, then refunded): after ten minutes the failures are still
+    fn successes_at_the_last_attempt_keep_the_window() {
+        // Four failures, then correct tokens (each reserved as the last
+        // attempt, then not counted): after ten minutes the failures are still
         // forgotten.
         let limiter = RateLimiter::default();
         let t0 = Instant::now();
@@ -775,8 +869,8 @@ mod tests {
         }
         for minute in [3, 6, 9] {
             let at = t0 + secs(minute * 60);
-            limiter.acquire_at(&SETUP, Key::Global, at).unwrap();
-            limiter.refund_at(&SETUP, &Key::Global, at);
+            let id = limiter.begin_at(&SETUP, Key::Global, at).unwrap();
+            limiter.finish_at(&SETUP, Key::Global, id, false, at);
             assert_eq!(limiter.remaining_at(&SETUP, &Key::Global, at), Ok(1));
         }
         assert_eq!(
