@@ -109,7 +109,11 @@ Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
   contract § 10.1, retention 30 days.
 - Health poll of every paired app every 30 s (`GET /<slug>/readyz`).
 
-### Data model (migration 0001)
+### Data model
+
+Migration 0001 (server base) holds `schema_migrations`, `app_settings`,
+`users`, `sessions` and `audit_log`; the other tables follow in later
+migrations with the milestones that use them.
 
 From Mail, trimmed: `schema_migrations`, `app_settings`, `users`, `sessions`
 (plus `auth_time`), `audit_log` (category `apps` added), `totp_devices`,
@@ -158,11 +162,11 @@ is built plainly with the tokens first and finished once there is a draft.
 Each milestone is one PR (milestone 3 possibly two: server API, then pages). All
 checks pass in every PR; every PR has tests for what it adds.
 
-1. **Scaffold** – workspace, tools, hooks, CI, `CLAUDE.md`, `CONTRIBUTING.md`,
+1. [x] **Scaffold** – workspace, tools, hooks, CI, `CLAUDE.md`, `CONTRIBUTING.md`,
    `README.md`, `LICENSE`, `SECURITY.md`, the approved contract; empty
    `roedy-hub --version`, SPA skeleton with tokens.
    *Tests:* pin tests, commit-msg hook, a trivial unit test per package.
-2. **Server base** – config with both listeners, logging, database and
+2. [x] **Server base** – config with both listeners, logging, database and
    migration 0001 (users, sessions, settings, audit), secret key, health,
    `healthcheck`, embedded SPA with security headers and CSP, setup token,
    rate limiter, client IP.

@@ -14,7 +14,7 @@ Sister project: `../mail` (Roedy Mail), read-only from here.
 ## Commands
 
 - Sandboxed shell with read-only home: `. scripts/dev/sandbox-env.sh` in the same shell call before pnpm/cargo.
-- Run: `pnpm install`, `cargo run -- --version`, `pnpm dev` (:5173).
+- Run: `pnpm install`, `ROEDY_PUBLIC_URL=http://localhost:5173 cargo run -- serve` (:8080, internal :8081), `pnpm dev` (:5173).
 - Checks (all must pass before a PR): `pnpm lint`, `pnpm check`, `pnpm test`,
   `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - Single tests: `pnpm --filter @roedy/hub-web exec vitest run <file>`, `cargo test -p roedy-hub-server <filter>`.
