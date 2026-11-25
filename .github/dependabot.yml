@@ -1,0 +1,55 @@
+version: 2
+
+# Weekly grouped minor and patch updates per ecosystem; major updates arrive as
+# separate pull requests so that one breaking release does not block the rest.
+# A cooldown lets fresh releases settle before they are proposed.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Room for separate major-update PRs next to the grouped minor/patch PR.
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build(deps)
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Room for separate major-update PRs next to the grouped minor/patch PR.
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build(deps)
+    ignore:
+      # TypeScript majors need coordinated tooling updates.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    # Workflows and the composite actions in .github/actions/.
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    # Room for separate major-update PRs next to the grouped minor/patch PR.
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci(deps)
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
