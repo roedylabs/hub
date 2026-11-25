@@ -661,6 +661,12 @@ theirs arrives afterwards.
   before an ended `sid` is forgotten or leaves the event retention.
 - Processing an event records the change and removes the state in one
   transaction.
+- The two kinds of transaction MUST be serialized against each other: the
+  check and the write of a request must not interleave with the processing of
+  an event for the same `sid` or user. Serializable isolation, a write
+  transaction that holds the database's write lock from its first read (SQLite
+  `BEGIN IMMEDIATE`), or a lock per `sid` and user taken by both sides is
+  enough; a plain read-then-write in a weaker isolation level is not.
 - **Long-lived connections:** a stream or WebSocket keeps the identity of its
   opening request, which expires after at most 60 s. To create such state
   later, the client sends an ordinary HTTP request, which the hub gives a
