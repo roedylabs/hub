@@ -1,0 +1,76 @@
+name: Pull request
+
+# Checks of the pull request itself rather than the code: the title (required
+# check "Conventional title") and newly added dependencies.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # The PR title becomes the squash commit and feeds the changelog (git-cliff),
+  # so it must be a Conventional Commit. Keep the lists in sync with
+  # CONTRIBUTING.md and scripts/hooks/commit-msg.sh (scope "release" is for
+  # the release commit of scripts/release.sh).
+  title:
+    name: Conventional title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check title
+        uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            style
+            revert
+          scopes: |
+            server
+            gateway
+            contract
+            example
+            web
+            tokens
+            ci
+            deploy
+            docs
+            deps
+            repo
+            release
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: The subject "{subject}" must start with a lowercase letter.
+
+  # Flags new dependencies with known vulnerabilities or incompatible licenses.
+  dependency-review:
+    name: Dependency review
+    # Needs the dependency graph, which private repositories only get with
+    # GitHub Advanced Security.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Review new dependencies
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
