@@ -171,9 +171,33 @@ describe('sandbox-env.sh failures', () => {
       });
       assert.notEqual(run.status, 0);
       assert.doesNotMatch(run.stdout, /sourced/);
-      assert.match(run.stderr, /links out of/);
+      assert.match(run.stderr, /links out of it/);
     });
   }
+
+  test('refuses a link out of the base behind a directory link', () => {
+    const run = source('dir-link', (base) => {
+      const outside = join(tmp, 'dir-link', 'outside');
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(outside, 'corepack'), '#!/bin/sh\nexit 0\n');
+      chmodSync(join(outside, 'corepack'), 0o700);
+      mkdirSync(join(base, 'alternate', 'node_modules', '.bin'), { recursive: true, mode: 0o700 });
+      chmodSync(base, 0o700);
+      symlinkSync(join(outside, 'corepack'), join(base, 'alternate', 'node_modules', '.bin', 'corepack'));
+      symlinkSync(join(base, 'alternate'), join(base, 'corepack'));
+    });
+    assert.notEqual(run.status, 0);
+    assert.doesNotMatch(run.stdout, /sourced/);
+    assert.match(run.stderr, /links out of it/);
+  });
+
+  test('stops without realpath instead of skipping the link check', () => {
+    const run = source('no-realpath', (base, bin) => {
+      rmSync(join(bin, 'realpath'));
+    });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /realpath is required/);
+  });
 
   test('accepts links that stay inside the base', () => {
     const run = source('link-in', (base) => {
