@@ -121,6 +121,15 @@ describe('sandbox-env.sh failures', () => {
     assert.match(run.stderr, /installing corepack failed/);
   });
 
+  test('refuses a base directory that its group can write to', () => {
+    const run = source('group-base', (base) => {
+      mkdirSync(base);
+      chmodSync(base, 0o770);
+    });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /must not be writable by others/);
+  });
+
   test('refuses a base directory that others can write to', () => {
     const run = source('open-base', (base) => {
       mkdirSync(base);

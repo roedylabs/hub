@@ -16,11 +16,15 @@ _rm_base=${TMPDIR:-/tmp}/roedy-hub-dev
 # without TMPDIR it lies in the shared /tmp, where another user could have
 # planted a corepack binary. Once checked, it is made private (700).
 mkdir -p "$_rm_base" || { unset _rm_base; return 1; }
-if [ ! -O "$_rm_base" ] || [ -n "$(find "$_rm_base" -maxdepth 0 -perm /022)" ]; then
+# -perm -020/-002 instead of /022: BSD find (macOS) only knows the - and + forms.
+_rm_loose=$(find "$_rm_base" -maxdepth 0 \( -perm -020 -o -perm -002 \) -print) ||
+  { echo "sandbox-env.sh: cannot check the permissions of $_rm_base" >&2; unset _rm_base _rm_loose; return 1; }
+if [ ! -O "$_rm_base" ] || [ -n "$_rm_loose" ]; then
   echo "sandbox-env.sh: $_rm_base must belong to $(id -un) and must not be writable by others" >&2
-  unset _rm_base
+  unset _rm_base _rm_loose
   return 1
 fi
+unset _rm_loose
 chmod 700 "$_rm_base"
 export npm_config_cache="$_rm_base/npm-cache"
 export COREPACK_HOME="$_rm_base/corepack-home"

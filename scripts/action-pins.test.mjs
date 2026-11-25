@@ -56,6 +56,8 @@ function usesProblems(text) {
     const scalar = BLOCK_SCALAR.exec(line);
     if (scalar) {
       block = scalar[1].length;
+      // `uses: >-` with the reference on the next lines: not readable for this check.
+      if (USES_KEY.test(line)) problems.push(`line ${i + 1}: unreadable uses: ${line.trim()}`);
       continue;
     }
     if (!USES_KEY.test(line) || /^\s*#/.test(line)) continue;
@@ -119,6 +121,8 @@ describe('usesProblems', () => {
       '      - run: >-',
       '          echo text',
       '      - uses: actions/checkout@v7',
+      '      - uses: >-',
+      '          actions/checkout@v7',
     ].join('\n');
     assert.deepEqual(usesProblems(text), [
       'line 1: actions/checkout@v7 not pinned to a commit SHA',
@@ -131,6 +135,7 @@ describe('usesProblems', () => {
       'line 8: actions/checkout@v7 not pinned to a commit SHA',
       'line 9: actions/checkout@v7 not pinned to a commit SHA',
       'line 12: actions/checkout@v7 not pinned to a commit SHA',
+      'line 13: unreadable uses: - uses: >-',
     ]);
   });
 });

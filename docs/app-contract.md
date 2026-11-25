@@ -664,9 +664,26 @@ exactly like a delivery. `limit` is 1–100 (default 100); `more` is `true`
 when further events follow.
 
 If `after` lies before the retention, the hub answers
-`410 {"error": "events_expired", "last_seq": <n>}`. The app then reconciles:
-it asks `GET /internal/v1/users/<sub>` for every user it holds data for and
-acts on the answer as described there, and continues from `last_seq`.
+`410 {"error": "events_expired", "last_seq": <n>}`. The app has then missed
+events it cannot get back and **reconciles**, in this order:
+
+1. It stops processing events: until step 5 it answers every delivery with
+   `503`, so that the hub retries later and no event overtakes the
+   reconciliation (deliveries are strictly ordered, § 10.1).
+2. It ends **all** state bound to hub sessions, for every user – push
+   subscriptions, open streams, anything else keyed by `sid` – because it
+   cannot know which `session.revoked` events it missed. Users set it up
+   again on their next visit with a valid identity.
+3. It asks `GET /internal/v1/users/<sub>` for every user it holds data for
+   and acts on the answer as described there.
+4. It stores `last_seq` as the highest `seq` processed.
+5. It processes deliveries again; the hub sends the events after `last_seq`.
+
+**Deletion is final.** Once an app has deleted a user's data – after
+`user.deleted` or a `410 user_deleted` – it keeps the `sub` as deleted and
+never recreates data for it, whatever it receives later: an identity header
+or a lookup answer for that `sub` that arrives afterwards can only be stale,
+because the hub never issues a deleted `sub` again.
 
 ## 11. Access and roles
 
