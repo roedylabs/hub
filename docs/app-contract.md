@@ -645,17 +645,30 @@ it: the app may hold data from earlier access.
 
 **Requests racing with events.** A request can check its identity before a
 `session.revoked`, `user.locked` or `user.deleted` event is processed and try
-to write afterwards. So that it cannot recreate what the event ended, the app
-serializes the two: it keeps the `sid`s of ended sessions (at least as long as
-the hub keeps events, 30 days) and the state of each user, and writes state
-bound to a session or user only in the same transaction that checks that the
-`sid` has not ended and the user is neither locked nor deleted. Processing an
-event records the change and removes the bound state in one transaction.
-That transaction also checks that the request's identity has not expired yet
-(`exp` with the leeway of § 4.3): a request that runs longer – including a
-long-lived stream or WebSocket – creates no such state, so every write happens
-within about a minute of a check by the hub and long before an ended `sid` is
-forgotten or leaves the event retention.
+to write afterwards. So that it cannot recreate what the event ended, the rule
+below applies to **state that these events end**: push subscriptions,
+scheduled work such as delayed sending, and anything else that acts for the
+user without a request. Ordinary data the user saves (a draft, a setting) is
+not affected; a locked or deleted user's sessions end, so no request of
+theirs arrives afterwards.
+
+- The app keeps the `sid`s of ended sessions (at least as long as the hub
+  keeps events, 30 days) and whether each user is locked or deleted.
+- It creates such state only in a transaction that checks that the `sid` has
+  not ended, the user is neither locked nor deleted, and the request's
+  identity has not expired yet (`exp` with the leeway of § 4.3). Every such
+  write therefore happens within about a minute of a check by the hub, long
+  before an ended `sid` is forgotten or leaves the event retention.
+- Processing an event records the change and removes the state in one
+  transaction.
+- **Long-lived connections:** a stream or WebSocket keeps the identity of its
+  opening request, which expires after at most 60 s. To create such state
+  later, the client sends an ordinary HTTP request, which the hub gives a
+  fresh identity. If the app receives the wish over the connection after the
+  identity has expired, it does not create the state silently or drop it: it
+  answers with an explicit error, such as a message with
+  `"error": "identity_expired"`, and the client repeats it as an HTTP
+  request.
 
 ### 10.3 Catching up
 
