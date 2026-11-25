@@ -14,8 +14,8 @@
 _rm_base=${TMPDIR:-/tmp}/roedy-hub-dev
 # The base must be this user's own directory that nobody else can write to:
 # without TMPDIR it lies in the shared /tmp, where another user could have
-# planted a corepack binary. Then it is made private (700).
-mkdir -p -m 700 "$_rm_base" || { unset _rm_base; return 1; }
+# planted a corepack binary. Once checked, it is made private (700).
+mkdir -p "$_rm_base" || { unset _rm_base; return 1; }
 if [ ! -O "$_rm_base" ] || [ -n "$(find "$_rm_base" -maxdepth 0 -perm /022)" ]; then
   echo "sandbox-env.sh: $_rm_base must belong to $(id -un) and must not be writable by others" >&2
   unset _rm_base
