@@ -643,6 +643,15 @@ it: the app may hold data from earlier access.
 | `session.revoked` | `{"sub", "sid", "reason"}`; `reason`: `logout`, `revoked`, `expired`, `password_changed`, `locked` | end server-side state bound to this session (push subscriptions, streams) |
 | `access.changed` | `{"sub", "access": true\|false, "app_role": "<id>"\|null}` – for this app only | apply a new role; on `false` treat the user like a locked one in this app |
 
+**Requests racing with events.** A request can check its identity before a
+`session.revoked`, `user.locked` or `user.deleted` event is processed and try
+to write afterwards. So that it cannot recreate what the event ended, the app
+serializes the two: it keeps the `sid`s of ended sessions (at least as long as
+the hub keeps events, 30 days) and the state of each user, and writes state
+bound to a session or user only in the same transaction that checks that the
+`sid` has not ended and the user is neither locked nor deleted. Processing an
+event records the change and removes the bound state in one transaction.
+
 ### 10.3 Catching up
 
 The hub keeps events for 30 days. On every start, after `PUT manifest`, the
@@ -686,8 +695,9 @@ which it cannot get back, and **reconciles**, in this order:
 Requests from browsers need no pause during reconciliation: their identity is
 at most 60 s old, so its session was still valid long after every event the
 app missed. If that session has been revoked since, the `session.revoked`
-event lies within the retention and step 5 delivers it, which ends whatever
-the request set up.
+event lies within the retention and step 5 delivers it; together with the
+rule for [requests racing with events](#102-event-types), nothing the request
+sets up survives it.
 
 **Deletion is final.** Once an app has deleted a user's data – after
 `user.deleted` or a `410 user_deleted` – it keeps the `sub` as deleted and
