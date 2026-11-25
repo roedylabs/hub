@@ -37,8 +37,13 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             // The server reports errors in the configured log format so that
-            // JSON analyses of the container logs capture them.
-            if serve && tracing::dispatcher::has_been_set() {
+            // JSON analyses of the container logs capture them – unless
+            // `ROEDY_LOG` filters them out (`off`); then they go to stderr,
+            // so that the reason for the exit is never lost.
+            if serve
+                && tracing::dispatcher::has_been_set()
+                && tracing::enabled!(tracing::Level::ERROR)
+            {
                 tracing::error!("error: {err:#}");
             } else {
                 eprintln!("error: {err:#}");

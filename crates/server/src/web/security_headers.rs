@@ -64,36 +64,36 @@ pub struct InlineScripts(pub Vec<String>);
 
 impl InlineScripts {
     /// Finds `<script>` elements without `src` and hashes their content as the
-    /// browser sees it (text between the tags, unchanged).
+    /// browser sees it: the text between the tags, with line endings
+    /// normalized to LF as the HTML parser does. Quoted attribute values may
+    /// contain `>`.
     pub fn of_html(html: &[u8]) -> Self {
         let lower = html.to_ascii_lowercase();
         let mut hashes = Vec::new();
         let mut rest = 0;
         while let Some(at) = find(&lower[rest..], b"<script") {
-            let tag_start = rest + at;
-            let after_name = tag_start + b"<script".len();
-            let Some(end) = find(&lower[after_name..], b">") else {
-                break;
-            };
-            let tag_end = after_name + end;
-            let attributes = &lower[after_name..tag_end];
-            rest = tag_end + 1;
-            if !attributes.first().is_none_or(u8::is_ascii_whitespace) {
+            let after_name = rest + at + b"<script".len();
+            rest = after_name;
+            if !lower
+                .get(after_name)
+                .is_some_and(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/')
+            {
                 // `<scripts>` or similar.
                 continue;
             }
+            let Some((names, tag_end)) = attribute_names(&lower, after_name) else {
+                break;
+            };
+            rest = tag_end;
             let Some(close) = find(&lower[rest..], b"</script") else {
                 break;
             };
             let content = &html[rest..rest + close];
             rest += close;
-            let external = attributes
-                .split(u8::is_ascii_whitespace)
-                .any(|token| token == b"src" || token.starts_with(b"src="));
-            if external {
+            if names.iter().any(|name| *name == b"src") {
                 continue;
             }
-            let digest = Sha256::digest(content);
+            let digest = Sha256::digest(normalize_newlines(content));
             let hash = format!(
                 "'sha256-{}'",
                 base64::engine::general_purpose::STANDARD.encode(digest)
@@ -104,6 +104,71 @@ impl InlineScripts {
         }
         Self(hashes)
     }
+}
+
+/// Names of the attributes of the start tag from `at` (after the tag name)
+/// and the position after its `>`, following the HTML tokenizer: values in
+/// double or single quotes end only at the same quote. `None` if the tag does
+/// not end.
+fn attribute_names(lower: &[u8], mut at: usize) -> Option<(Vec<&[u8]>, usize)> {
+    let mut names = Vec::new();
+    loop {
+        // Before the attribute name.
+        while lower.get(at)?.is_ascii_whitespace() || lower[at] == b'/' {
+            at += 1;
+        }
+        if lower[at] == b'>' {
+            return Some((names, at + 1));
+        }
+        let start = at;
+        // The first character may be `=` (it belongs to the name then).
+        at += 1;
+        while !matches!(lower.get(at)?, b'=' | b'>' | b'/') && !lower[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        names.push(&lower[start..at]);
+        while lower.get(at)?.is_ascii_whitespace() {
+            at += 1;
+        }
+        if lower[at] != b'=' {
+            continue;
+        }
+        at += 1;
+        while lower.get(at)?.is_ascii_whitespace() {
+            at += 1;
+        }
+        match lower[at] {
+            quote @ (b'"' | b'\'') => {
+                at += 1 + find(&lower[at + 1..], &[quote])? + 1;
+            }
+            b'>' => return Some((names, at + 1)),
+            _ => {
+                while !lower.get(at)?.is_ascii_whitespace() && lower[at] != b'>' {
+                    at += 1;
+                }
+            }
+        }
+    }
+}
+
+/// CRLF and lone CR become LF, as in the HTML parser's input stream.
+fn normalize_newlines(content: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if !content.contains(&b'\r') {
+        return content.into();
+    }
+    let mut normalized = Vec::with_capacity(content.len());
+    let mut bytes = content.iter().peekable();
+    while let Some(&byte) = bytes.next() {
+        if byte == b'\r' {
+            normalized.push(b'\n');
+            if bytes.peek() == Some(&&b'\n') {
+                bytes.next();
+            }
+        } else {
+            normalized.push(byte);
+        }
+    }
+    normalized.into()
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -195,6 +260,51 @@ mod tests {
             InlineScripts::of_html(b"<script>open"),
             InlineScripts::default()
         );
+    }
+
+    #[test]
+    fn quoted_attributes_may_contain_angle_brackets_and_src() {
+        let html = "<script data-note=\">\">start();</script>\
+            <script data-x='a > b' type=module>second();</script>\
+            <script data-y=\"src=x\">third();</script>\
+            <script defer src=/_hub/a.js></script>\
+            <script/>fourth();</script>";
+        assert_eq!(
+            InlineScripts::of_html(html.as_bytes()),
+            InlineScripts(vec![
+                hash("start();"),
+                hash("second();"),
+                hash("third();"),
+                hash("fourth();")
+            ])
+        );
+        // An unterminated quote or tag hashes nothing.
+        assert_eq!(
+            InlineScripts::of_html(b"<script data-a=\">x</script>"),
+            InlineScripts::default()
+        );
+        assert_eq!(
+            InlineScripts::of_html(b"<script "),
+            InlineScripts::default()
+        );
+    }
+
+    #[test]
+    fn line_endings_are_normalized_like_the_browser() {
+        let lf = hash("\nstart();\n");
+        for html in [
+            "<script>\nstart();\n</script>",
+            "<script>\r\nstart();\r\n</script>",
+            "<script>\rstart();\r</script>",
+            "<script>\r\nstart();\r</script>",
+        ] {
+            assert_eq!(
+                InlineScripts::of_html(html.as_bytes()).0,
+                std::slice::from_ref(&lf),
+                "{html:?}"
+            );
+        }
+        assert_eq!(normalize_newlines(b"a\r\r\nb").as_ref(), b"a\n\nb");
     }
 
     #[test]

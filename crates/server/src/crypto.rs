@@ -12,8 +12,9 @@
 //! `signing_keys.private` + key ID): if someone copies the value into another
 //! row or column, it cannot be decrypted there.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/broker/crypto.rs`); only the
-//! label of the MAC key differs, so that the two apps never share derived keys.
+//! Taken over from Roedy Mail (`crates/server/src/broker/crypto.rs`). The
+//! label of the MAC key differs, so that the two apps never share derived
+//! keys, and the AAD frames purpose and row by length ([`aad`]).
 
 use std::{
     fmt::{self, Write as _},
@@ -255,8 +256,16 @@ impl SecretKey {
     }
 }
 
+/// Purpose and row, each with its length in front, so that no part can shift
+/// into the other (`"a\0b"` + `"c"` differs from `"a"` + `"b\0c"`). Unlike
+/// Roedy Mail, which separates them with a NUL byte.
 fn aad(purpose: &str, row: &str) -> Vec<u8> {
-    [purpose.as_bytes(), b"\0", row.as_bytes()].concat()
+    let mut aad = Vec::with_capacity(16 + purpose.len() + row.len());
+    for part in [purpose.as_bytes(), row.as_bytes()] {
+        aad.extend_from_slice(&u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
+        aad.extend_from_slice(part);
+    }
+    aad
 }
 
 /// HMAC-SHA-256; parts prefixed with their length so that "ab" + "c" does not
@@ -385,6 +394,15 @@ mod tests {
         broken = sealed;
         broken[0] = 2;
         assert!(key.open("test.secret", "row1", &broken).is_err());
+    }
+
+    #[test]
+    fn purpose_and_row_cannot_shift_into_each_other() {
+        let key = SecretKey::random().unwrap();
+        let sealed = key.seal("a\0b", "c", b"secret").unwrap();
+        assert!(key.open("a", "b\0c", &sealed).is_err());
+        assert!(key.open("a\0b\0c", "", &sealed).is_err());
+        assert_eq!(key.open("a\0b", "c", &sealed).unwrap(), b"secret");
     }
 
     #[test]

@@ -143,8 +143,51 @@ pub struct RateLimiter {
 
 #[derive(Default)]
 struct Inner {
-    states: HashMap<(&'static str, Key), State>,
+    states: HashMap<(&'static str, Key), Counter>,
     calls: u32,
+    /// Last [`Counter::id`] handed out.
+    last_id: u64,
+}
+
+/// The state of one rule and key, with an ID per counter: a counter that
+/// expired or was reset and starts over gets a new one, so that a
+/// [`Reservation`] of the old counter never refunds an attempt of the new one.
+#[derive(Debug, Clone, Copy)]
+struct Counter {
+    id: u64,
+    state: State,
+}
+
+impl Inner {
+    /// Removes expired counters every [`SWEEP_EVERY`] changes.
+    fn sweep(&mut self, now: Instant) {
+        self.calls = self.calls.wrapping_add(1);
+        if self.calls.is_multiple_of(SWEEP_EVERY) {
+            self.states
+                .retain(|_, counter| counter.state.expires() > now);
+        }
+    }
+
+    /// The counter of `slot` unless it has expired.
+    fn live(&self, slot: &(&'static str, Key), now: Instant) -> Option<Counter> {
+        self.states
+            .get(slot)
+            .filter(|counter| counter.state.expires() > now)
+            .copied()
+    }
+
+    /// Stores `state` in the live counter `current`, or in a new one.
+    fn store(&mut self, slot: (&'static str, Key), current: Option<Counter>, state: State) -> u64 {
+        let id = current.map_or_else(
+            || {
+                self.last_id += 1;
+                self.last_id
+            },
+            |counter| counter.id,
+        );
+        self.states.insert(slot, Counter { id, state });
+        id
+    }
 }
 
 impl RateLimiter {
@@ -153,9 +196,11 @@ impl RateLimiter {
         self.acquire_at(policy, key, Instant::now())
     }
 
-    /// Returns a reserved attempt that does not count.
+    /// Returns a reserved attempt that does not count. Call it right after
+    /// the check; for checks that take longer, [`Self::reserve`] makes sure the
+    /// refund only reaches the counter the attempt was taken from.
     pub fn refund(&self, policy: &Policy, key: &Key) {
-        self.refund_at(policy, key, Instant::now());
+        self.refund_at(policy, key, None, Instant::now());
     }
 
     /// Like [`Self::acquire`], but for checks that take longer (such as a
@@ -163,11 +208,12 @@ impl RateLimiter {
     /// it ends without [`Reservation::count`] – even if the request is
     /// aborted before.
     pub fn reserve<'a>(&'a self, policy: &'a Policy, key: Key) -> Result<Reservation<'a>, Limited> {
-        self.acquire(policy, key.clone())?;
+        let counter = self.take_at(policy, key.clone(), Instant::now())?;
         Ok(Reservation {
             limiter: self,
             policy,
             key: Some(key),
+            counter,
         })
     }
 
@@ -187,14 +233,20 @@ impl RateLimiter {
             return;
         };
         let mut inner = self.lock();
+        inner.sweep(now);
         let slot = (policy.name, key);
-        let next = match inner.states.get(&slot).filter(|s| s.expires() > now) {
-            Some(&State::Rate { next }) => Some(next),
+        let current = inner.live(&slot, now);
+        let next = match current {
+            Some(Counter {
+                state: State::Rate { next },
+                ..
+            }) => Some(next),
             _ => None,
         };
         let (next, _, interval) = gcra(burst, period, next, now);
-        inner.states.insert(
+        inner.store(
             slot,
+            current,
             State::Rate {
                 next: next + interval,
             },
@@ -216,10 +268,8 @@ impl RateLimiter {
     fn remaining_at(&self, policy: &Policy, key: &Key, now: Instant) -> Result<u32, Limited> {
         let inner = self.lock();
         let current = inner
-            .states
-            .get(&(policy.name, key.clone()))
-            .filter(|s| s.expires() > now)
-            .copied();
+            .live(&(policy.name, key.clone()), now)
+            .map(|counter| counter.state);
         match (policy.limit, current) {
             (
                 Limit::Lockout { .. },
@@ -253,17 +303,17 @@ impl RateLimiter {
     }
 
     fn acquire_at(&self, policy: &Policy, key: Key, now: Instant) -> Result<(), Limited> {
+        self.take_at(policy, key, now).map(|_| ())
+    }
+
+    /// [`Self::acquire_at`]; returns the ID of the counter the attempt was
+    /// taken from.
+    fn take_at(&self, policy: &Policy, key: Key, now: Instant) -> Result<u64, Limited> {
         let mut inner = self.lock();
-        inner.calls = inner.calls.wrapping_add(1);
-        if inner.calls.is_multiple_of(SWEEP_EVERY) {
-            inner.states.retain(|_, state| state.expires() > now);
-        }
+        inner.sweep(now);
         let slot = (policy.name, key);
-        let current = inner
-            .states
-            .get(&slot)
-            .filter(|s| s.expires() > now)
-            .copied();
+        let counter = inner.live(&slot, now);
+        let current = counter.map(|counter| counter.state);
         let next = match policy.limit {
             Limit::Rate { burst, period } => {
                 let next = match current {
@@ -308,17 +358,22 @@ impl RateLimiter {
                 }
             }
         };
-        inner.states.insert(slot, next);
-        Ok(())
+        Ok(inner.store(slot, counter, next))
     }
 
-    fn refund_at(&self, policy: &Policy, key: &Key, now: Instant) {
+    /// Returns an attempt to the current counter – with `counter`, only if it
+    /// is still the one the attempt was taken from.
+    fn refund_at(&self, policy: &Policy, key: &Key, counter: Option<u64>, now: Instant) {
         let mut inner = self.lock();
         let slot = (policy.name, key.clone());
-        let Some(state) = inner.states.get(&slot).copied() else {
+        let Some(current) = inner.states.get(&slot).copied() else {
             return;
         };
-        let refunded = match (policy.limit, state) {
+        if counter.is_some_and(|id| id != current.id) {
+            // Expired or reset since; the new counter owes this attempt nothing.
+            return;
+        }
+        let refunded = match (policy.limit, current.state) {
             (Limit::Rate { burst, period }, State::Rate { next }) => {
                 let next = next.checked_sub(period / burst.max(1)).unwrap_or(now);
                 (next > now).then_some(State::Rate { next })
@@ -341,7 +396,13 @@ impl RateLimiter {
             _ => None,
         };
         match refunded {
-            Some(state) => inner.states.insert(slot, state),
+            Some(state) => inner.states.insert(
+                slot,
+                Counter {
+                    id: current.id,
+                    state,
+                },
+            ),
             None => inner.states.remove(&slot),
         };
     }
@@ -363,6 +424,8 @@ pub struct Reservation<'a> {
     policy: &'a Policy,
     /// `None` as soon as the attempt counts.
     key: Option<Key>,
+    /// The counter the attempt was taken from.
+    counter: u64,
 }
 
 impl Reservation<'_> {
@@ -375,7 +438,8 @@ impl Reservation<'_> {
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         if let Some(key) = self.key.take() {
-            self.limiter.refund(self.policy, &key);
+            self.limiter
+                .refund_at(self.policy, &key, Some(self.counter), Instant::now());
         }
     }
 }
@@ -400,6 +464,51 @@ mod tests {
         limiter.reserve(&policy, Key::Global).unwrap().count();
         limiter.reserve(&policy, Key::Global).unwrap().count();
         assert!(limiter.reserve(&policy, Key::Global).is_err());
+    }
+
+    /// A reservation that outlives its counter does not refund the next one.
+    #[test]
+    fn late_refund_leaves_a_new_counter_alone() {
+        let once = Policy::rate("once", 1, secs(30));
+        let limiter = RateLimiter::default();
+        let t0 = Instant::now();
+        let a = limiter.take_at(&once, Key::Global, t0).unwrap();
+        // A's counter has expired by t=30; B starts a new one.
+        let b = limiter.take_at(&once, Key::Global, t0 + secs(30)).unwrap();
+        assert_ne!(a, b);
+        limiter.refund_at(&once, &Key::Global, Some(a), t0 + secs(31));
+        assert!(
+            limiter
+                .acquire_at(&once, Key::Global, t0 + secs(31))
+                .is_err(),
+            "B still counts until t=60"
+        );
+        // B's own refund still works.
+        limiter.refund_at(&once, &Key::Global, Some(b), t0 + secs(31));
+        limiter
+            .acquire_at(&once, Key::Global, t0 + secs(31))
+            .unwrap();
+
+        // Lockout: a reset in between does not let the old reservation
+        // unlock the new counter.
+        let lockout = Policy::lockout("late", 2, secs(600), secs(60));
+        let old = limiter.take_at(&lockout, Key::Global, t0).unwrap();
+        limiter.reset(&lockout, &Key::Global);
+        limiter.take_at(&lockout, Key::Global, t0).unwrap();
+        limiter.take_at(&lockout, Key::Global, t0).unwrap();
+        limiter.refund_at(&lockout, &Key::Global, Some(old), t0);
+        assert!(limiter.remaining_at(&lockout, &Key::Global, t0).is_err());
+    }
+
+    #[test]
+    fn reservation_dropped_after_reset_refunds_nothing() {
+        let policy = Policy::lockout("drop", 2, secs(600), secs(60));
+        let limiter = RateLimiter::default();
+        let reservation = limiter.reserve(&policy, Key::Global).unwrap();
+        limiter.reset(&policy, &Key::Global);
+        limiter.reserve(&policy, Key::Global).unwrap().count();
+        drop(reservation);
+        assert_eq!(limiter.remaining(&policy, &Key::Global), Ok(1));
     }
 
     const FIVE_PER_MINUTE: Policy = Policy::rate("test", 5, Duration::from_secs(60));
@@ -453,7 +562,7 @@ mod tests {
         // Ten successful attempts: each one is refunded.
         for _ in 0..10 {
             limiter.acquire_at(&FIVE_PER_MINUTE, user(), t0).unwrap();
-            limiter.refund_at(&FIVE_PER_MINUTE, &user(), t0);
+            limiter.refund_at(&FIVE_PER_MINUTE, &user(), None, t0);
         }
         assert_eq!(limiter.len(), 0);
         for _ in 0..5 {
@@ -508,7 +617,7 @@ mod tests {
         }
         // The fifth attempt is a success and does not count.
         limiter.acquire_at(&SETUP, Key::Global, t0).unwrap();
-        limiter.refund_at(&SETUP, &Key::Global, t0);
+        limiter.refund_at(&SETUP, &Key::Global, None, t0);
         limiter.acquire_at(&SETUP, Key::Global, t0).unwrap();
         assert!(limiter.acquire_at(&SETUP, Key::Global, t0).is_err());
 
@@ -534,7 +643,7 @@ mod tests {
         for minute in [5, 9] {
             let at = t0 + secs(minute * 60);
             limiter.acquire_at(&SETUP, Key::Global, at).unwrap();
-            limiter.refund_at(&SETUP, &Key::Global, at);
+            limiter.refund_at(&SETUP, &Key::Global, None, at);
         }
         let later = t0 + secs(601);
         for _ in 0..5 {
@@ -556,7 +665,7 @@ mod tests {
         for minute in [3, 6, 9] {
             let at = t0 + secs(minute * 60);
             limiter.acquire_at(&SETUP, Key::Global, at).unwrap();
-            limiter.refund_at(&SETUP, &Key::Global, at);
+            limiter.refund_at(&SETUP, &Key::Global, None, at);
             assert_eq!(limiter.remaining_at(&SETUP, &Key::Global, at), Ok(1));
         }
         assert_eq!(
@@ -663,6 +772,17 @@ mod tests {
             limiter
                 .acquire_at(&FIVE_PER_MINUTE, user(), later)
                 .unwrap_or(());
+        }
+        assert_eq!(limiter.len(), 1);
+
+        // `charge` alone (checked with `remaining`) sweeps as well.
+        let limiter = RateLimiter::default();
+        for i in 0..100u8 {
+            limiter.charge_at(&FIVE_PER_MINUTE, Key::Ip(IpAddr::from([192, 0, 2, i])), t0);
+        }
+        assert_eq!(limiter.len(), 100);
+        for _ in 0..SWEEP_EVERY {
+            limiter.charge_at(&FIVE_PER_MINUTE, user(), later);
         }
         assert_eq!(limiter.len(), 1);
     }

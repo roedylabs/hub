@@ -75,8 +75,13 @@ pub async fn call<T: Send + 'static>(
     let (reply, result) = oneshot::channel();
     db.sender
         .send(Message::Run(Box::new(move |conn| {
-            // If nobody waits any more (cancelled request), the result is dropped.
-            let _ = reply.send(f(conn));
+            // If nobody waits any more (cancelled request, `/readyz` after its
+            // timeout), the job is skipped: a slow database must not build up
+            // a backlog of work whose results nobody reads. A job that has
+            // started runs to the end; its result is dropped.
+            if !reply.is_closed() {
+                let _ = reply.send(f(conn));
+            }
         })))
         .map_err(|_| unavailable())?;
     // Without a reply the thread has ended: closed, or `f` panicked.
@@ -296,6 +301,39 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "own error");
+    }
+
+    #[tokio::test]
+    async fn skips_jobs_whose_caller_has_gone() {
+        let db = Db::from(Connection::open_in_memory().unwrap());
+        call(&db, |conn| {
+            Ok(conn.execute_batch("CREATE TABLE t (v INTEGER)")?)
+        })
+        .await
+        .unwrap();
+        // Hold the thread until the second job is queued and abandoned.
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        db.sender
+            .send(Message::Run(Box::new(move |_| {
+                hold.recv().ok();
+            })))
+            .unwrap();
+        let abandoned = call(
+            &db,
+            |conn| Ok(conn.execute("INSERT INTO t VALUES (1)", [])?),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), abandoned)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        let rows: i64 = call(&db, |conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))?)
+        })
+        .await
+        .unwrap();
+        assert_eq!(rows, 0, "the abandoned insert did not run");
     }
 
     #[tokio::test]

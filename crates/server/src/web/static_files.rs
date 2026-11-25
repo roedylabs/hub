@@ -16,10 +16,7 @@
 //! Taken over from Roedy Mail (`crates/server/src/web/static_files.rs`) with
 //! `_hub` instead of `_app`.
 
-use std::{
-    path::{Path, PathBuf},
-    time::UNIX_EPOCH,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, ensure};
 use axum::{
@@ -29,6 +26,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use percent_encoding::percent_decode_str;
+use sha2::{Digest as _, Sha256};
 
 use super::security_headers::InlineScripts;
 use crate::app::AppState;
@@ -101,7 +99,6 @@ struct Asset {
 }
 
 /// Strong ETag from the SHA-256 of the content.
-#[cfg(feature = "embed-web")]
 fn etag_of(sha256: &[u8]) -> String {
     use std::fmt::Write as _;
 
@@ -135,18 +132,14 @@ async fn from_dir(root: &Path, name: &str) -> Option<Asset> {
     if !path.starts_with(root) {
         return None;
     }
-    let meta = tokio::fs::metadata(&path).await.ok()?;
-    if !meta.is_file() {
+    if !tokio::fs::metadata(&path).await.ok()?.is_file() {
         return None;
     }
     let body = tokio::fs::read(&path).await.ok()?;
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |since| since.as_nanos());
+    // From the bytes that are sent: a file replaced during a deployment can
+    // never pair an old ETag with new content (and its script hashes).
     Some(Asset {
-        etag: format!("\"{:x}-{modified:x}\"", body.len()),
+        etag: etag_of(&Sha256::digest(&body)),
         body: body.into(),
     })
 }
@@ -222,15 +215,28 @@ fn known_type(name: &str) -> Option<&'static str> {
     })
 }
 
-/// `If-None-Match` with weak comparison (RFC 9110, 13.1.2).
+/// `If-None-Match` with weak comparison (RFC 9110, 13.1.2): `*` as the whole
+/// value, or a list of entity tags, in which commas inside the quotes belong
+/// to the tag.
 fn not_modified(headers: &HeaderMap, etag: &str) -> bool {
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
         .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .any(|tag| tag == "*" || tag.trim_start_matches("W/") == etag)
+        .any(|value| value.trim() == "*" || entity_tags(value).any(|tag| tag == etag))
+}
+
+/// The entity tags of a list (`"a", W/"b"`) with their quotes and without
+/// `W/`; ends at the first element that is not an entity tag.
+fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
+    let mut rest = list;
+    std::iter::from_fn(move || {
+        rest = rest.trim_start_matches(|c: char| c == ',' || c.is_ascii_whitespace());
+        let tag = rest.strip_prefix("W/").unwrap_or(rest);
+        let end = tag.strip_prefix('"')?.find('"')? + 2;
+        rest = &tag[end..];
+        Some(&tag[..end])
+    })
 }
 
 fn plain(status: StatusCode) -> Response {
@@ -403,7 +409,31 @@ mod tests {
         assert!(not_modified(&with("W/\"abc\""), etag));
         assert!(not_modified(&with("\"x\", \"abc\""), etag));
         assert!(not_modified(&with("*"), etag));
+        assert!(not_modified(&with(" * "), etag));
         assert!(!not_modified(&with("\"abcd\""), etag));
+        // Commas and `*` inside the quotes belong to the tag.
+        assert!(!not_modified(&with("\"other,*,tag\""), etag));
+        assert!(!not_modified(&with("\"a,\"abc\"\""), etag));
+        assert!(not_modified(&with("\"x,y\", W/\"abc\""), etag));
+        assert!(not_modified(&with("\"x\",\"abc\""), etag));
+        // A malformed list ends where it stops being one.
+        assert!(!not_modified(&with("abc, \"abc\""), etag));
+        assert!(!not_modified(&with("\"abc"), etag));
+    }
+
+    #[tokio::test]
+    async fn directory_etag_follows_the_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join(INDEX), "first").unwrap();
+        let first = from_dir(&root, INDEX).await.unwrap();
+        assert_eq!(first.etag, etag_of(&Sha256::digest(b"first")));
+        // Same size and, on coarse file systems, the same modification time:
+        // only the content tells them apart.
+        std::fs::write(root.join(INDEX), "secnd").unwrap();
+        let second = from_dir(&root, INDEX).await.unwrap();
+        assert_ne!(first.etag, second.etag);
+        assert_eq!(second.body.as_ref(), b"secnd");
     }
 
     #[test]
