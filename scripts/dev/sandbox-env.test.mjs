@@ -87,6 +87,17 @@ describe('sandbox-env.sh', () => {
   test('makes the base directory private', () => {
     assert.equal(statSync(base).mode & 0o777, 0o700);
   });
+
+  test('creates a private base even with a permissive umask', () => {
+    const otherTmp = join(tmp, 'umask-tmp');
+    mkdirSync(otherTmp);
+    const umask = spawnSync('bash', ['-c', 'umask 0002 && . "$1"', 'bash', script], {
+      encoding: 'utf8',
+      env: { ...process.env, TMPDIR: otherTmp, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.equal(umask.status, 0, umask.stderr);
+    assert.equal(statSync(join(otherTmp, 'roedy-hub-dev')).mode & 0o777, 0o700);
+  });
 });
 
 describe('sandbox-env.sh failures', () => {

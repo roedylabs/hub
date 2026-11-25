@@ -15,7 +15,9 @@ _rm_base=${TMPDIR:-/tmp}/roedy-hub-dev
 # The base must be this user's own directory that nobody else can write to:
 # without TMPDIR it lies in the shared /tmp, where another user could have
 # planted a corepack binary. Once checked, it is made private (700).
-mkdir -p "$_rm_base" || { unset _rm_base; return 1; }
+# umask 077 in a subshell: a new base is private whatever the caller's umask
+# (mkdir -p -m only applies to the last directory, ShellCheck SC2174).
+(umask 077 && mkdir -p "$_rm_base") || { unset _rm_base; return 1; }
 # -perm -020/-002 instead of /022: BSD find (macOS) only knows the - and + forms.
 _rm_loose=$(find "$_rm_base" -maxdepth 0 \( -perm -020 -o -perm -002 \) -print) ||
   { echo "sandbox-env.sh: cannot check the permissions of $_rm_base" >&2; unset _rm_base _rm_loose; return 1; }

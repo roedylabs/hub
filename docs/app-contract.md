@@ -453,7 +453,7 @@ The authoritative answer for one user:
 
 | Response | Meaning | The app should |
 |---|---|---|
-| `200` with the user as in the list | The user has access | update its copy |
+| `200` with the user as in the list | The user has access | update its copy; if `status` is `locked`, act as for `user.locked` |
 | `404 {"error": "no_access"}` | The user exists but has no access to this app | keep the data, treat the user like a locked one in this app |
 | `410 {"error": "user_deleted", "deleted_at": "…"}` | The user was deleted; the hub keeps this record (only `sub` and the time) permanently | delete the user's data as for `user.deleted` |
 
@@ -678,6 +678,11 @@ events it cannot get back and **reconciles**, in this order:
    and acts on the answer as described there.
 4. It stores `last_seq` as the highest `seq` processed.
 5. It processes deliveries again; the hub sends the events after `last_seq`.
+
+Requests from browsers need no pause during reconciliation: their identity is
+at most 60 s old, so its session was still valid after every event the app
+missed. A session revoked later is covered by an event after `last_seq`,
+which step 5 delivers.
 
 **Deletion is final.** Once an app has deleted a user's data – after
 `user.deleted` or a `410 user_deleted` – it keeps the `sub` as deleted and
