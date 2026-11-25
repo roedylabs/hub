@@ -152,6 +152,21 @@ describe('sandbox-env.sh failures', () => {
     assert.match(run.stderr, /contains files of other users/);
   });
 
+  test('refuses a link to a target that others can replace', () => {
+    const run = source('link-out', (base) => {
+      const outside = join(tmp, 'link-out', 'outside');
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(outside, 'corepack'), '#!/bin/sh\nexit 0\n');
+      chmodSync(join(outside, 'corepack'), 0o777);
+      mkdirSync(join(base, 'corepack', 'node_modules', '.bin'), { recursive: true, mode: 0o700 });
+      chmodSync(base, 0o700);
+      symlinkSync(join(outside, 'corepack'), join(base, 'corepack', 'node_modules', '.bin', 'corepack'));
+    });
+    assert.notEqual(run.status, 0);
+    assert.doesNotMatch(run.stdout, /sourced/);
+    assert.match(run.stderr, /or links to them/);
+  });
+
   test('refuses a base directory that its group can write to', () => {
     const run = source('group-base', (base) => {
       mkdirSync(base);
