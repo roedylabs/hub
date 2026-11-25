@@ -112,7 +112,7 @@ describe('sandbox-env.sh failures', () => {
     const bin = join(dir, 'bin');
     const sandboxTmp = join(dir, 'tmp');
     for (const d of [bin, sandboxTmp]) mkdirSync(d, { recursive: true });
-    for (const tool of ['mkdir', 'find', 'id', 'chmod']) {
+    for (const tool of ['mkdir', 'find', 'id', 'chmod', 'sh', 'realpath']) {
       symlinkSync(execFileSync('bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), join(bin, tool));
     }
     // npm that fails: the corepack bootstrap cannot succeed.
@@ -152,19 +152,41 @@ describe('sandbox-env.sh failures', () => {
     assert.match(run.stderr, /contains files of other users/);
   });
 
-  test('refuses a link to a target that others can replace', () => {
-    const run = source('link-out', (base) => {
-      const outside = join(tmp, 'link-out', 'outside');
-      mkdirSync(outside, { recursive: true });
-      writeFileSync(join(outside, 'corepack'), '#!/bin/sh\nexit 0\n');
-      chmodSync(join(outside, 'corepack'), 0o777);
-      mkdirSync(join(base, 'corepack', 'node_modules', '.bin'), { recursive: true, mode: 0o700 });
-      chmodSync(base, 0o700);
-      symlinkSync(join(outside, 'corepack'), join(base, 'corepack', 'node_modules', '.bin', 'corepack'));
+  for (const [name, dirMode, fileMode] of [
+    ['a world-writable target', 0o755, 0o777],
+    ['a target in a directory others can write to', 0o777, 0o700],
+    ['a group-writable target', 0o755, 0o770],
+  ]) {
+    test(`refuses a link out of the base to ${name}`, () => {
+      const dir = `link-${dirMode.toString(8)}-${fileMode.toString(8)}`;
+      const run = source(dir, (base) => {
+        const outside = join(tmp, dir, 'outside');
+        mkdirSync(outside, { recursive: true });
+        writeFileSync(join(outside, 'corepack'), '#!/bin/sh\nexit 0\n');
+        chmodSync(join(outside, 'corepack'), fileMode);
+        chmodSync(outside, dirMode);
+        mkdirSync(join(base, 'corepack', 'node_modules', '.bin'), { recursive: true, mode: 0o700 });
+        chmodSync(base, 0o700);
+        symlinkSync(join(outside, 'corepack'), join(base, 'corepack', 'node_modules', '.bin', 'corepack'));
+      });
+      assert.notEqual(run.status, 0);
+      assert.doesNotMatch(run.stdout, /sourced/);
+      assert.match(run.stderr, /links out of/);
     });
-    assert.notEqual(run.status, 0);
-    assert.doesNotMatch(run.stdout, /sourced/);
-    assert.match(run.stderr, /or links to them/);
+  }
+
+  test('accepts links that stay inside the base', () => {
+    const run = source('link-in', (base) => {
+      const bin = join(base, 'corepack', 'node_modules', '.bin');
+      mkdirSync(join(base, 'corepack', 'dist'), { recursive: true, mode: 0o700 });
+      mkdirSync(bin, { recursive: true, mode: 0o700 });
+      writeFileSync(join(base, 'corepack', 'dist', 'corepack.js'), '#!/bin/sh\nexit 0\n');
+      chmodSync(join(base, 'corepack', 'dist', 'corepack.js'), 0o700);
+      chmodSync(base, 0o700);
+      symlinkSync('../../dist/corepack.js', join(bin, 'corepack'));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /sourced/);
   });
 
   test('refuses a base directory that its group can write to', () => {

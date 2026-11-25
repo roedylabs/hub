@@ -40,20 +40,26 @@ export PNPM_HOME="$_rm_base/pnpm-home" # version from "packageManager" (pnpm 12)
 export CARGO_HOME="$_rm_base/cargo-home" # registry cache; ~/.cargo is not writable
 # Everything that gets executed from the base (corepack, the pnpm shims and the
 # pnpm versions in PNPM_HOME) must belong to this user: anything else was
-# planted while the base was still open to others. The second probe follows
-# symlinks: their targets must belong to this user as well and must not be
-# writable by others (dangling links are skipped; they run nothing).
+# planted while the base was still open to others. Symlinks must stay inside
+# the private base: a target elsewhere could be replaced through a parent
+# directory others can write to. Dangling links are skipped (they run nothing,
+# and a target created later is caught on the next run).
+_rm_real=$(cd -P "$_rm_base" && pwd) || { unset _rm_base _rm_real; return 1; }
 for _rm_dir in "$_rm_base/corepack" "$_rm_base/bin" "$PNPM_HOME"; do
   [ -e "$_rm_dir" ] || [ -L "$_rm_dir" ] || continue
   if ! _rm_foreign=$(find "$_rm_dir" ! -user "$(id -u)" -print) || [ -n "$_rm_foreign" ] ||
-    ! _rm_foreign=$(find -L "$_rm_dir" ! -type l \( ! -user "$(id -u)" -o -perm -002 \) -print) ||
+    ! _rm_foreign=$(find "$_rm_dir" -type l -exec sh -c '
+      for link; do
+        target=$(realpath "$link" 2>/dev/null) || continue
+        case $target in "$0"/*) ;; *) echo "$link" ;; esac
+      done' "$_rm_real" {} +) ||
     [ -n "$_rm_foreign" ]; then
-    echo "sandbox-env.sh: $_rm_dir contains files of other users or links to them; delete $_rm_base and try again" >&2
-    unset _rm_base _rm_dir _rm_foreign
+    echo "sandbox-env.sh: $_rm_dir contains files of other users or links out of $_rm_base; delete it and try again" >&2
+    unset _rm_base _rm_dir _rm_foreign _rm_real
     return 1
   fi
 done
-unset _rm_dir _rm_foreign
+unset _rm_dir _rm_foreign _rm_real
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$PNPM_HOME"
 chmod 700 "$XDG_RUNTIME_DIR"
 
