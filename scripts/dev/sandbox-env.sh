@@ -4,7 +4,7 @@
 # Usage: . scripts/dev/sandbox-env.sh
 #
 # Redirects caches (npm, pnpm, cargo), store locks, PNPM_HOME and corepack to
-# $TMPDIR and provides pnpm via corepack if it is missing (Node 26 no longer
+# a private directory in $TMPDIR and provides pnpm via corepack if it is missing (Node 26 no longer
 # ships corepack).
 # The pnpm version comes from "packageManager" in package.json: an installed
 # pnpm 12 puts that version under $PNPM_HOME and starts it, without corepack.
@@ -12,6 +12,16 @@
 # ~/.local/share/pnpm (then XDG_DATA_HOME does not apply).
 
 _rm_base=${TMPDIR:-/tmp}/roedy-hub-dev
+# The base must be this user's own directory that nobody else can write to:
+# without TMPDIR it lies in the shared /tmp, where another user could have
+# planted a corepack binary. Then it is made private (700).
+mkdir -p -m 700 "$_rm_base" || { unset _rm_base; return 1; }
+if [ ! -O "$_rm_base" ] || [ -n "$(find "$_rm_base" -maxdepth 0 -perm /022)" ]; then
+  echo "sandbox-env.sh: $_rm_base must belong to $(id -un) and must not be writable by others" >&2
+  unset _rm_base
+  return 1
+fi
+chmod 700 "$_rm_base"
 export npm_config_cache="$_rm_base/npm-cache"
 export COREPACK_HOME="$_rm_base/corepack-home"
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
@@ -25,12 +35,16 @@ export CARGO_HOME="$_rm_base/cargo-home" # registry cache; ~/.cargo is not writa
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$PNPM_HOME"
 chmod 700 "$XDG_RUNTIME_DIR"
 
+# A failed bootstrap returns non-zero, so that `. sandbox-env.sh && pnpm …`
+# stops instead of going on without pnpm.
 if ! command -v pnpm >/dev/null 2>&1; then
   if [ ! -x "$_rm_base/corepack/node_modules/.bin/corepack" ]; then
-    npm install --silent --no-audit --no-fund --prefix "$_rm_base/corepack" corepack
+    npm install --silent --no-audit --no-fund --prefix "$_rm_base/corepack" corepack ||
+      { echo "sandbox-env.sh: installing corepack failed" >&2; unset _rm_base; return 1; }
   fi
   mkdir -p "$_rm_base/bin"
-  "$_rm_base/corepack/node_modules/.bin/corepack" enable --install-directory "$_rm_base/bin" pnpm
+  "$_rm_base/corepack/node_modules/.bin/corepack" enable --install-directory "$_rm_base/bin" pnpm ||
+    { echo "sandbox-env.sh: corepack enable failed" >&2; unset _rm_base; return 1; }
   export PATH="$_rm_base/bin:$PATH"
 fi
 unset _rm_base

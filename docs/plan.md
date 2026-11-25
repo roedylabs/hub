@@ -126,6 +126,7 @@ New:
 | `app_access` | `user_id`, `app_id`, `app_role`; primary key (user, app) |
 | `signing_keys` | `kid`, `private_enc`, `public`, `created_at`, `active_from`, `retired_at` |
 | `events` | `id`, `app_id`, `seq`, `type`, `data`, `created_at`; unique (app, seq) |
+| `deleted_users` | `sub`, `deleted_at`: tombstones for `GET /internal/v1/users/<sub>`, kept permanently |
 | `event_delivery` | `app_id`, `delivered_seq`, `attempts`, `retry_at`, `last_error` |
 
 ### New dependencies (to be justified in the PRs)
@@ -230,7 +231,7 @@ checks pass in every PR; every PR has tests for what it adds.
 These go beyond the original brief and are part of the contract:
 
 1. **Cookie isolation:** the hub forwards only cookies named
-   `__Host-roedy-<slug>-…` to an app and drops `Set-Cookie` for other names.
+   `__Host-roedy-<slug>_…` to an app and drops `Set-Cookie` for other names.
 2. **Response headers:** the hub removes `Clear-Site-Data` and
    `Service-Worker-Allowed` from app responses.
 3. **Extra claims** `locale` and `auth_time`, plus explicit `typ` values

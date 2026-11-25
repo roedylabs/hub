@@ -28,20 +28,37 @@ function isWorkflowOrAction(path) {
   return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) || /(^|\/)action\.ya?ml$/.test(path);
 }
 
+/** The key `uses`, plain or quoted. */
+const KEY = String.raw`(?:uses|"uses"|'uses')\s*:`;
 /** `uses: <ref>` as a key, also as the first key of a list item; the value may be quoted and followed by a comment. */
-const USES = /^\s*(?:-\s+)?uses:\s*(['"]?)([^\s'"#]*)\1\s*(?:#.*)?$/;
+const USES = new RegExp(String.raw`^\s*(?:-\s+)?${KEY}\s*(['"]?)([^\s'"#]*)\1\s*(?:#.*)?$`);
+/** A `uses` key at the start of the line or inside a flow mapping. */
+const USES_KEY = new RegExp(String.raw`^\s*(?:-\s+)?${KEY}|[{,]\s*${KEY}`);
+/** A key whose value is a block scalar (`run: |`, `script: >-`); the lines below it are text. */
+const BLOCK_SCALAR = /^(\s*(?:-\s+)*)[^\s#][^:#]*:\s*[|>][-+0-9]*\s*(?:#.*)?$/;
 
 /**
  * Problems of a workflow or action file: references without a commit SHA,
- * and `uses:` lines the check cannot read (e.g. flow mappings).
+ * and `uses:` lines the check cannot read (e.g. flow mappings). Text inside
+ * block scalars (shell scripts of `run: |`) is not YAML and is skipped.
  * @param {string} text
  * @returns {string[]}
  */
 function usesProblems(text) {
   const problems = [];
+  /** Column of the key that opened the current block scalar, or -1. */
+  let block = -1;
   for (const [i, line] of text.split(/\r?\n/).entries()) {
-    // A key at the start of the line or inside a flow mapping, not text in a value.
-    if (!/^\s*(?:-\s+)?uses:|[{,]\s*uses:/.test(line) || /^\s*#/.test(line)) continue;
+    if (block >= 0) {
+      if (line.trim() === '' || line.search(/\S/) > block) continue;
+      block = -1;
+    }
+    const scalar = BLOCK_SCALAR.exec(line);
+    if (scalar) {
+      block = scalar[1].length;
+      continue;
+    }
+    if (!USES_KEY.test(line) || /^\s*#/.test(line)) continue;
     const m = USES.exec(line);
     if (!m) {
       problems.push(`line ${i + 1}: unreadable uses: ${line.trim()}`);
@@ -73,7 +90,15 @@ describe('usesProblems', () => {
       `      - uses: 'owner/repo@${sha}'`,
       '      - uses: ./.github/actions/setup',
       `      - uses: docker://alpine:3.24@sha256:${'b'.repeat(64)}`,
+      `      - "uses": actions/checkout@${sha}`,
+      `      - 'uses': actions/checkout@${sha}`,
       '      # - uses: owner/repo@v1 (commented out)',
+      '      - name: Script that mentions a flow mapping',
+      '        run: |',
+      "          echo '{ uses: example }'",
+      '          echo "uses: owner/repo@v1"',
+      '',
+      '          echo done',
       '      - name: Text that mentions uses: in a string',
       '        run: echo "no key"',
     ].join('\n');
@@ -89,6 +114,11 @@ describe('usesProblems', () => {
       '      - uses: actions/checkout',
       '      - uses: docker://alpine:3.24',
       `      - { name: x, uses: actions/checkout@${sha} }`,
+      '      - "uses": actions/checkout@v7',
+      "      - 'uses': actions/checkout@v7",
+      '      - run: >-',
+      '          echo text',
+      '      - uses: actions/checkout@v7',
     ].join('\n');
     assert.deepEqual(usesProblems(text), [
       'line 1: actions/checkout@v7 not pinned to a commit SHA',
@@ -98,6 +128,9 @@ describe('usesProblems', () => {
       'line 5: actions/checkout not pinned to a commit SHA',
       'line 6: docker://alpine:3.24 without digest',
       `line 7: unreadable uses: - { name: x, uses: actions/checkout@${sha} }`,
+      'line 8: actions/checkout@v7 not pinned to a commit SHA',
+      'line 9: actions/checkout@v7 not pinned to a commit SHA',
+      'line 12: actions/checkout@v7 not pinned to a commit SHA',
     ]);
   });
 });

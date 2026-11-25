@@ -93,7 +93,7 @@ outside for this path and never forwards it.
 | `X-Roedy-*` (any) | Removes all of them from the client's request. Then sets its own (below). |
 | `X-Roedy-Identity` | Signed identity, only when the request carries a valid hub session ([§ 4](#4-identity)). |
 | `X-Roedy-Request-Id` | A ULID per request. The app SHOULD log it. |
-| `Cookie` | Forwards only cookies in the app's namespace (`__Host-roedy-<slug>-…`, [§ 3.6](#36-namespaces-in-the-browser)). The hub's session cookie `__Host-roedy_hub_session` and other apps' cookies never reach the app. |
+| `Cookie` | Forwards only cookies in the app's namespace (names starting with `__Host-roedy-<slug>_`, [§ 3.6](#36-namespaces-in-the-browser)). The hub's session cookie `__Host-roedy_hub_session` and other apps' cookies never reach the app. |
 | `Host` | The public host, e.g. `app.example.com`. |
 | `X-Forwarded-Host`, `X-Forwarded-Proto` | Public host and scheme from the hub's `ROEDY_PUBLIC_URL`; values from the client are replaced. |
 | `X-Forwarded-For` | The entries the hub trusts (per its `ROEDY_TRUST_PROXY`) plus the address of the hub's TCP peer; untrusted entries are dropped. The app sets **its** `ROEDY_TRUST_PROXY` to the hub's value plus one (e.g. TLS proxy → hub → app: `2`). |
@@ -154,19 +154,23 @@ WebSocket ping).
 All apps share one origin, so everything the browser stores per origin MUST
 carry the app's slug. `<slug>` is the app's slug as configured in the hub
 (not its manifest `id`): two instances of one app get separate namespaces.
+Every prefix ends with a character no slug can contain (`.` or `_`), so that
+a name belongs to exactly one slug: `roedy.mail.` is not a prefix of
+`roedy.mail-archive.…`.
 
 | What | Rule |
 |---|---|
 | URLs | Only below `/<slug>/`, plus the hub endpoints of [§ 6](#6-browser-api-of-the-hub) and the links of [§ 5](#5-signing-in-and-out). |
 | `localStorage`, `sessionStorage` | Keys start with `roedy.<slug>.` |
-| IndexedDB | Database names start with `roedy-<slug>-` |
-| Cache Storage | Cache names start with `roedy-<slug>-` |
-| `BroadcastChannel`, Web Locks | Names start with `roedy-<slug>-` |
+| IndexedDB | Database names start with `roedy.<slug>.` |
+| Cache Storage | Cache names start with `roedy.<slug>.` |
+| `BroadcastChannel`, Web Locks | Names start with `roedy.<slug>.` |
 | Service worker | Script under `/<slug>/`, scope `/<slug>/` (the default for a script there) |
 | Web app manifest | Served under `/<slug>/`; `id`, `scope` and `start_url` under `/<slug>/` |
-| Cookies | Apps SHOULD NOT set cookies in hub mode. If they must: name starts with `__Host-roedy-<slug>-`, `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax` or `Strict`. Other cookies are dropped by the hub ([§ 3.3](#33-response-headers-the-hub-changes)). |
+| Cookies | Apps SHOULD NOT set cookies in hub mode. If they must: name starts with `__Host-roedy-<slug>_` (e.g. `__Host-roedy-mail_token`), `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax` or `Strict`. Other cookies are dropped by the hub ([§ 3.3](#33-response-headers-the-hub-changes)). |
 
-The hub itself uses the namespace `hub` (`roedy.hub.`, `roedy-hub-`). Apps MAY
+The hub itself uses the namespace `hub` (`roedy.hub.`; its session cookie
+`__Host-roedy_hub_session` lies outside every app's namespace). Apps MAY
 read `localStorage["roedy.hub.prefs"]` – JSON `{"theme": "system"|"light"|"dark",
 "locale": "en"|"de"}` – to apply theme and language before their first request.
 They MUST NOT write any key outside their namespace.
@@ -406,7 +410,7 @@ logs and its admin area.
 | `PUT /internal/v1/manifest` | secret | Send the current manifest, on every start ([§ 8](#8-manifest)) |
 | `GET /internal/v1/events?after=<seq>&limit=<n>` | secret | Read missed events ([§ 10.3](#103-catching-up)) |
 | `GET /internal/v1/users?cursor=<c>&limit=<n>` | secret | Users with access to this app |
-| `GET /internal/v1/users/<sub>` | secret | One user with access to this app; 404 otherwise |
+| `GET /internal/v1/users/<sub>` | secret | One user: with access, without access or deleted |
 
 ### `PUT /internal/v1/manifest`
 
@@ -439,7 +443,21 @@ reconciling after missed events). Ordered by `sub`, `limit` 1–500 (default
 ```
 
 `status`: `active` or `locked`. Users without access to the app are not
-listed.
+listed. **Absence from this list never means that a user was deleted** – only
+that they have no access (now); an app MUST NOT delete a user's data because
+of it.
+
+### `GET /internal/v1/users/<sub>`
+
+The authoritative answer for one user:
+
+| Response | Meaning | The app should |
+|---|---|---|
+| `200` with the user as in the list | The user has access | update its copy |
+| `404 {"error": "no_access"}` | The user exists but has no access to this app | keep the data, treat the user like a locked one in this app |
+| `410 {"error": "user_deleted", "deleted_at": "…"}` | The user was deleted; the hub keeps this record (only `sub` and the time) permanently | delete the user's data as for `user.deleted` |
+
+An unknown `sub` (never issued by this hub) also gets `404 no_access`.
 
 ## 8. Manifest
 
@@ -639,10 +657,16 @@ Authorization: Bearer rhs_…
 { "events": ["<event JWT>", "…"], "more": false }
 ```
 
-Each entry is the same signed JWT as in a delivery, oldest first. If `after`
-lies before the retention, the hub answers `410 events_expired`; the app then
-reconciles with `GET /internal/v1/users` and continues from `last_seq`, which
-the error response names.
+Each entry is an event JWT as in a delivery, oldest first, **signed anew when
+it is read**: `jti`, `seq`, `type` and `data` are those of the original event,
+`iat` is the time of the request and `exp − iat` ≤ 300. The app verifies it
+exactly like a delivery. `limit` is 1–100 (default 100); `more` is `true`
+when further events follow.
+
+If `after` lies before the retention, the hub answers
+`410 {"error": "events_expired", "last_seq": <n>}`. The app then reconciles:
+it asks `GET /internal/v1/users/<sub>` for every user it holds data for and
+acts on the answer as described there, and continues from `last_seq`.
 
 ## 11. Access and roles
 
