@@ -107,7 +107,7 @@ describe('sandbox-env.sh failures', () => {
     // npm that fails: the corepack bootstrap cannot succeed.
     writeFileSync(join(bin, 'npm'), '#!/bin/sh\nexit 1\n');
     chmodSync(join(bin, 'npm'), 0o755);
-    prepare?.(join(sandboxTmp, 'roedy-hub-dev'));
+    prepare?.(join(sandboxTmp, 'roedy-hub-dev'), bin);
     return spawnSync(bash, ['-c', '. "$1" && echo sourced', 'bash', script], {
       encoding: 'utf8',
       env: { TMPDIR: sandboxTmp, PATH: bin, HOME: dir },
@@ -119,6 +119,26 @@ describe('sandbox-env.sh failures', () => {
     assert.notEqual(run.status, 0);
     assert.doesNotMatch(run.stdout, /sourced/);
     assert.match(run.stderr, /installing corepack failed/);
+  });
+
+  test('refuses executables that another user planted in the base', () => {
+    // Files of another user cannot be created without root; a find that reports
+    // one for the ownership probe stands in for them.
+    const run = source('planted', (base, bin) => {
+      mkdirSync(join(base, 'corepack'), { recursive: true, mode: 0o700 });
+      chmodSync(base, 0o700);
+      const real = join(bin, 'find');
+      const target = execFileSync('readlink', [real], { encoding: 'utf8' }).trim();
+      rmSync(real);
+      writeFileSync(
+        real,
+        `#!${bash}\ncase " $* " in *" -user "*) echo "$1/node_modules/.bin/corepack" ;; *) exec ${target} "$@" ;; esac\n`,
+      );
+      chmodSync(real, 0o755);
+    });
+    assert.notEqual(run.status, 0);
+    assert.doesNotMatch(run.stdout, /sourced/);
+    assert.match(run.stderr, /contains files of other users/);
   });
 
   test('refuses a base directory that its group can write to', () => {

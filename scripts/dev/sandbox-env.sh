@@ -36,6 +36,18 @@ export XDG_DATA_HOME="$_rm_base/data"
 export XDG_STATE_HOME="$_rm_base/state"
 export PNPM_HOME="$_rm_base/pnpm-home" # version from "packageManager" (pnpm 12)
 export CARGO_HOME="$_rm_base/cargo-home" # registry cache; ~/.cargo is not writable
+# Everything that gets executed from the base (corepack, the pnpm shims and the
+# pnpm versions in PNPM_HOME) must belong to this user: anything else was
+# planted while the base was still open to others.
+for _rm_dir in "$_rm_base/corepack" "$_rm_base/bin" "$PNPM_HOME"; do
+  [ -e "$_rm_dir" ] || [ -L "$_rm_dir" ] || continue
+  if ! _rm_foreign=$(find "$_rm_dir" ! -user "$(id -u)" -print) || [ -n "$_rm_foreign" ]; then
+    echo "sandbox-env.sh: $_rm_dir contains files of other users; delete $_rm_base and try again" >&2
+    unset _rm_base _rm_dir _rm_foreign
+    return 1
+  fi
+done
+unset _rm_dir _rm_foreign
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$PNPM_HOME"
 chmod 700 "$XDG_RUNTIME_DIR"
 
