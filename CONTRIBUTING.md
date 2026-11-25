@@ -15,11 +15,13 @@ Changes to the app contract ([`docs/app-contract.md`](docs/app-contract.md)) aff
 
 ```sh
 pnpm install          # dependencies and Git hooks (lefthook)
-cargo run -- --version
-pnpm dev              # web app on http://localhost:5173, proxies /api to the backend on :8080
+ROEDY_PUBLIC_URL=http://localhost:5173 ROEDY_LOG_FORMAT=text cargo run -- serve   # server on :8080 and :8081, data in ./data
+pnpm dev              # web app on http://localhost:5173, proxies /api and the health checks to the server
 ```
 
-The server commands (`serve`, `healthcheck`, …) follow in the next milestones ([`docs/plan.md`](docs/plan.md)).
+`ROEDY_PUBLIC_URL` is required; in development it is the address of the web app. The first start prints a setup token in the server log (`cargo run -- setup-token` shows it again). The other commands are `healthcheck` and `migrate`; all settings are in [`docs/ops.md`](docs/ops.md#configuration). To try the server with the built web app instead of `pnpm dev`, run `pnpm build` and start it with `ROEDY_WEB_DIR=apps/web/build` (or build it with `--features embed-web`, as the image will).
+
+Useful environment variables during development: `ROEDY_LOG_FORMAT=text` for readable logs, `ROEDY_LOG=debug,tower_http=debug` to log every request, `ROEDY_INTERNAL_LISTEN=` (empty) to turn the internal listener off.
 
 In a sandboxed shell with a read-only home directory, run `. scripts/dev/sandbox-env.sh` first; it moves the pnpm, npm and cargo caches to `$TMPDIR`.
 
@@ -42,6 +44,8 @@ pnpm check            # svelte-check and TypeScript
 pnpm test             # Vitest and script tests
 ```
 
+CI also runs Clippy and the tests with `--all-features`, which embeds `apps/web/build` (`embed-web`); run `pnpm build` first to do the same locally.
+
 While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vitest run <file>` or `cargo test -p roedy-hub-server <filter>`.
 
 ## Project layout
@@ -51,7 +55,7 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 | `crates/server` | Server (Rust, axum, SQLite), binary `roedy-hub` |
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
-| `docs/` | App contract, plan, later the operator documentation |
+| `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
 | `scripts/` | Git hooks and developer tooling |
 
 `crates/contract` (the contract's types, signing and verification) and `crates/example-app` (a test app that implements the contract) follow with the gateway.

@@ -35,12 +35,13 @@ All apps share one origin. Install only apps you trust as much as the hub itself
 
 ```sh
 pnpm install
-cargo run -- --version
+ROEDY_PUBLIC_URL=http://localhost:5173 cargo run -- serve
 pnpm dev
 ```
 
 Requires Node 26, pnpm 12 and Rust stable ([mise](https://mise.jdx.dev) installs them with `mise install`). See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, checks and conventions.
+[CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, checks and conventions, and [`docs/ops.md`](docs/ops.md) for
+the configuration.
 
 | Part | Stack |
 |---|---|

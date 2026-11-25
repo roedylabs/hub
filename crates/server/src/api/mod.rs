@@ -1,0 +1,244 @@
+//! HTTP handlers: operational endpoints (`/healthz`, `/readyz`) and the API
+//! under `/api/v1` with JSON errors, CSRF protection and
+//! `Cache-Control: no-store`. The endpoints themselves follow with sign-in and
+//! the administration (docs/plan.md › Milestones).
+//!
+//! Taken over from Roedy Mail (`crates/server/src/api/mod.rs`): the same
+//! middleware order and CSRF rules, without sessions and maintenance mode yet.
+
+pub mod error;
+pub mod health;
+
+use axum::{
+    Router,
+    extract::Request,
+    http::{HeaderMap, HeaderValue, Method, header},
+    middleware::{self, Next},
+    response::{IntoResponse as _, Response},
+};
+use tower_http::set_header::SetResponseHeaderLayer;
+
+pub use error::{ApiError, FieldErrors};
+
+use crate::app::AppState;
+
+/// Path under which [`router`] is mounted.
+pub const PREFIX: &str = "/api/v1";
+
+/// Required header for modifying requests (CSRF protection through
+/// `SameSite` + `X-Requested-With`). A foreign form cannot set it, and a
+/// foreign `fetch` with a custom header needs a CORS preflight, which the API
+/// does not allow.
+pub const CSRF_HEADER: &str = "x-requested-with";
+
+pub fn router() -> Router<AppState> {
+    with_middleware(Router::new())
+}
+
+/// Wraps the API's fallback and middleware around `routes`. Tests put their
+/// own routes behind the same stack this way.
+pub fn with_middleware(routes: Router<AppState>) -> Router<AppState> {
+    routes
+        .fallback(not_found)
+        // Order from inside to outside: CSRF (before any database query), then
+        // `no-store` for every response, errors included. The session layer
+        // follows between the two with sign-in.
+        .layer(middleware::from_fn(require_csrf_header))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
+}
+
+/// 404 `not_found` as JSON, also for `/internal/…` on the public listener.
+pub async fn not_found() -> ApiError {
+    ApiError::NotFound
+}
+
+/// Rejects modifying requests without a non-empty `X-Requested-With`, and
+/// reading ones the browser loads as an image, stylesheet, font or the like:
+/// a page of an app on the same origin could otherwise embed
+/// `<img src="/api/v1/…">` and send the hub's cookie. The web app calls the
+/// API only via `fetch` (`empty`) and follows links as a `document`.
+pub async fn require_csrf_header(request: Request, next: Next) -> Response {
+    let safe = matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+    if safe && is_subresource(request.headers()) {
+        return ApiError::Csrf.into_response();
+    }
+    if safe || has_csrf_header(request.headers()) {
+        next.run(request).await
+    } else {
+        ApiError::Csrf.into_response()
+    }
+}
+
+/// For reading endpoints that still trigger something – such as counting
+/// towards a limit: requires `X-Requested-With` like modifying requests
+/// (otherwise 403 `csrf`). A foreign `<img>` or a navigation from a foreign
+/// page sends the cookie (`SameSite=Lax`), but never this header. Call before
+/// any limit.
+pub fn require_requested_with(headers: &HeaderMap) -> Result<(), ApiError> {
+    if has_csrf_header(headers) {
+        Ok(())
+    } else {
+        Err(ApiError::Csrf)
+    }
+}
+
+fn has_csrf_header(headers: &HeaderMap) -> bool {
+    headers.get(CSRF_HEADER).is_some_and(|v| !v.is_empty())
+}
+
+/// `Sec-Fetch-Dest` of an embedded resource (Fetch Metadata). Browsers
+/// without the header get through.
+fn is_subresource(headers: &HeaderMap) -> bool {
+    const SUBRESOURCES: [&str; 14] = [
+        "image",
+        "style",
+        "font",
+        "script",
+        "audio",
+        "video",
+        "track",
+        "object",
+        "embed",
+        "iframe",
+        "frame",
+        "xslt",
+        "audioworklet",
+        "paintworklet",
+    ];
+    headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|dest| SUBRESOURCES.iter().any(|d| dest.eq_ignore_ascii_case(d)))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::Body, http::StatusCode, routing::get};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    use super::*;
+    use crate::app::tests::state;
+
+    /// The API with one test route under the real middleware.
+    fn api(state: AppState) -> Router {
+        let routes = Router::new().route(
+            "/probe",
+            get(|| async { "read" }).post(|| async { "written" }),
+        );
+        Router::new()
+            .nest(PREFIX, with_middleware(routes))
+            .with_state(state)
+    }
+
+    async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Option<String>, String) {
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let cache = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .map(|v| v.to_str().unwrap().to_owned());
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, cache, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    fn request(method: Method, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut builder = Request::builder().method(method).uri("/api/v1/probe");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    const CSRF: (StatusCode, Option<&str>, &str) = (
+        StatusCode::FORBIDDEN,
+        Some("no-store"),
+        r#"{"error":"csrf"}"#,
+    );
+
+    fn owned(expected: (StatusCode, Option<&str>, &str)) -> (StatusCode, Option<String>, String) {
+        (
+            expected.0,
+            expected.1.map(str::to_owned),
+            expected.2.to_owned(),
+        )
+    }
+
+    #[tokio::test]
+    async fn modifying_requests_need_the_csrf_header() {
+        let (state, _tmp) = state().await;
+        let api = api(state);
+        assert_eq!(send(&api, request(Method::POST, &[])).await, owned(CSRF));
+        assert_eq!(
+            send(&api, request(Method::POST, &[(CSRF_HEADER, "")])).await,
+            owned(CSRF)
+        );
+        assert_eq!(
+            send(&api, request(Method::POST, &[(CSRF_HEADER, "fetch")])).await,
+            owned((StatusCode::OK, Some("no-store"), "written"))
+        );
+        // A form of another page cannot set the header, whatever it posts.
+        for method in [Method::PUT, Method::PATCH, Method::DELETE] {
+            assert_eq!(
+                send(&api, request(method, &[])).await.0,
+                StatusCode::FORBIDDEN
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reading_requests_must_not_be_subresources() {
+        let (state, _tmp) = state().await;
+        let api = api(state);
+        assert_eq!(
+            send(&api, request(Method::GET, &[])).await,
+            owned((StatusCode::OK, Some("no-store"), "read"))
+        );
+        for dest in ["empty", "document"] {
+            let response = send(&api, request(Method::GET, &[("sec-fetch-dest", dest)])).await;
+            assert_eq!(response.0, StatusCode::OK, "{dest}");
+        }
+        for dest in ["image", "IMAGE", "style", "script", "iframe", "font"] {
+            assert_eq!(
+                send(&api, request(Method::GET, &[("sec-fetch-dest", dest)])).await,
+                owned(CSRF),
+                "{dest}"
+            );
+        }
+        // The header does not help an embedded resource.
+        let embedded = request(
+            Method::GET,
+            &[("sec-fetch-dest", "image"), (CSRF_HEADER, "fetch")],
+        );
+        assert_eq!(send(&api, embedded).await, owned(CSRF));
+    }
+
+    #[tokio::test]
+    async fn unknown_paths_are_json_404() {
+        let (state, _tmp) = state().await;
+        let api = api(state);
+        let request = Request::get("/api/v1/missing").body(Body::empty()).unwrap();
+        assert_eq!(
+            send(&api, request).await,
+            owned((
+                StatusCode::NOT_FOUND,
+                Some("no-store"),
+                r#"{"error":"not_found"}"#
+            ))
+        );
+    }
+
+    #[test]
+    fn requested_with_for_reading_endpoints() {
+        let mut headers = HeaderMap::new();
+        assert!(require_requested_with(&headers).is_err());
+        headers.insert(CSRF_HEADER, HeaderValue::from_static("fetch"));
+        assert!(require_requested_with(&headers).is_ok());
+    }
+}
