@@ -638,10 +638,10 @@ it: the app may hold data from earlier access.
 |---|---|---|
 | `user.updated` | `{"sub", "username", "email", "name", "role", "locale"}` – the new values | update its copy of the user |
 | `user.locked` | `{"sub"}` | end everything that runs for the user without a request: open streams, push subscriptions, scheduled sending. Keep the data. |
-| `user.unlocked` | `{"sub"}` | nothing required |
+| `user.unlocked` | `{"sub"}` | record the user as no longer locked, so that writes for them are allowed again (also when replaying: a replayed `user.locked` is always followed by the matching `user.unlocked`) |
 | `user.deleted` | `{"sub"}` | delete the user's data (or anonymize it, as the app documents) |
 | `session.revoked` | `{"sub", "sid", "reason"}`; `reason`: `logout`, `revoked`, `expired`, `password_changed`, `locked` | end server-side state bound to this session (push subscriptions, streams) |
-| `access.changed` | `{"sub", "access": true\|false, "app_role": "<id>"\|null}` – for this app only | apply a new role; on `false` treat the user like a locked one in this app |
+| `access.changed` | `{"sub", "access": true\|false, "app_role": "<id>"\|null}` – for this app only | apply the new role; on `false` treat the user like a locked one in this app, on `true` lift that again |
 
 **Requests racing with events.** A request can check its identity before a
 `session.revoked`, `user.locked` or `user.deleted` event is processed and try
