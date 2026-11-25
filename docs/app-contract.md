@@ -651,6 +651,11 @@ the hub keeps events, 30 days) and the state of each user, and writes state
 bound to a session or user only in the same transaction that checks that the
 `sid` has not ended and the user is neither locked nor deleted. Processing an
 event records the change and removes the bound state in one transaction.
+That transaction also checks that the request's identity has not expired yet
+(`exp` with the leeway of § 4.3): a request that runs longer – including a
+long-lived stream or WebSocket – creates no such state, so every write happens
+within about a minute of a check by the hub and long before an ended `sid` is
+forgotten or leaves the event retention.
 
 ### 10.3 Catching up
 
