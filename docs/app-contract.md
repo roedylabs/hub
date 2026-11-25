@@ -664,8 +664,9 @@ exactly like a delivery. `limit` is 1–100 (default 100); `more` is `true`
 when further events follow.
 
 If `after` lies before the retention, the hub answers
-`410 {"error": "events_expired", "last_seq": <n>}`. The app has then missed
-events it cannot get back and **reconciles**, in this order:
+`410 {"error": "events_expired", "resume_after": <n>}`: `resume_after + 1` is
+the oldest event the hub still keeps. The app has missed the events before it,
+which it cannot get back, and **reconciles**, in this order:
 
 1. It stops processing events: until step 5 it answers every delivery with
    `503`, so that the hub retries later and no event overtakes the
@@ -676,13 +677,17 @@ events it cannot get back and **reconciles**, in this order:
    again on their next visit with a valid identity.
 3. It asks `GET /internal/v1/users/<sub>` for every user it holds data for
    and acts on the answer as described there.
-4. It stores `last_seq` as the highest `seq` processed.
-5. It processes deliveries again; the hub sends the events after `last_seq`.
+4. It stores `resume_after` as the highest `seq` processed.
+5. It processes deliveries again; the hub sends every event it still keeps,
+   from `resume_after + 1` on. Events that the lookups in step 3 already
+   reflect are applied once more, which is harmless: they come in order and
+   end with the current state, and deletion is final (below).
 
 Requests from browsers need no pause during reconciliation: their identity is
-at most 60 s old, so its session was still valid after every event the app
-missed. A session revoked later is covered by an event after `last_seq`,
-which step 5 delivers.
+at most 60 s old, so its session was still valid long after every event the
+app missed. If that session has been revoked since, the `session.revoked`
+event lies within the retention and step 5 delivers it, which ends whatever
+the request set up.
 
 **Deletion is final.** Once an app has deleted a user's data – after
 `user.deleted` or a `410 user_deleted` – it keeps the `sub` as deleted and
