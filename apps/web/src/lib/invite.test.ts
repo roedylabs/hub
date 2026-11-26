@@ -1,0 +1,1018 @@
+// Taken over from Roedy Mail (`apps/web/src/lib/invite.test.ts`).
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mockApi } from '#lib/state/fetch-mock.ts';
+import { normalizeName } from '#lib/name.ts';
+import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
+import {
+  CODE_LOCK_S,
+  DONE_MS,
+  InviteFlow,
+  STEP_REQUEST_MS,
+  type InviteField,
+  type InviteInfo,
+} from './invite.svelte.ts';
+
+const TOKEN = 'b'.repeat(43);
+const INFO: InviteInfo = {
+  email: 'jordan.hale@example.com',
+  name: 'Jordan Hale',
+  role: 'user',
+  inviter: 'Alice Baker',
+  expires_at: '2026-11-02T10:00:00.000Z',
+  expired: false,
+};
+const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const ENROLL = { secret: SECRET, uri: `otpauth://totp/Roedy%20Mail:jordan.hale%40example.com?secret=${SECRET}` };
+const USER = { id: '01K', username: 'jordan.hale', email: INFO.email, display_name: 'Jordan Hale', role: 'user' };
+const CODES = Array.from({ length: 10 }, (_, i) => `ABCD-EF${String(i).padStart(2, '2')}`);
+
+const CONFIG: PublicConfig = {
+  name: 'Acme Mail',
+  branding: BRAND0,
+  org: { name: null, website: null, help: null, email: null, imprint: null, privacy: null, terms: null, source: null },
+  setup_required: false,
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  session.config = null;
+});
+
+function hooks() {
+  return {
+    fail: vi.fn<(field?: InviteField) => void>(),
+    focus: vi.fn<(field: InviteField) => void>(),
+    missing: vi.fn<(field: InviteField) => void>(),
+    toLogin: vi.fn<() => void>(),
+    unlocked: vi.fn<() => void>(),
+    accepted: vi.fn<(left: boolean) => void>(),
+    signedIn: vi.fn(() => Promise.resolve(true)),
+    error: vi.fn<(text: string) => void>(),
+    offline: vi.fn<() => void>(),
+  };
+}
+
+const show = `GET invites/${TOKEN}`;
+const totp = `POST invites/${TOKEN}/totp`;
+const accept = `POST invites/${TOKEN}/accept`;
+const request = `POST invites/${TOKEN}/request`;
+
+/** Loaded invitation in step 1. */
+async function opened(routes: Parameters<typeof mockApi>[0] = {}, info: InviteInfo = INFO, h = hooks()) {
+  const api = mockApi({ [show]: [{ body: info }], ...routes });
+  const flow = new InviteFlow(h);
+  await flow.open(TOKEN);
+  return { flow, h, ...api };
+}
+
+/** Password and its confirmation. */
+function setPw(flow: InviteFlow, value: string) {
+  flow.editPw(value);
+  flow.editPw2(value);
+}
+
+/** In step 3 with name, password and secret. */
+async function atMfa(routes: Parameters<typeof mockApi>[0] = {}, h = hooks()) {
+  const ctx = await opened({ [totp]: [{ body: ENROLL }], ...routes }, INFO, h);
+  ctx.flow.accept();
+  setPw(ctx.flow, 'Safe-enough1');
+  await ctx.flow.submitName();
+  return ctx;
+}
+
+describe('loading', () => {
+  it('shows “Welcome” with the details of the invitation', async () => {
+    const { flow, calls } = await opened();
+    expect(calls[0]?.headers['X-Requested-With']).toBe('fetch');
+    expect(flow.status).toBe('ready');
+    expect(flow.showS1).toBe(true);
+    expect(flow.inviteFrom).toBe('Alice Baker');
+    expect(flow.fromInitials).toBe('AB');
+    expect(flow.inviteEmail).toBe('jordan.hale@example.com');
+    expect(flow.roleName).toBe('User');
+    expect(flow.untilLabel).toMatch(/2 November/);
+    // Name prefilled from the invitation
+    expect(flow.name).toBe('Jordan Hale');
+  });
+
+  it('names “Your administrator” without an inviter and administrators as such', async () => {
+    const { flow } = await opened({}, { ...INFO, inviter: null, name: null, role: 'admin' });
+    expect(flow.inviteFrom).toBe('your administrator');
+    expect(flow.inviteFromSubject).toBe('Your administrator');
+    expect(flow.roleName).toBe('Administrator');
+    expect(flow.name).toBe('');
+  });
+
+  it('treats an empty inviter like a missing one', async () => {
+    const { flow } = await opened({}, { ...INFO, inviter: '' });
+    expect(flow.inviteFrom).toBe('your administrator');
+    expect(flow.inviteFromSubject).toBe('Your administrator');
+    expect(flow.fromInitials).toBe('R');
+  });
+
+  it('shows the first letter of the app name in the tile without an inviter', async () => {
+    const none = { ...INFO, inviter: null };
+    // Default app name "Roedy Hub".
+    expect((await opened({}, none)).flow.fromInitials).toBe('R');
+    session.config = { ...CONFIG, name: 'mira mail' };
+    const { flow } = await opened({}, none);
+    expect(flow.fromInitials).toBe('M');
+    // The fallback text of the pill stays.
+    expect(flow.inviteFrom).toBe('your administrator');
+    session.config = { ...CONFIG, name: '  post' };
+    expect(flow.fromInitials).toBe('P');
+    // The whole first character, also outside the Basic Multilingual Plane.
+    session.config = { ...CONFIG, name: ' \u{10428} Mail' };
+    expect(flow.fromInitials).toBe('\u{10400}');
+    // Without an app name "A".
+    session.config = { ...CONFIG, name: '   ' };
+    expect(flow.fromInitials).toBe('A');
+    // With an inviter the initials of the name, whatever the app is called.
+    session.config = { ...CONFIG, name: 'Zeta' };
+    expect((await opened()).flow.fromInitials).toBe('AB');
+  });
+
+  it('shows expired invitations without steps', async () => {
+    const { flow } = await opened({}, { ...INFO, expired: true });
+    expect(flow.showExpired).toBe(true);
+    expect(flow.form).toBe(false);
+  });
+
+  it('distinguishes unknown links, server errors and a missing connection', async () => {
+    mockApi({
+      [show]: [
+        { status: 404, body: { error: 'not_found' } },
+        { status: 500, body: { error: 'internal' } },
+      ],
+    });
+    const flow = new InviteFlow(hooks());
+    await flow.open(TOKEN);
+    expect(flow.status).toBe('missing');
+    await flow.load();
+    expect(flow.status).toBe('failed');
+    expect(flow.offline).toBe(false);
+    // Retry: the error card stays until the response is there.
+    let answer: (value: { body: InviteInfo }) => void = () => {};
+    mockApi({ [show]: [() => new Promise((resolve) => (answer = resolve)), { status: 500, body: {} }] });
+    const retry = flow.load();
+    expect(flow.status).toBe('failed');
+    expect(flow.retrying).toBe(true);
+    answer({ body: INFO });
+    await retry;
+    expect(flow.status).toBe('ready');
+    expect(flow.retrying).toBe(false);
+    await flow.load();
+    expect(flow.status).toBe('failed');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    );
+    await flow.load();
+    expect(flow.status).toBe('failed');
+    expect(flow.offline).toBe(true);
+  });
+
+  it('discards the response of an earlier link', async () => {
+    let answer: (value: { body: InviteInfo }) => void = () => {};
+    mockApi({
+      [show]: [() => new Promise((resolve) => (answer = resolve))],
+      'GET invites/new': [{ body: { ...INFO, email: 'new@example.com' } }],
+    });
+    const flow = new InviteFlow(hooks());
+    const first = flow.open(TOKEN);
+    await flow.open('new');
+    answer({ body: INFO });
+    await first;
+    expect(flow.inviteEmail).toBe('new@example.com');
+  });
+});
+
+describe('step name and password', () => {
+  it('prefills the name from the invitation while it is empty and keeps it over “Back”', async () => {
+    const { flow, h } = await opened();
+    flow.accept();
+    expect(flow.showS2).toBe(true);
+    expect(h.focus).toHaveBeenCalledWith('name');
+    expect(flow.name).toBe('Jordan Hale');
+    flow.editName('Sam Rivers');
+    setPw(flow, 'Safe-enough1');
+    flow.back();
+    expect(flow.showS1).toBe(true);
+    flow.accept();
+    expect(flow.name).toBe('Sam Rivers');
+    expect(flow.pw).toBe('Safe-enough1');
+    expect(flow.pw2).toBe('Safe-enough1');
+    flow.editName(' ');
+    // Continue on the empty name, then Back: the prefilled name leaves no stale message.
+    await flow.submitName();
+    expect(flow.nameMsg).toBe('Please enter your name.');
+    flow.back();
+    flow.accept();
+    expect(flow.name).toBe('Jordan Hale');
+    expect(flow.nameMsg).toBeNull();
+    expect(flow.s2Ready).toBe(true);
+    // Without a name in the invitation the field stays empty.
+    const other = await opened({}, { ...INFO, name: null });
+    other.flow.accept();
+    expect(other.flow.name).toBe('');
+  });
+
+  it('greys out Continue until the name is valid and all four chips are met', async () => {
+    const { flow } = await opened();
+    flow.accept();
+    expect(flow.s2Ready).toBe(false);
+    flow.editPw('Safe-enough1');
+    expect(flow.pwOk).toBe(true);
+    expect(flow.pwMatch).toBe(false);
+    expect(flow.s2Ready).toBe(false);
+    flow.editPw2('Safe-enough');
+    expect(flow.s2Ready).toBe(false);
+    flow.editPw2('Safe-enough1');
+    expect(flow.pwMatch).toBe(true);
+    expect(flow.s2Ready).toBe(true);
+    // Checked while typing: the message goes as soon as the name fits again.
+    flow.editName('Jordan (Sales)');
+    expect(flow.nameMsg).toBe('The name contains invalid characters.');
+    expect(flow.s2Ready).toBe(false);
+    flow.editName('O’Brien-Núñez');
+    expect(flow.nameMsg).toBeNull();
+    expect(flow.s2Ready).toBe(true);
+    flow.editName('   ');
+    expect(flow.nameMsg).toBeNull();
+    expect(flow.s2Ready).toBe(false);
+    flow.editName('Jordan');
+    // Over 1024 bytes: the message under the password while typing.
+    setPw(flow, 'aA1' + '€'.repeat(400)); // fewer than 1024 characters, but more bytes
+    expect(flow.pwMsg).toBe('The password is too long.');
+    expect(flow.pwInvalid).toBe(true);
+    expect(flow.s2Ready).toBe(false);
+    setPw(flow, 'Safe-enough1');
+    expect(flow.pwMsg).toBeNull();
+    expect(flow.s2Ready).toBe(true);
+  });
+
+  it('moves Enter to the first field that is missing something, without a request', async () => {
+    const { flow, h, calls } = await opened();
+    flow.accept();
+    // Empty name: its message with the shake.
+    flow.editName('  ');
+    await flow.submitName();
+    expect(flow.nmErr).toBe('Please enter your name.');
+    expect(flow.nameMsg).toBe('Please enter your name.');
+    expect(h.fail).toHaveBeenLastCalledWith('name');
+    flow.editName('Jordan');
+    expect(flow.nameMsg).toBeNull();
+    // Invalid name: shake and focus, the message is there already.
+    flow.editName('Jordan2');
+    h.fail.mockClear();
+    await flow.submitName();
+    expect(h.fail).toHaveBeenCalledExactlyOnceWith('name');
+    expect(flow.nameMsg).toBe('The name contains invalid characters.');
+    flow.editName('Jordan');
+    // Password incomplete: only the focus, no message, no shake.
+    h.fail.mockClear();
+    flow.editPw('short');
+    await flow.submitName();
+    expect(h.missing).toHaveBeenLastCalledWith('pw');
+    flow.editPw('Safe-enough1');
+    await flow.submitName();
+    expect(h.missing).toHaveBeenLastCalledWith('pw2');
+    expect(h.fail).not.toHaveBeenCalled();
+    expect(flow.pw2Msg).toBeNull();
+    // A filled confirmation that differs: the mismatch with the shake.
+    flow.editPw2('Safe-enough2');
+    await flow.submitName();
+    expect(flow.pw2Err).toBe(true);
+    expect(flow.pw2Msg).toBe('The passwords don’t match.');
+    expect(h.fail).toHaveBeenLastCalledWith('pw2');
+    // Editing either password clears it.
+    flow.editPw2('Safe-enough');
+    expect(flow.pw2Msg).toBeNull();
+    await flow.submitName();
+    expect(flow.pw2Msg).not.toBeNull();
+    flow.editPw('Safe-enough');
+    expect(flow.pw2Msg).toBeNull();
+    expect(flow.s2Ready).toBe(true);
+    expect(calls.map((c) => c.method)).toEqual(['GET']);
+  });
+
+  it('fetches the secret on Continue for the QR code and the key', async () => {
+    const { flow, h, calls } = await atMfa();
+    expect(calls.at(-1)?.method).toBe('POST');
+    expect(flow.showS3).toBe(true);
+    expect(flow.secret).toBe(SECRET);
+    expect(flow.uri).toBe(ENROLL.uri);
+    expect(h.focus).toHaveBeenLastCalledWith('otp');
+  });
+
+  it('keeps the secret over “Back” from step 3: Continue shows it again without a request', async () => {
+    const { flow, h, calls } = await atMfa();
+    flow.editOtp('12');
+    flow.back();
+    expect(flow.showS2).toBe(true);
+    expect(h.focus).toHaveBeenLastCalledWith('name');
+    // Only the typed code goes; name and both passwords stay.
+    expect(flow.otp).toBe('');
+    expect(flow.secret).toBe(SECRET);
+    expect(flow.name).toBe('Jordan Hale');
+    expect(flow.pw2).toBe('Safe-enough1');
+    await flow.submitName();
+    expect(flow.showS3).toBe(true);
+    expect(flow.secret).toBe(SECRET);
+    expect(flow.uri).toBe(ENROLL.uri);
+    expect(h.focus).toHaveBeenLastCalledWith('otp');
+    expect(calls.filter((c) => c.path.endsWith('/totp'))).toHaveLength(1);
+  });
+
+  it('locks Continue after 429 with a bar that runs empty, the fields stay editable', async () => {
+    vi.useFakeTimers();
+    const { flow, h, calls } = await opened({
+      [totp]: [
+        { status: 429, body: { error: 'rate_limited', retry_after: 90 } },
+        { status: 429, body: { error: 'rate_limited' } },
+        { body: ENROLL },
+      ],
+    });
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    await flow.submitName();
+    expect(flow.linkLocked).toBe(true);
+    expect(flow.linkLockText).toBe('Try again in 2 minutes.');
+    expect(flow.linkLock).toEqual({ left: 90, total: 90 });
+    expect(flow.s2Ready).toBe(false);
+    expect(h.fail).toHaveBeenCalledWith();
+    expect(flow.showS2).toBe(true);
+    // Locked: editable, but Continue sends nothing.
+    flow.editName('Jordan');
+    await flow.submitName();
+    expect(calls.filter((c) => c.path.endsWith('/totp'))).toHaveLength(1);
+    vi.advanceTimersByTime(45_000);
+    expect(flow.linkLockText).toBe('Try again in 45 seconds.');
+    expect(flow.linkLock).toEqual({ left: 45, total: 90 });
+    vi.advanceTimersByTime(45_000);
+    expect(flow.linkLock).toBeNull();
+    expect(flow.linkLockText).toBe('');
+    expect(flow.s2Ready).toBe(true);
+    // Without `retry_after`: 30 seconds.
+    await flow.submitName();
+    expect(flow.linkLock).toEqual({ left: 30, total: 30 });
+    vi.advanceTimersByTime(30_000);
+    await flow.submitName();
+    expect(flow.showS3).toBe(true);
+    flow.dispose();
+  });
+
+  it('shows “Saving …” and locks Back while the key is requested', async () => {
+    let answer: (value: { body: unknown }) => void = () => {};
+    const { flow } = await opened({ [totp]: [() => new Promise((resolve) => (answer = resolve))] });
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    const done = flow.submitName();
+    expect(flow.loading).toBe(true);
+    expect(flow.busy).toBe(true);
+    flow.back();
+    expect(flow.showS2).toBe(true);
+    answer({ body: ENROLL });
+    await done;
+    expect(flow.showS3).toBe(true);
+  });
+
+  it('ignores the key when the page was left meanwhile', async () => {
+    let answer: (value: { body: unknown }) => void = () => {};
+    const { flow } = await opened({ [totp]: [() => new Promise((resolve) => (answer = resolve))] });
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    const done = flow.submitName();
+    flow.dispose();
+    answer({ body: ENROLL });
+    await done;
+    expect(flow.showS2).toBe(true);
+    expect(flow.secret).toBe('');
+  });
+
+  it('wipes the passwords and the key when the invitation expired on Continue', async () => {
+    const { flow } = await opened({ [totp]: [{ status: 422, body: { error: 'invite_expired' } }] });
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    await flow.submitName();
+    expect(flow.showExpired).toBe(true);
+    expect(flow.pw).toBe('');
+    expect(flow.pw2).toBe('');
+    expect(flow.secret).toBe('');
+  });
+
+  it('shows other answers as the error toast and stays on the step', async () => {
+    const { flow, h } = await opened({ [totp]: [{ status: 500, body: { error: 'internal' } }] });
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    await flow.submitName();
+    expect(h.error).toHaveBeenCalledWith('That didn’t work. Please try again.');
+    expect(flow.showS2).toBe(true);
+    expect(flow.loading).toBe(false);
+    expect(flow.pw2).toBe('Safe-enough1');
+  });
+
+  it('never writes the passwords to storage', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const { flow } = await atMfa();
+    flow.back();
+    flow.editPw2('Safe-enough1');
+    const stored = [localStorage, sessionStorage].flatMap((store) =>
+      Object.keys(store).map((key) => `${key}=${store.getItem(key) ?? ''}`),
+    );
+    expect(stored.join('\n')).not.toContain('Safe-enough1');
+  });
+
+  it('shows the error page if the invitation is gone meanwhile', async () => {
+    const { flow } = await opened({ [totp]: [{ status: 404, body: { error: 'not_found' } }] });
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    await flow.submitName();
+    expect(flow.status).toBe('missing');
+  });
+});
+
+describe('step multi-factor', () => {
+  it('sends six digits by itself and then shows the codes', async () => {
+    const h = hooks();
+    const { flow, calls } = await atMfa(
+      { [accept]: [{ status: 201, body: { user: USER, recovery_codes: CODES } }] },
+      h,
+    );
+    flow.editOtp('123 4');
+    expect(flow.otp).toBe('1234');
+    await flow.submitOtp();
+    expect(flow.otpErr).toBe('short');
+    expect(h.fail).toHaveBeenLastCalledWith('otp');
+    // Fewer than six digits send nothing.
+    expect(calls.filter((c) => c.path.endsWith('/accept'))).toHaveLength(0);
+    flow.editOtp('123 456');
+    expect(flow.otpErr).toBeNull();
+    expect(flow.otpLoading).toBe(true);
+    await vi.waitFor(() => expect(flow.showS4).toBe(true));
+    expect(calls.at(-1)?.body).toEqual({ name: 'Jordan Hale', password: 'Safe-enough1', code: '123456' });
+    expect(h.accepted).toHaveBeenCalledExactlyOnceWith(false);
+    expect(flow.accepted).toBe(true);
+    expect(flow.codes).toEqual(CODES);
+    // Password and secret do not stay in memory.
+    expect(flow.pw).toBe('');
+    expect(flow.secret).toBe('');
+    expect(flow.canBack).toBe(false);
+  });
+
+  it('keeps digits only, at most six, and confirms the sixth digit once', async () => {
+    let answer: (value: { status: number; body: unknown }) => void = () => {};
+    const { flow, calls } = await atMfa({ [accept]: [() => new Promise((resolve) => (answer = resolve))] });
+    flow.editOtp('12a-3 45');
+    expect(flow.otp).toBe('12345');
+    flow.editOtp('1234567');
+    expect(flow.otp).toBe('123456');
+    expect(flow.otpLoading).toBe(true);
+    // While the check runs the field takes no edits and Confirm sends nothing more.
+    flow.editOtp('654321');
+    await flow.submitOtp();
+    expect(flow.otp).toBe('123456');
+    expect(calls.filter((c) => c.path.endsWith('/accept'))).toHaveLength(1);
+    answer({ status: 201, body: { user: USER, recovery_codes: CODES } });
+    await vi.waitFor(() => expect(flow.showS4).toBe(true));
+  });
+
+  it('clears a wrong code and shows the message until the next edit', async () => {
+    const h = hooks();
+    const { flow } = await atMfa(
+      {
+        [accept]: [
+          { status: 422, body: { error: 'invalid_code' } },
+          { status: 422, body: { error: 'code_used' } },
+          { status: 422, body: { error: 'invalid', fields: { code: { code: 'invalid' } } } },
+        ],
+      },
+      h,
+    );
+    for (const code of ['000000', '111111', '222222']) {
+      h.fail.mockClear();
+      flow.editOtp(code);
+      await vi.waitFor(() => expect(flow.otpErr).toBe('invalid'));
+      expect(flow.otp).toBe('');
+      expect(h.fail).toHaveBeenCalledExactlyOnceWith('otp');
+      expect(flow.showS3).toBe(true);
+      // Any edit clears the message.
+      flow.editOtp('1');
+      expect(flow.otpErr).toBeNull();
+      flow.editOtp('');
+    }
+  });
+
+  it('locks the code after 429 with a countdown from retry_after until it runs out', async () => {
+    vi.useFakeTimers();
+    const h = hooks();
+    const { flow, calls } = await atMfa(
+      { [accept]: [{ status: 429, body: { error: 'rate_limited', retry_after: 120 } }] },
+      h,
+    );
+    flow.editOtp('111111');
+    await vi.waitFor(() => expect(flow.codeLocked).toBe(true));
+    expect(flow.otp).toBe('');
+    expect(flow.otpErr).toBeNull();
+    expect(flow.codeLock).toEqual({ left: 120, total: 120 });
+    // The shake, but no field to focus: it is disabled.
+    expect(h.fail).toHaveBeenLastCalledWith();
+    // Locked: the field takes nothing and Confirm sends nothing.
+    flow.editOtp('2');
+    expect(flow.otp).toBe('');
+    await flow.submitOtp();
+    expect(calls.filter((c) => c.path.endsWith('/accept'))).toHaveLength(1);
+    vi.advanceTimersByTime(60_000);
+    expect(flow.codeLock).toEqual({ left: 60, total: 120 });
+    // Back and forward again: the lock still runs, without a new key.
+    flow.back();
+    expect(flow.showS2).toBe(true);
+    await flow.submitName();
+    expect(flow.showS3).toBe(true);
+    expect(flow.codeLock).toEqual({ left: 60, total: 120 });
+    expect(calls.filter((c) => c.path.endsWith('/totp'))).toHaveLength(1);
+    expect(h.unlocked).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60_000);
+    expect(flow.codeLocked).toBe(false);
+    expect(flow.codeLock).toBeNull();
+    expect(h.unlocked).toHaveBeenCalledTimes(1);
+    flow.dispose();
+  });
+
+  it('locks the code for 15 minutes when the 429 names no time', async () => {
+    vi.useFakeTimers();
+    const { flow } = await atMfa({ [accept]: [{ status: 429, body: { error: 'rate_limited' } }] });
+    flow.editOtp('111111');
+    await vi.waitFor(() => expect(flow.codeLocked).toBe(true));
+    expect(flow.codeLock).toEqual({ left: CODE_LOCK_S, total: CODE_LOCK_S });
+    flow.dispose();
+  });
+
+  it('goes back to step 2 on server field errors and keeps the secret', async () => {
+    const h = hooks();
+    const { flow, calls } = await atMfa(
+      {
+        [accept]: [
+          {
+            status: 422,
+            body: { error: 'invalid', fields: { password: { code: 'policy', rules: ['case'] } } },
+          },
+        ],
+      },
+      h,
+    );
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(flow.showS2).toBe(true));
+    expect(flow.pwErr).toBe('policy');
+    expect(flow.pwBad).toEqual(['case']);
+    expect(flow.pwInvalid).toBe(true);
+    // The named rule counts as not met until the password is edited.
+    expect(flow.pwOk).toBe(false);
+    expect(flow.s2Ready).toBe(false);
+    expect(h.fail).toHaveBeenLastCalledWith('pw');
+    expect(flow.otp).toBe('');
+    // The app already has the secret: "Continue" does not request a new one.
+    expect(flow.secret).toBe(SECRET);
+    setPw(flow, 'Even-safer2');
+    expect(flow.pwBad).toEqual([]);
+    await flow.submitName();
+    expect(flow.showS3).toBe(true);
+    expect(calls.filter((c) => c.path.endsWith('/totp'))).toHaveLength(1);
+  });
+
+  it('shows name errors in the line and other errors as a toast', async () => {
+    const h = hooks();
+    const { flow } = await atMfa(
+      {
+        [totp]: [{ body: ENROLL }, { body: ENROLL }],
+        [accept]: [
+          { status: 422, body: { error: 'invalid', fields: { name: { code: 'required' } } } },
+          { status: 422, body: { error: 'invalid', fields: { name: { code: 'too_long' } } } },
+          { status: 422, body: { error: 'invalid', fields: { name: { code: 'invalid' } } } },
+          { status: 500, body: { error: 'internal' } },
+        ],
+      },
+      h,
+    );
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(flow.showS2).toBe(true));
+    expect(flow.nmErr).toBe('Please enter your name.');
+    expect(h.fail).toHaveBeenLastCalledWith('name');
+    // Too long or invalid characters according to the server: also at the name, no toast.
+    for (const text of ['The name is too long.', 'The name contains invalid characters.']) {
+      flow.editName('Jordan');
+      await flow.submitName();
+      expect(flow.showS3).toBe(true);
+      flow.editOtp('123456');
+      await vi.waitFor(() => expect(flow.showS2).toBe(true));
+      expect(flow.nmErr).toBe(text);
+      expect(h.fail).toHaveBeenLastCalledWith('name');
+    }
+    expect(h.error).not.toHaveBeenCalled();
+    flow.editName('Jordan');
+    await flow.submitName();
+    expect(flow.showS3).toBe(true);
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(h.error).toHaveBeenCalledWith('That didn’t work. Please try again.'));
+    expect(flow.showS3).toBe(true);
+  });
+
+  it('checks length and invisible characters of the name before sending', async () => {
+    const h = hooks();
+    const { flow, calls } = await opened({}, INFO, h);
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    flow.editName('J'.repeat(101));
+    await flow.submitName();
+    expect(flow.nameMsg).toBe('The name is too long.');
+    expect(h.fail).toHaveBeenLastCalledWith('name');
+    flow.editName('Jordan\u200BHale');
+    await flow.submitName();
+    expect(flow.nameMsg).toBe('The name contains invalid characters.');
+    expect(flow.showS2).toBe(true);
+    // No call except loading the invitation.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reports “No connection” for a request without an answer and keeps what was entered', async () => {
+    const h = hooks();
+    const { flow } = await atMfa({}, h);
+    // No response for `accept`: `fetch` fails.
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(h.offline).toHaveBeenCalledTimes(1));
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.fail).not.toHaveBeenCalled();
+    expect(flow.showS3).toBe(true);
+    expect(flow.otp).toBe('123456');
+    expect(flow.pw).toBe('Safe-enough1');
+  });
+
+  it('reports “No connection” when Continue gets no answer in time', async () => {
+    const ctrl = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ctrl.signal);
+    const h = hooks();
+    // The request ends through the signal `fetch` got, so the deadline must reach it.
+    let sent: AbortSignal | null | undefined;
+    const hang = () => {
+      sent = vi.mocked(fetch).mock.calls.at(-1)?.[1]?.signal;
+      return new Promise<never>((_, reject) =>
+        sent?.addEventListener('abort', () => reject(new DOMException('No answer', 'TimeoutError'))),
+      );
+    };
+    const { flow } = await opened({ [totp]: [hang] }, INFO, h);
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    const done = flow.submitName();
+    expect(flow.loading).toBe(true);
+    expect(timeout).toHaveBeenCalledWith(STEP_REQUEST_MS);
+    expect(sent).toBe(ctrl.signal);
+    ctrl.abort(new DOMException('No answer', 'TimeoutError'));
+    await done;
+    expect(h.offline).toHaveBeenCalledTimes(1);
+    expect(flow.loading).toBe(false);
+    expect(flow.showS2).toBe(true);
+    timeout.mockRestore();
+  });
+
+  it('reports “No connection” when Continue gets no answer', async () => {
+    const h = hooks();
+    const { flow } = await opened({ [totp]: [() => Promise.reject(new TypeError('Failed to fetch'))] }, INFO, h);
+    flow.accept();
+    setPw(flow, 'Safe-enough1');
+    await flow.submitName();
+    expect(h.offline).toHaveBeenCalledTimes(1);
+    expect(h.error).not.toHaveBeenCalled();
+    expect(flow.showS2).toBe(true);
+    expect(flow.loading).toBe(false);
+  });
+
+  it('goes to “Invitation expired” when it expired while confirming', async () => {
+    const h = hooks();
+    const { flow } = await atMfa({ [accept]: [{ status: 422, body: { error: 'invite_expired' } }] }, h);
+    flow.editOtp('654321');
+    await vi.waitFor(() => expect(flow.showExpired).toBe(true));
+    expect(flow.info?.expired).toBe(true);
+    // Passwords, key and code are wiped.
+    expect([flow.pw, flow.pw2, flow.secret, flow.uri, flow.otp]).toEqual(['', '', '', '', '']);
+  });
+
+  it('creates the account without an app on “Set up later” and welcomes without the codes', async () => {
+    vi.useFakeTimers();
+    const h = hooks();
+    const { flow, calls } = await atMfa({ [accept]: [{ status: 201, body: { user: USER, recovery_codes: null } }] }, h);
+    flow.editOtp('12');
+    await flow.skipMfa();
+    // Without `code`: the typed digits do not go along.
+    expect(calls.at(-1)?.body).toEqual({ name: 'Jordan Hale', password: 'Safe-enough1' });
+    expect(h.accepted).toHaveBeenCalledExactlyOnceWith(false);
+    expect(flow.accepted).toBe(true);
+    expect(flow.withApp).toBe(false);
+    expect(flow.showDone).toBe(true);
+    expect([flow.pw, flow.secret, flow.otp]).toEqual(['', '', '']);
+    vi.advanceTimersByTime(DONE_MS);
+    await vi.waitFor(() => expect(h.signedIn).toHaveBeenCalledOnce());
+  });
+
+  it('sends to the sign-in when the session of an account without an app does not arrive', async () => {
+    vi.useFakeTimers();
+    const h = hooks();
+    h.signedIn.mockResolvedValueOnce(false);
+    const { flow } = await atMfa({ [accept]: [{ status: 201, body: { user: USER, recovery_codes: null } }] }, h);
+    await flow.skipMfa();
+    vi.advanceTimersByTime(DONE_MS);
+    await vi.waitFor(() => expect(h.toLogin).toHaveBeenCalledOnce());
+    expect(h.error).toHaveBeenCalledWith('Couldn’t sign in. Allow cookies for this site and try again.');
+  });
+
+  it('keeps the fields on “Set up later” when the server rejects them', async () => {
+    const h = hooks();
+    const { flow } = await atMfa(
+      { [accept]: [{ status: 422, body: { error: 'invalid', fields: { password: { code: 'too_long' } } } }] },
+      h,
+    );
+    await flow.skipMfa();
+    expect(flow.accepted).toBe(false);
+    expect(flow.step).toBe(2);
+    expect(flow.pwErr).toBe('too_long');
+    expect(h.fail).toHaveBeenLastCalledWith('pw');
+  });
+
+  it('asks for a new key on the next Continue when the server holds none any more', async () => {
+    const h = hooks();
+    const NEW = { secret: 'A'.repeat(32), uri: `otpauth://totp/x?secret=${'A'.repeat(32)}` };
+    const { flow, calls } = await atMfa(
+      { [totp]: [{ body: ENROLL }, { body: NEW }], [accept]: [{ status: 422, body: { error: 'totp_required' } }] },
+      h,
+    );
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(h.error).toHaveBeenCalledWith('That didn’t work. Please try again.'));
+    // The key shown stays on step 3 until Back.
+    expect(flow.showS3).toBe(true);
+    expect(flow.secret).toBe(SECRET);
+    flow.back();
+    await flow.submitName();
+    expect(flow.showS3).toBe(true);
+    expect(flow.secret).toBe(NEW.secret);
+    expect(calls.filter((c) => c.path.endsWith('/totp'))).toHaveLength(2);
+    // The new key counts again: Back and Continue show it without a request.
+    flow.back();
+    await flow.submitName();
+    expect(calls.filter((c) => c.path.endsWith('/totp'))).toHaveLength(2);
+  });
+
+  it('shows the error page for a withdrawn invitation and a toast for other answers', async () => {
+    const h = hooks();
+    const { flow } = await atMfa(
+      {
+        [accept]: [
+          { status: 422, body: { error: 'totp_required' } },
+          { status: 404, body: { error: 'not_found' } },
+        ],
+      },
+      h,
+    );
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(h.error).toHaveBeenCalledWith('That didn’t work. Please try again.'));
+    expect(flow.showS3).toBe(true);
+    expect(flow.otpLoading).toBe(false);
+    flow.editOtp('654321');
+    await vi.waitFor(() => expect(flow.status).toBe('missing'));
+  });
+
+  it('waits with “Back” while the check is running', async () => {
+    let answer: (value: { status: number; body: unknown }) => void = () => {};
+    const { flow } = await atMfa({ [accept]: [() => new Promise((resolve) => (answer = resolve))] });
+    flow.editOtp('123456');
+    expect(flow.busy).toBe(true);
+    flow.back();
+    expect(flow.showS3).toBe(true);
+    answer({ status: 201, body: { user: USER, recovery_codes: CODES } });
+    await vi.waitFor(() => expect(flow.showS4).toBe(true));
+  });
+
+  it('reports a created account even after leaving the page', async () => {
+    let answer: (value: { status: number; body: unknown }) => void = () => {};
+    const h = hooks();
+    const { flow } = await atMfa({ [accept]: [() => new Promise((resolve) => (answer = resolve))] }, h);
+    flow.editOtp('123456');
+    flow.dispose();
+    answer({ status: 201, body: { user: USER, recovery_codes: CODES } });
+    // The page then loads the new session although nobody sees the codes.
+    await vi.waitFor(() => expect(h.accepted).toHaveBeenCalledExactlyOnceWith(true));
+    expect(flow.showS4).toBe(false);
+  });
+
+  it('sends the name the way the backend accepts it', async () => {
+    const { flow, calls } = await atMfa({ [accept]: [{ status: 201, body: { user: USER, recovery_codes: CODES } }] });
+    expect(normalizeName('  Max\tExample \n ')).toBe('Max Example');
+    flow.back();
+    flow.editName('Jordan\tHale');
+    await flow.submitName();
+    flow.editOtp('123456');
+    await vi.waitFor(() => expect(flow.showS4).toBe(true));
+    expect(calls.at(-1)?.body).toMatchObject({ name: 'Jordan Hale' });
+  });
+});
+
+describe('step recovery codes', () => {
+  async function atCodes(h = hooks()) {
+    const ctx = await atMfa({ [accept]: [{ status: 201, body: { user: USER, recovery_codes: CODES } }] }, h);
+    ctx.flow.editOtp('123456');
+    await vi.waitFor(() => expect(ctx.flow.showS4).toBe(true));
+    return ctx;
+  }
+
+  it('requires the confirmation and redirects after “Welcome”', async () => {
+    const h = hooks();
+    const { flow, calls } = await atCodes(h);
+    vi.useFakeTimers();
+    const before = calls.length;
+    flow.finish();
+    expect(flow.savedShown).toBe(true);
+    // The shake and the focus on the checkbox; "Activate account" is never greyed out and sends nothing.
+    expect(h.fail).toHaveBeenCalledWith('saved');
+    expect(flow.showS4).toBe(true);
+    flow.toggleSaved();
+    expect(flow.savedShown).toBe(false);
+    flow.finish();
+    expect(flow.showDone).toBe(true);
+    expect(flow.firstName).toBe('Jordan');
+    await vi.advanceTimersByTimeAsync(DONE_MS);
+    expect(h.signedIn).toHaveBeenCalledOnce();
+    // "Activate account" no longer asks the server: the account already exists.
+    expect(calls).toHaveLength(before);
+  });
+
+  it('goes back to the codes if the session does not arrive', async () => {
+    const h = hooks();
+    h.signedIn.mockResolvedValue(false);
+    const { flow } = await atCodes(h);
+    vi.useFakeTimers();
+    flow.toggleSaved();
+    flow.finish();
+    await vi.advanceTimersByTimeAsync(DONE_MS);
+    expect(flow.showS4).toBe(true);
+    expect(h.error).toHaveBeenCalledWith('Couldn’t sign in. Allow cookies for this site and try again.');
+    // The codes and the ticked box stay; "Activate account" tries again.
+    expect(flow.codes).toEqual(CODES);
+    expect(flow.saved).toBe(true);
+    expect(flow.savedShown).toBe(false);
+    h.signedIn.mockResolvedValue(true);
+    flow.finish();
+    expect(flow.showDone).toBe(true);
+    await vi.advanceTimersByTimeAsync(DONE_MS);
+    expect(h.signedIn).toHaveBeenCalledTimes(2);
+    expect(flow.showDone).toBe(true);
+  });
+
+  it('keeps the codes in memory only', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const { flow } = await atCodes();
+    flow.toggleSaved();
+    expect(flow.codes).toEqual(CODES);
+    const stored = [localStorage, sessionStorage]
+      .flatMap((store) => Object.keys(store).map((key) => `${key}=${store.getItem(key) ?? ''}`))
+      .join('\n');
+    for (const code of CODES) expect(stored).not.toContain(code);
+  });
+});
+
+describe('expired', () => {
+  const EXPIRED = { ...INFO, expired: true };
+
+  it('requests a new invitation', async () => {
+    const { flow, calls } = await opened({ [request]: [{ status: 202 }] }, EXPIRED);
+    await flow.request();
+    expect(calls.at(-1)).toMatchObject({ method: 'POST', path: `invites/${TOKEN}/request` });
+    expect(flow.showRequested).toBe(true);
+    expect(flow.showExpired).toBe(false);
+  });
+
+  it('is busy while the request runs and takes no second press', async () => {
+    let answer: (value: { status: number }) => void = () => {};
+    const { flow, calls } = await opened(
+      { [request]: [() => new Promise<{ status: number }>((resolve) => (answer = resolve))] },
+      EXPIRED,
+    );
+    const done = flow.request();
+    expect(flow.reqLoading).toBe(true);
+    expect(flow.busy).toBe(true);
+    void flow.request();
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    answer({ status: 202 });
+    await done;
+    expect(flow.reqLoading).toBe(false);
+    expect(flow.showRequested).toBe(true);
+  });
+
+  it('names the inviter, or the administrator without one', async () => {
+    const { flow } = await opened({}, EXPIRED);
+    expect([flow.inviteFrom, flow.inviteFromSubject]).toEqual(['Alice Baker', 'Alice Baker']);
+    const none = await opened({}, { ...EXPIRED, inviter: null });
+    expect([none.flow.inviteFrom, none.flow.inviteFromSubject]).toEqual(['your administrator', 'Your administrator']);
+  });
+
+  it('locks the request after 429 until `retry_after` has run out (fallback 30 s), shared with step 2', async () => {
+    vi.useFakeTimers();
+    const h = hooks();
+    const { flow, calls } = await opened(
+      {
+        [request]: [
+          { status: 429, body: { error: 'rate_limited', retry_after: 60 } },
+          { status: 429, body: { error: 'rate_limited' } },
+        ],
+      },
+      EXPIRED,
+      h,
+    );
+    await flow.request();
+    expect(flow.linkLocked).toBe(true);
+    expect(flow.linkLockText).toBe('Try again in 1 minute.');
+    expect(flow.linkLock).toEqual({ left: 60, total: 60 });
+    expect(h.fail).toHaveBeenCalledExactlyOnceWith();
+    expect(flow.showExpired).toBe(true);
+    // Locked: a press sends nothing.
+    await flow.request();
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(flow.linkLock).toEqual({ left: 40, total: 60 });
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(flow.linkLocked).toBe(false);
+    expect(flow.linkLock).toBeNull();
+    await flow.request();
+    expect(flow.linkLock).toEqual({ left: 30, total: 30 });
+    flow.dispose();
+  });
+
+  it('shows the error page for 404, “No connection” without an answer and the toast otherwise', async () => {
+    const h = hooks();
+    const { flow } = await opened(
+      {
+        [request]: [
+          { status: 500, body: { error: 'internal' } },
+          () => Promise.reject(new TypeError('Failed to fetch')),
+          { status: 404, body: { error: 'not_found' } },
+        ],
+      },
+      EXPIRED,
+      h,
+    );
+    await flow.request();
+    expect(h.error).toHaveBeenCalledExactlyOnceWith('That didn’t work. Please try again.');
+    expect(flow.showExpired).toBe(true);
+    await flow.request();
+    expect(h.offline).toHaveBeenCalledTimes(1);
+    expect(h.error).toHaveBeenCalledTimes(1);
+    expect(flow.showExpired).toBe(true);
+    expect(flow.reqLoading).toBe(false);
+    await flow.request();
+    expect(flow.status).toBe('missing');
+  });
+
+  it('gives up after STEP_REQUEST_MS and reports “No connection”', async () => {
+    const ctrl = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ctrl.signal);
+    const h = hooks();
+    let sent: AbortSignal | null | undefined;
+    const hang = () => {
+      sent = vi.mocked(fetch).mock.calls.at(-1)?.[1]?.signal;
+      return new Promise<never>((_, reject) =>
+        sent?.addEventListener('abort', () => reject(new DOMException('No answer', 'TimeoutError'))),
+      );
+    };
+    const { flow } = await opened({ [request]: [hang] }, EXPIRED, h);
+    const done = flow.request();
+    expect(timeout).toHaveBeenCalledWith(STEP_REQUEST_MS);
+    expect(sent).toBe(ctrl.signal);
+    ctrl.abort(new DOMException('No answer', 'TimeoutError'));
+    await done;
+    expect(h.offline).toHaveBeenCalledTimes(1);
+    expect(flow.reqLoading).toBe(false);
+    expect(flow.showExpired).toBe(true);
+    timeout.mockRestore();
+  });
+
+  it('reloads if the invitation applies again meanwhile, and reports locks', async () => {
+    const { flow } = await opened(
+      {
+        [request]: [
+          { status: 429, body: { error: 'rate_limited', retry_after: 60 } },
+          { status: 422, body: { error: 'invite_valid' } },
+        ],
+        [show]: [{ body: { ...INFO, expired: true } }, { body: INFO }],
+      },
+      { ...INFO, expired: true },
+    );
+    await flow.request();
+    expect(flow.linkLocked).toBe(true);
+    expect(flow.linkLockText).toBe('Try again in 1 minute.');
+    flow.locks.clear('link');
+    await flow.request();
+    await vi.waitFor(() => expect(flow.showS1).toBe(true));
+    expect(flow.expired).toBe(false);
+    flow.dispose();
+  });
+});

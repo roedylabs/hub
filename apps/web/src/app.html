@@ -2,8 +2,19 @@
 <html lang="en" data-mode="system">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!--
+      resizes-content: the on-screen keyboard shrinks the layout (and 100dvh) instead of only covering it, so
+      full-height pages keep their bottom bar above the keyboard. viewport-fit=cover: the page draws behind the
+      navigation bar (edge to edge); layouts keep clear of it via --sab (app.css). Taken over from Roedy Mail.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta name="color-scheme" content="dark light" />
+    <link rel="icon" href="/branding/app-icon-192.png" type="image/png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/branding/apple-touch-icon.png" />
     %sveltekit.head%
   </head>
   <body>

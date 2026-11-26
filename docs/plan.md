@@ -232,8 +232,33 @@ checks pass in every PR; every PR has tests for what it adds.
       (hourly) and `audit_retention` (daily) on Mail's small scheduler. Not
       taken over: banner, sign-in texts and the push icon of Mail's
       branding.
-   4. [ ] **Pages** – setup, sign-in (with `?next=` and `reauth=1`),
-      invitation, account and administration in the web app.
+   4. **Pages** in the web app, split into two PRs:
+      1. [x] **Before and around the sign-in** – setup, sign-in (with
+         `?next=` and `reauth=1`), password reset, invitation, email
+         confirmation, the error pages for the gateway, sign-out. Done:
+         Mail's guest pages in the new design (`AuthShell`, steps of setup,
+         sign-in and invitation) with the hub's routes (`/login/forgot`,
+         `/login/reset/…`, `/account/confirm-email/…`) and API; session
+         from `GET session`, settings (language, colour scheme, accent; the
+         scheme follows the system without a choice) also in
+         `roedy.hub.prefs`, storage keys under `roedy.hub.`; `next` only for
+         same-origin paths (`#lib/next.ts`), the hub's pages open in the
+         web app, an app's with a full page load; `reauth=1` asks the
+         signed-in account again and keeps the session; the invitation's
+         authenticator app is optional ("Set up later"); error pages for
+         403, 404, 500, 502, 503, 504 and offline – the gateway serves the
+         web app with `<meta name="roedy-error" content="<code>">` (codes of
+         contract § 12) and the page shows that error at the same address;
+         the home page stays the placeholder, with "Sign out". Icons from
+         Tabler (`@tabler/icons-svelte-runes`), the QR code with `qrcode`,
+         as in Mail. Tests: component tests per page and state, the
+         open-redirect cases of `next`, axe in jsdom for every state light
+         and dark (`src/a11y.test.ts`), and `scripts/a11y/audit.mjs` (axe
+         with contrast in Chromium, desktop and mobile, light and dark, via
+         `scripts/dev/browser.sh`).
+      2. [ ] **Account and administration** – `/account/*` (profile,
+         security, appearance, language) and `/admin/*` (users, audit log,
+         branding, organization, email) as in the current Roedy Mail app.
 4. **Gateway, pairing, identity** – `crates/contract`, signing keys and
    rotation, the proxy, internal listener, pairing, manifest, events with
    delivery and catch-up, users endpoint, health poll, the example app.

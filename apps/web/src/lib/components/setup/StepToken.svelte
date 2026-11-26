@@ -1,0 +1,567 @@
+<!--
+  Step 2: setup token from the container log, checked against
+  `POST setup/token`. A terminal box (dark in the dark theme, a light card in
+  the light theme) shows the command and the log line; the token goes into twelve boxes in three groups
+  (`CodeField`: typing, pasting with or without dashes and Backspace).
+  Continue stays greyed out until all twelve characters are there. Under the
+  boxes: invalid token with the attempts left, the lock with a countdown, a
+  server error, or the accepted token (coming back to this step).
+
+  Taken over from Roedy Mail (`apps/web/src/lib/components/setup/StepToken.svelte`).
+-->
+<script lang="ts">
+  import { ACCENTS } from '@roedy/tokens';
+  import { onDestroy } from 'svelte';
+  import AuthShell from '#lib/components/auth/AuthShell.svelte';
+  import CodeField from '#lib/components/auth/CodeField.svelte';
+  import MessageBox from '#lib/components/auth/MessageBox.svelte';
+  import Icon from '#lib/components/Icon.svelte';
+  import { setupFrame } from '#lib/components/setup/frame.ts';
+  import type { SetupTargets } from '#lib/components/setup/targets.ts';
+  import { Copied } from '#lib/clipboard.svelte.ts';
+  import { accentText, isHexColor, TERMINAL_BG, terminalAccent } from '#lib/color.ts';
+  import { m } from '#lib/paraglide/messages.js';
+  import { DESK_LEVELS, MOB_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';
+  import { LOG_CMD, LOG_LINES, TOKEN_LOCK_S, TOKEN_TRIES, type SetupFlow } from '#lib/setup.svelte.ts';
+  import { prefs } from '#lib/state/prefs.svelte.ts';
+  import { session } from '#lib/state/session.svelte.ts';
+  import { ui } from '#lib/state/ui.svelte.ts';
+  import { accentOf } from '#lib/theme.ts';
+
+  let { flow, targets, hidden = false }: { flow: SetupFlow; targets: SetupTargets; hidden?: boolean } = $props();
+
+  /** Log line and hint under the terminal, and the height of the token boxes, per level. */
+  type Extra = { hint: boolean; tkH: string };
+  const DESK_X: Extra[] = [
+    { hint: true, tkH: '54px' },
+    { hint: true, tkH: '52px' },
+    { hint: true, tkH: '50px' },
+    { hint: false, tkH: '48px' },
+    { hint: false, tkH: '46px' },
+    { hint: false, tkH: '44px' },
+    { hint: false, tkH: '44px' },
+  ];
+  const MOB_X: Extra[] = [
+    { hint: true, tkH: '46px' },
+    { hint: true, tkH: '46px' },
+    { hint: false, tkH: '44px' },
+    { hint: false, tkH: '44px' },
+  ];
+  const desk: (DeskLevel & Extra)[] = DESK_LEVELS.map((l, i) => ({ ...l, ...DESK_X[i]! }));
+  const mob: (MobLevel & Extra)[] = MOB_LEVELS.map((l, i) => ({ ...l, ...MOB_X[i]! }));
+
+  /**
+   * The command in parts with light syntax colours: programs in the accent (`--t-prog`),
+   * the search word in sage, redirects dimmed. Inline with real spaces
+   * between them, so a selected command copies as one line.
+   */
+  const CMD_PARTS = LOG_CMD.split(' ').map((t, i) => ({
+    t,
+    sep: i > 0 ? ' ' : '',
+    tone:
+      t === 'docker' || t === 'grep' ? 'prog' : t === 'Setup-Token' ? 'word' : t === '|' || t === '2>&1' ? 'dim' : '',
+  }));
+
+  /**
+   * Dark theme: icon, prompt and programs in the current accent (like
+   * `applyTheme()`), lightened to 4.5 : 1 on the dark terminal. The light
+   * theme's light card uses `--deep` instead.
+   */
+  const progColor = $derived.by(() => {
+    const accent = accentOf(prefs.values, session.branding);
+    return terminalAccent(isHexColor(accent) ? accent : ACCENTS[accent].base);
+  });
+
+  /** Sage's light `--deep` for "Setup-Token" and "Copied" on the light card (5.19 : 1 on `--surface2`). */
+  const SAGE_DEEP = accentText(ACCENTS.sage.base, 'light')['--deep'];
+
+  const copied = new Copied<'cmd'>();
+  onDestroy(() => copied.stop());
+  async function copy() {
+    if (!(await copied.copy(LOG_CMD, 'cmd'))) ui.toasts.error(m.error_copy());
+  }
+  const copyLabel = $derived(copied.key === 'cmd' ? m.setup_copied() : m.setup_copy());
+
+  /** Copy shows only its icon while its label would cut off the shell name in the title bar. */
+  let copyIco = $state(false);
+  /** Border, padding, icon and gap of the labelled Copy button (1 + 10 + 15 + 6 + 12 + 1). */
+  const COPY_CHROME = 45;
+  /**
+   * Measured from natural widths only (the title, and the wider of "Copy" and "Copied" in a hidden
+   * sizer), so the result does not depend on the current mode and stays put while "Copied" shows.
+   */
+  function fitCopy(head: HTMLElement) {
+    if (typeof ResizeObserver === 'undefined') return;
+    const part = (c: string) => head.querySelector<HTMLElement>(`.${c}`)!;
+    const title = part('term-title');
+    const name = part('term-name');
+    const shell = part('term-shell');
+    const btn = part('term-copy');
+    const sizer = part('copy-sizer');
+    // Layout widths in whole pixels; 1 px of slack goes to the icon, so the label never cuts off the shell name.
+    const measure = () => {
+      const need = name.offsetWidth + 8 + shell.scrollWidth;
+      const full = sizer.offsetWidth + COPY_CHROME;
+      copyIco = need > title.clientWidth + btn.offsetWidth - full - 1;
+    };
+    const ro = new ResizeObserver(measure);
+    for (const el of [head, name, sizer]) ro.observe(el);
+    void document.fonts?.ready.then(measure);
+    return () => ro.disconnect();
+  }
+
+  let tokInput: HTMLInputElement | undefined = $state();
+  $effect(() => targets.hold('token', tokInput));
+  const te = $derived(flow.tokErr);
+  /** Red borders for an invalid token and a server error (not while locked: the boxes are empty and dimmed). */
+  const bad = $derived(te === 'invalid' || te === 'server');
+  const ok = $derived(flow.tokOk && !te);
+  const left = $derived(flow.remaining ?? TOKEN_TRIES);
+  /** Five bars, the remaining attempts filled. */
+  const triesOn = $derived(Array.from({ length: TOKEN_TRIES }, (_, i) => i < left));
+  const described = $derived(te ? 'su-token-err' : ok ? 'su-token-ok' : undefined);
+</script>
+
+{#snippet intro(short: boolean)}{short ? m.setup_token_intro_short() : m.setup_token_intro()}{/snippet}
+
+<AuthShell
+  {...setupFrame(flow, 2)}
+  docTitle={m.setup_doc_title({ step: m.setup_step_token() })}
+  title={m.setup_token_title({ app: session.appName })}
+  {intro}
+  {desk}
+  {mob}
+  contentKey={[te ?? '', ok ? 'ok' : ''].join('|')}
+  {hidden}
+  primary={{
+    label: m.setup_next(),
+    icon: 'ti-arrow-right',
+    busy: flow.loading,
+    busyLabel: m.setup_checking(),
+    disabled: !flow.tokFull || flow.locked,
+  }}
+  onsubmit={() => void flow.submitToken()}
+  onblocked={() => {
+    // Incomplete: no message, the focus goes (or stays) in the token field.
+    const input = targets.input('token');
+    if (input && !input.disabled) input.focus();
+  }}
+  reg={targets.reg}
+>
+  {#snippet fields(look: Look, level: number)}
+    {@const x = (look.mobile ? mob : desk)[Math.min(level, (look.mobile ? mob : desk).length - 1)]!}
+    {@const narrow = look.mobile}
+    <div class="tok" style:--sage={ACCENTS.sage.base} style:--sage-ink={ACCENTS.sage.ink}>
+      <div
+        class="term"
+        class:light={!ui.dark}
+        style:--t-bg={ui.dark ? TERMINAL_BG : null}
+        style:--t-prog={ui.dark ? progColor : null}
+        style:--sage-deep={SAGE_DEEP}
+      >
+        <div class="term-head" {@attach fitCopy}>
+          <span class="term-icon" aria-hidden="true"><Icon name="ti-terminal-2" /></span>
+          <span class="term-title">
+            <span class="term-name">{m.setup_terminal()}</span>
+            <span class="term-shell">{LOG_LINES.shell}</span>
+          </span>
+          <button
+            type="button"
+            class="term-copy"
+            class:done={copied.key === 'cmd'}
+            class:ico={copyIco}
+            aria-label={`${copyLabel}: ${LOG_CMD}`}
+            onclick={() => void copy()}
+          >
+            <Icon name={copied.key === 'cmd' ? 'ti-check' : 'ti-copy'} />
+            {#if !copyIco}<span>{copyLabel}</span>{/if}
+            <span class="copy-sizer" aria-hidden="true">
+              <span>{m.setup_copy()}</span><span>{m.setup_copied()}</span>
+            </span>
+          </button>
+        </div>
+        <div class="term-body">
+          <div class="cmd">
+            <span class="prompt" aria-hidden="true">$</span>
+            <div class="cmd-parts">
+              {#each CMD_PARTS as p, i (i)}{p.sep}<span class={p.tone}>{p.t}</span>{/each}
+            </div>
+          </div>
+          <div class="log">
+            {#if x.hint}<span class="log-pending">{LOG_LINES.pending}</span>{/if}
+            <span class="log-line">
+              <span class="log-text">
+                <span class="log-dim">{LOG_LINES.prefix}</span><strong>{LOG_LINES.token}</strong>
+              </span>
+              <span class="sample">{LOG_LINES.sample}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+      {#if x.hint}<p class="term-hint">{m.setup_log_hint()}</p>{/if}
+
+      <div class="token">
+        <CodeField
+          id="su-token"
+          name="setup-token"
+          label={m.setup_token_label()}
+          groups={[4, 4, 4]}
+          filter="alnum"
+          value={flow.token}
+          autocapitalize="characters"
+          invalid={!!te}
+          {bad}
+          locked={flow.locked}
+          busy={flow.loading}
+          describedby={described}
+          height={x.tkH}
+          {narrow}
+          fontSize={narrow ? 15 : 18}
+          gap={narrow ? 4 : 5}
+          radius={narrow ? 10 : 13}
+          sep={narrow ? 6 : 9}
+          caret={22}
+          oninput={(value: string) => flow.editToken(value)}
+          bind:input={tokInput}
+        />
+
+        {#if te}
+          {#snippet tries()}
+            <div class="tries" aria-hidden="true">
+              {#each triesOn as on, i (i)}<span class:on></span>{/each}
+            </div>
+            <span class="extra-label">
+              {left === 1 ? m.setup_token_remaining_one() : m.setup_token_remaining({ n: left })}
+            </span>
+          {/snippet}
+          <MessageBox
+            id="su-token-err"
+            role="alert"
+            icon={te === 'locked' ? 'ti-lock' : te === 'server' ? 'ti-server-off' : 'ti-key-off'}
+            title={te === 'locked'
+              ? m.limit_title()
+              : te === 'server'
+                ? m.setup_token_server_title()
+                : m.setup_token_invalid_title()}
+            text={te === 'locked'
+              ? m.setup_token_locked_text()
+              : te === 'server'
+                ? m.setup_token_server_text()
+                : m.setup_token_invalid_text()}
+            extra={te === 'invalid' && flow.remaining !== null ? tries : undefined}
+            lock={te === 'locked' ? { left: flow.tokLeft, total: TOKEN_LOCK_S, read: true } : null}
+            top="4px"
+          />
+        {:else if ok}
+          <MessageBox
+            id="su-token-ok"
+            role="status"
+            tone="ok"
+            icon="ti-check"
+            title={m.setup_token_accepted()}
+            text={m.setup_token_accepted_text()}
+            top="4px"
+          />
+        {/if}
+      </div>
+    </div>
+  {/snippet}
+</AuthShell>
+
+<style>
+  .tok {
+    display: contents;
+  }
+
+  /*
+   * Terminal: a dark window in the dark theme (fixed values, not the theme's tokens); --t-bg
+   * (TERMINAL_BG) and --t-prog (terminalAccent(): icon, prompt and programs) come from #lib/color.ts.
+   * In the light theme a light card like the account preview of the administrator step.
+   */
+  .term {
+    --t-head: #241e19;
+    --t-fg: #efe6da;
+    --t-line: rgba(255, 240, 220, 0.07);
+    --t-tile: rgba(255, 240, 220, 0.08);
+    --t-shell: rgba(239, 230, 218, 0.62);
+    --t-faint: rgba(239, 230, 218, 0.55);
+    /* 0.52, not 0.5: at 12.5 px the redirects need 4.5 : 1 on the terminal (0.5 gives 4.48) */
+    --t-dim: rgba(239, 230, 218, 0.52);
+    --t-word: var(--sage);
+    --t-btn: rgba(255, 240, 220, 0.16);
+    --t-btn-hi: rgba(255, 240, 220, 0.28);
+    --t-btn-hov: rgba(255, 240, 220, 0.1);
+    --t-log: rgba(255, 240, 220, 0.05);
+    border-radius: 20px;
+    background: var(--t-bg);
+    color: var(--t-fg);
+    border: 1px solid rgba(255, 240, 220, 0.08);
+    box-shadow: var(--sh2);
+    overflow: hidden;
+  }
+
+  .term.light {
+    --t-bg: var(--surface2);
+    --t-head: transparent;
+    --t-fg: var(--fg);
+    --t-line: var(--bd);
+    --t-tile: var(--surface);
+    --t-prog: var(--deep);
+    --t-shell: var(--mfg);
+    --t-faint: var(--mfg);
+    --t-dim: var(--mfg);
+    --t-word: var(--sage-deep);
+    --t-btn: var(--bd);
+    --t-btn-hi: var(--bdhi);
+    --t-btn-hov: var(--hov);
+    --t-log: var(--surface);
+    border-radius: 22px;
+    border: 0;
+    box-shadow: var(--sh-edge), var(--sh1);
+  }
+
+  .term-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 7px 7px 14px;
+    background: var(--t-head);
+    border-bottom: 1px solid var(--t-line);
+  }
+
+  .term-icon {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    background: var(--t-tile);
+    color: var(--t-prog);
+    display: grid;
+    place-items: center;
+    font-size: 15px;
+  }
+
+  .term-title {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .term-name {
+    font-size: 13.5px;
+    font-weight: 800;
+  }
+
+  .term-shell {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--t-shell);
+  }
+
+  .term-copy {
+    position: relative;
+    height: 32px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px 0 10px;
+    border-radius: 9999px;
+    border: 1px solid var(--t-btn);
+    font-size: 12.5px;
+    font-weight: 800;
+    color: var(--t-fg);
+    transition:
+      background-color 220ms,
+      border-color 220ms,
+      color 220ms;
+  }
+
+  /* Icon only: a 32 px circle */
+  .term-copy.ico {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  /* Invisible, the wider of both labels: the width the labelled button needs */
+  .copy-sizer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    white-space: nowrap;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .copy-sizer span {
+    grid-area: 1 / 1;
+  }
+
+  .term-copy.done {
+    color: var(--t-word);
+  }
+
+  .term-copy :global(svg) {
+    font-size: 15px;
+  }
+
+  /* Touch target ≥ 44 px around the smaller button */
+  .term-copy::after {
+    content: '';
+    position: absolute;
+    inset: -6px -4px;
+    border-radius: 9999px;
+  }
+
+  .term-copy.ico::after {
+    inset: -6px;
+  }
+
+  :global([data-input='mouse']) .term-copy:hover,
+  .term-copy:active {
+    background: var(--t-btn-hov);
+  }
+
+  :global([data-input='mouse']) .term-copy:hover {
+    border-color: var(--t-btn-hi);
+  }
+
+  .term-body {
+    padding: 14px 16px 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+
+  .cmd {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+  }
+
+  .prompt {
+    flex-shrink: 0;
+    user-select: none;
+    color: var(--t-prog);
+    font-weight: 800;
+  }
+
+  /* Wraps only between words (0.62em apart: the space plus the word spacing) */
+  .cmd-parts {
+    min-width: 0;
+    word-spacing: calc(0.62em - 1ch);
+    font-weight: 700;
+  }
+
+  .cmd-parts span {
+    white-space: nowrap;
+  }
+
+  .cmd-parts .prog {
+    color: var(--t-prog);
+  }
+
+  .cmd-parts .word {
+    color: var(--t-word);
+  }
+
+  .cmd-parts .dim {
+    color: var(--t-dim);
+  }
+
+  .log {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--t-log);
+  }
+
+  .log-pending {
+    color: var(--t-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .log-line {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+
+  .log-text {
+    white-space: pre;
+  }
+
+  .log-dim {
+    color: var(--t-faint);
+  }
+
+  .log-text strong {
+    font-weight: 700;
+  }
+
+  /* The token as a glowing chip */
+  .sample {
+    padding: 2px 8px;
+    border-radius: 7px;
+    background: var(--acc);
+    color: var(--accink);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    box-shadow:
+      0 0 0 3px color-mix(in oklab, var(--acc) 28%, transparent),
+      0 0 18px -2px color-mix(in oklab, var(--acc) 55%, transparent);
+  }
+
+  .term-hint {
+    margin: 10px 4px 0;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--mfg);
+    text-wrap: pretty;
+  }
+
+  .token {
+    margin-top: var(--f-gap-m);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .tries {
+    display: flex;
+    gap: 4px;
+  }
+
+  .tries span {
+    width: 18px;
+    height: 6px;
+    border-radius: 9999px;
+    background: color-mix(in oklab, var(--errfg) 20%, transparent);
+  }
+
+  .tries span.on {
+    background: var(--errfg);
+  }
+
+  .extra-label {
+    font-size: 12.5px;
+    font-weight: 800;
+  }
+</style>
