@@ -128,7 +128,7 @@ fn fall_back(
         let details = json!({
             "slug": app.slug,
             "roles": roles,
-            "default": manifest.default_role().id,
+            "default": manifest.default_role().map(|role| &role.id),
             "users": users,
         });
         audit_log::insert(
@@ -231,7 +231,7 @@ pub async fn pair(
 pub async fn put_manifest(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    PairedApp(app): PairedApp,
+    PairedApp(app, secret_hash): PairedApp,
     body: Bytes,
 ) -> Result<Json<ManifestAccepted>, ApiError> {
     let ip = ClientIp(peer.ip());
@@ -241,8 +241,10 @@ pub async fn put_manifest(
     let table = state.apps.clone();
     let app = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
-        // Removed or paired anew since the secret was checked.
-        let Some(current) = repo::by_id(&tx, &app.id)? else {
+        // Removed or paired anew since the secret was checked: the old
+        // secret must not overwrite what the new pairing stored.
+        let Some(current) = repo::by_secret_hash(&tx, &secret_hash)?.filter(|c| c.id == app.id)
+        else {
             return Ok(Err(super::invalid_credentials()));
         };
         let previous = current.manifest.as_ref().map(|m| m.version.clone());

@@ -30,10 +30,15 @@ CREATE TABLE apps (
     health_at      TEXT,
     paired_at      TEXT,
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- A paired app has a manifest and a secret; a pending one neither.
-    CHECK ((state = 'paired') = (manifest_json IS NOT NULL AND secret_hash IS NOT NULL
-                                 AND paired_at IS NOT NULL)),
-    CHECK ((manifest_json IS NULL) = (manifest_id IS NULL AND version IS NULL))
+    -- A paired app has a manifest, a secret and the time of pairing; a
+    -- pending one none of them.
+    CHECK ((state = 'paired' AND manifest_json IS NOT NULL AND secret_hash IS NOT NULL
+            AND paired_at IS NOT NULL)
+           OR (state = 'pending' AND manifest_json IS NULL AND secret_hash IS NULL
+               AND paired_at IS NULL)),
+    -- `manifest_id` and `version` come with the manifest.
+    CHECK ((manifest_json IS NULL) = (manifest_id IS NULL)
+           AND (manifest_json IS NULL) = (version IS NULL))
 ) STRICT;
 
 -- The open pairing code of an app: at most one, a new one replaces it.

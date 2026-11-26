@@ -60,7 +60,7 @@ fn user(conn: &Connection, member: Member) -> anyhow::Result<User> {
 
 pub async fn list(
     State(state): State<AppState>,
-    PairedApp(app): PairedApp,
+    PairedApp(app, _): PairedApp,
     page: Result<Query<Page>, QueryRejection>,
 ) -> Result<Json<Users>, ApiError> {
     let Query(page) = page.map_err(|rejection| ApiError::BadRequest(rejection.body_text()))?;
@@ -93,7 +93,7 @@ pub async fn list(
 
 pub async fn show(
     State(state): State<AppState>,
-    PairedApp(app): PairedApp,
+    PairedApp(app, _): PairedApp,
     Path(sub): Path<String>,
 ) -> Result<Json<User>, ApiError> {
     let found = db::call(&state.db, move |conn| {

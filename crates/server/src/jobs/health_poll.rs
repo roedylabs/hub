@@ -12,7 +12,10 @@ use crate::{
     api,
     app::AppState,
     apps::{self, App},
-    db::{self, repo::apps::Health},
+    db::{
+        self,
+        repo::apps::{self as repo, Health},
+    },
 };
 
 /// Interval of the checks.
@@ -61,8 +64,31 @@ async fn check(state: &AppState, apps: Vec<Arc<App>>) -> anyhow::Result<Vec<(Str
     while let Some(result) = checks.join_next().await {
         results.push(result?);
     }
-    for (app, health) in &results {
-        if app.health != Some(*health) {
+    let stored: Vec<(String, Health)> = results
+        .iter()
+        .map(|(app, health)| (app.id.clone(), *health))
+        .collect();
+    let table = state.apps.clone();
+    // One transaction: the table never shows a part of the results.
+    let changed = db::call(&state.db, move |conn| {
+        let tx = conn.transaction()?;
+        let mut changed = Vec::new();
+        for (id, health) in &stored {
+            let before = repo::by_id(&tx, id)?.map(|app| app.health);
+            if repo::set_health(&tx, id, *health)? {
+                let before = before.flatten();
+                if before != Some(*health) {
+                    changed.push((id.clone(), *health));
+                }
+            }
+        }
+        tx.commit()?;
+        api::apps::reload(&table, conn);
+        Ok(changed)
+    })
+    .await?;
+    for (id, health) in changed {
+        if let Some((app, _)) = results.iter().find(|(app, _)| app.id == id) {
             tracing::info!(
                 slug = app.slug,
                 health = health.as_str(),
@@ -70,19 +96,6 @@ async fn check(state: &AppState, apps: Vec<Arc<App>>) -> anyhow::Result<Vec<(Str
             );
         }
     }
-    let stored: Vec<(String, Health)> = results
-        .iter()
-        .map(|(app, health)| (app.id.clone(), *health))
-        .collect();
-    let table = state.apps.clone();
-    db::call(&state.db, move |conn| {
-        for (id, health) in &stored {
-            db::repo::apps::set_health(conn, id, *health)?;
-        }
-        api::apps::reload(&table, conn);
-        Ok(())
-    })
-    .await?;
     let mut by_slug: Vec<(String, Health)> = results
         .into_iter()
         .map(|(app, health)| (app.slug.clone(), health))

@@ -404,13 +404,20 @@ impl Example {
         Ok(())
     }
 
-    /// Whether an unknown `kid` may refresh the JWKS now.
+    /// Whether an unknown `kid` may refresh the JWKS now; if so, the
+    /// attempt is recorded at once, so that failing or concurrent refreshes
+    /// stay within one per 30 s.
     fn may_refresh(&self) -> bool {
-        self.0
+        let mut last = self
+            .0
             .jwks_refreshed
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none_or(|at| at.elapsed() >= JWKS_REFRESH)
+            .unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|at| at.elapsed() < JWKS_REFRESH) {
+            return false;
+        }
+        *last = Some(Instant::now());
+        true
     }
 
     /// Verifies `token` as claims `C` with the stored keys; an unknown `kid`
@@ -563,10 +570,14 @@ async fn echo(State(example): State<Example>, request: Request) -> Response {
         .iter()
         .map(|(name, value)| json!([name.as_str(), String::from_utf8_lossy(value.as_bytes())]))
         .collect();
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
-        Ok(bytes) => bytes.len(),
-        Err(_) => return json_error(StatusCode::BAD_REQUEST, "body"),
-    };
+    let mut stream = body.into_data_stream();
+    let mut body_bytes = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            return json_error(StatusCode::BAD_REQUEST, "body");
+        };
+        body_bytes += chunk.len();
+    }
     Json(json!({
         "method": parts.method.as_str(),
         "path": parts.uri.path(),
@@ -864,7 +875,7 @@ mod tests {
     fn its_manifest_keeps_the_rules() {
         let manifest = Manifest::parse(&manifest()).unwrap();
         assert_eq!(manifest.id, MANIFEST_ID);
-        assert_eq!(manifest.role_for_hub_admins().id, "admin");
+        assert_eq!(manifest.role_for_hub_admins().unwrap().id, "admin");
     }
 
     #[test]

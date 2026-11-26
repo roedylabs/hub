@@ -160,12 +160,10 @@ impl Manifest {
         }
     }
 
-    /// The role new users get (exactly one, [`Self::parse`] checks it).
-    pub fn default_role(&self) -> &Role {
-        self.roles
-            .iter()
-            .find(|role| role.default)
-            .unwrap_or(&self.roles[0])
+    /// The role new users get: exactly one after [`Self::parse`]; `None`
+    /// only for a manifest built or deserialized without it.
+    pub fn default_role(&self) -> Option<&Role> {
+        self.roles.iter().find(|role| role.default)
     }
 
     /// The role that gives full control, if the app has one.
@@ -175,8 +173,8 @@ impl Manifest {
 
     /// The role administrators of the hub get after pairing (contract
     /// § 11): the admin role, otherwise the default role.
-    pub fn role_for_hub_admins(&self) -> &Role {
-        self.admin_role().unwrap_or_else(|| self.default_role())
+    pub fn role_for_hub_admins(&self) -> Option<&Role> {
+        self.admin_role().or_else(|| self.default_role())
     }
 
     /// Whether the app has a role with this ID.
@@ -315,6 +313,9 @@ impl Errors {
         }
         let before = self.0.len();
         let mut roles = Vec::with_capacity(list.len());
+        // Every valid ID seen, also of roles with other broken fields, so
+        // that a duplicate is named together with them.
+        let mut ids = std::collections::BTreeSet::new();
         for (i, value) in list.iter().enumerate() {
             let path = format!("roles.{i}");
             let Some(role) = value.as_object() else {
@@ -326,7 +327,7 @@ impl Errors {
                 let valid = is_valid_role_id(id);
                 if !valid {
                     self.add(&format!("{path}.id"), "invalid");
-                } else if roles.iter().any(|r: &Role| &r.id == id) {
+                } else if !ids.insert(id.clone()) {
                     self.add(&format!("{path}.id"), "duplicate");
                 }
                 valid
@@ -415,9 +416,11 @@ pub fn is_valid_home(home: &str) -> bool {
         && !home.starts_with("//")
         && !home.contains(['\\', '#'])
         && !home.chars().any(|c| c.is_control() || c.is_whitespace())
-        && path
-            .split('/')
-            .all(|segment| segment != "." && segment != "..")
+        && path.split('/').all(|segment| {
+            // Browsers read `%2e` as a dot in a path segment too.
+            let segment = segment.to_ascii_lowercase().replace("%2e", ".");
+            segment != "." && segment != ".."
+        })
 }
 
 /// SemVer 2.0: `MAJOR.MINOR.PATCH`, optionally `-pre.release` and
@@ -494,9 +497,9 @@ mod tests {
     fn the_contract_example_is_valid() {
         let manifest = Manifest::parse(&example()).unwrap();
         assert_eq!(manifest.id, "roedy.mail");
-        assert_eq!(manifest.default_role().id, "user");
+        assert_eq!(manifest.default_role().unwrap().id, "user");
         assert_eq!(manifest.admin_role().unwrap().id, "admin");
-        assert_eq!(manifest.role_for_hub_admins().id, "admin");
+        assert_eq!(manifest.role_for_hub_admins().unwrap().id, "admin");
         assert_eq!(manifest.name_in("de"), "Mail");
         assert_eq!(manifest.name_in("fr"), "Mail");
         assert!(manifest.has_role("user") && !manifest.has_role("owner"));
@@ -514,7 +517,11 @@ mod tests {
             v["roles"][1]["admin"] = json!(false);
         });
         assert_eq!(
-            Manifest::parse(&no_admin).unwrap().role_for_hub_admins().id,
+            Manifest::parse(&no_admin)
+                .unwrap()
+                .role_for_hub_admins()
+                .unwrap()
+                .id,
             "user"
         );
     }
@@ -591,6 +598,22 @@ mod tests {
         assert_eq!(fields(&two_admins), [("roles".into(), "admin_role")]);
         let duplicate = with(|v| v["roles"][1]["id"] = json!("user"));
         assert_eq!(fields(&duplicate), [("roles.1.id".into(), "duplicate")]);
+        // Named together with another broken field of the first role.
+        let duplicate_and_more = with(|v| {
+            v["roles"][1]["id"] = json!("user");
+            v["roles"][0]["name"] = json!({ "en": "User" });
+        });
+        assert_eq!(
+            fields(&duplicate_and_more),
+            [
+                ("roles.0.name.de".into(), "required"),
+                ("roles.1.id".into(), "duplicate"),
+            ]
+        );
+        // Built without the rules: no default role, no panic.
+        let mut unchecked = Manifest::parse(&example()).unwrap();
+        unchecked.roles.clear();
+        assert!(unchecked.default_role().is_none() && unchecked.role_for_hub_admins().is_none());
         let bad = with(|v| {
             v["roles"][0]["id"] = json!("User");
             v["roles"][1]["admin"] = json!("yes");
@@ -685,6 +708,10 @@ mod tests {
             "/../admin",
             "/a/./b",
             "/a/..",
+            "/%2e%2e/admin",
+            "/%2E%2E",
+            "/a/.%2e/b",
+            "/%2e/x?y",
         ] {
             assert!(!is_valid_home(home), "{home}");
         }

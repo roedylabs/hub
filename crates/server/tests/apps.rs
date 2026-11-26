@@ -933,25 +933,53 @@ async fn the_health_poll_stores_online_and_offline() {
 
 #[tokio::test]
 async fn the_health_check_times_out() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     let (env, admin) = setup().await;
-    let slow = serve(Router::new().route(
-        "/slow/readyz",
-        get(|| async {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            "late"
-        }),
-    ))
-    .await;
+    // The probe reaches this handler; it answers late until `fast` is set.
+    let (hits, fast) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let handler = {
+        let (hits, fast) = (hits.clone(), fast.clone());
+        move || async move {
+            hits.fetch_add(1, Ordering::SeqCst);
+            if !fast.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            "ok"
+        }
+    };
+    let slow = serve(Router::new().route("/slow/readyz", get(handler))).await;
     add_paired(&env, &admin, "slow", format!("http://{slow}")).await;
     let app = env.state.apps.get("slow").unwrap();
+    // The process-wide TLS provider is set by the hub's own clients.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(200))
-        .build();
-    // The process-wide provider is set by the hub's own clients.
-    let client = client.unwrap();
+        .build()
+        .unwrap();
+    // The check right after pairing arrives first.
+    for _ in 0..200 {
+        if hits.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let before = hits.load(Ordering::SeqCst);
+    assert_eq!(before, 1);
     assert_eq!(
         roedy_hub_server::apps::check_health(&client, &app).await,
         Health::Offline
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), before + 1, "the probe arrived");
+    // The same probe in time is online: only the timeout made it offline.
+    fast.store(true, Ordering::SeqCst);
+    assert_eq!(
+        roedy_hub_server::apps::check_health(&client, &app).await,
+        Health::Online
     );
 }
 

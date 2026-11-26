@@ -514,7 +514,9 @@ hub stay current.
 Unknown fields are ignored; names starting with `x-` are reserved for
 experiments.
 
-**Errors.** A manifest that breaks these rules gets
+**Errors.** A `contract` version the hub does not implement gets
+`400 unsupported_contract` with `supported` (the versions it does), whatever
+else the manifest holds. Any other manifest that breaks these rules gets
 `400 invalid_manifest` with `fields`: per broken field its path (`id`,
 `name.de`, `roles.1.id`, `icon`, …) and `{"code": "<code>"}`, for example
 `{"error": "invalid_manifest", "fields": {"roles": {"code": "default_role"}}}`.
@@ -577,7 +579,9 @@ source address, 30 in total), the code (unknown, used and expired codes give
 the same error), the manifest, and that `public_url` equals
 `<hub public URL>/<slug>`.
 
-Every attempt counts towards the rate limit. Only a pairing that succeeds
+Every attempt counts towards the rate limit, successful or not; an attempt
+refused by the limit per source address does not count towards the total.
+Only a pairing that succeeds
 uses up the code: after `invalid_manifest`, `unsupported_contract` or
 `public_url_mismatch` the app can correct what is wrong and try again with
 the same code while it is valid. `public_url` is compared exactly, without
@@ -611,10 +615,10 @@ instance key); the hub keeps only a hash and cannot show it again. It stores
 
 ### Before and after pairing
 
-- **Health:** right after pairing and then every 30 seconds the hub sends
-  `GET /<slug>/readyz` to the app's internal address. A `2xx` answer within
-  10 seconds counts as online ([§ 6](#6-browser-api-of-the-hub) `status`),
-  anything else as offline.
+- **Health:** right after pairing and then about every 30 seconds the hub
+  sends `GET /<slug>/readyz` to the app's internal address. A `2xx` answer
+  within 10 seconds counts as online
+  ([§ 6](#6-browser-api-of-the-hub) `status`), anything else as offline.
 - While an app waits for pairing, the hub forwards requests to it only for
   signed-in hub administrators (so that an administrator can complete the
   app's own setup through the hub, for example to enter the pairing code),

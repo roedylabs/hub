@@ -408,6 +408,19 @@ pub(crate) mod tests {
             "UPDATE apps SET health = 'unknown' WHERE id = ?1",
             "UPDATE apps SET access_default = 'none' WHERE id = ?1",
             "UPDATE apps SET manifest_id = 'x' WHERE id = ?1",
+            "UPDATE apps SET secret_hash = zeroblob(32) WHERE id = ?1",
+            "UPDATE apps SET paired_at = '2026-01-01T00:00:00.000Z' WHERE id = ?1",
+        ] {
+            assert!(conn.execute(sql, [&app]).is_err(), "{sql}");
+        }
+        // Paired: no part may go missing.
+        pair(&conn, &app, &manifest(), &[1; 32]).unwrap();
+        for sql in [
+            "UPDATE apps SET version = NULL WHERE id = ?1",
+            "UPDATE apps SET manifest_id = NULL WHERE id = ?1",
+            "UPDATE apps SET secret_hash = NULL WHERE id = ?1",
+            "UPDATE apps SET paired_at = NULL WHERE id = ?1",
+            "UPDATE apps SET state = 'pending' WHERE id = ?1",
         ] {
             assert!(conn.execute(sql, [&app]).is_err(), "{sql}");
         }

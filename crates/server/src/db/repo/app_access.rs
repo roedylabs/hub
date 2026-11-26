@@ -17,16 +17,21 @@ pub fn grant_after_pairing(
     app_id: &str,
     manifest: &Manifest,
 ) -> rusqlite::Result<usize> {
+    let (Some(admin_role), Some(default_role)) =
+        (manifest.role_for_hub_admins(), manifest.default_role())
+    else {
+        return Ok(0);
+    };
     let admins = conn.execute(
         "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
          SELECT id, ?1, ?2 FROM users WHERE role = 'admin'",
-        (app_id, &manifest.role_for_hub_admins().id),
+        (app_id, &admin_role.id),
     )?;
     let others = conn.execute(
         "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
          SELECT u.id, a.id, ?2 FROM users u, apps a \
          WHERE a.id = ?1 AND a.access_default = 'all'",
-        (app_id, &manifest.default_role().id),
+        (app_id, &default_role.id),
     )?;
     Ok(admins + others)
 }
@@ -52,6 +57,9 @@ pub fn fall_back_to_default(
     app_id: &str,
     manifest: &Manifest,
 ) -> rusqlite::Result<(Vec<String>, usize)> {
+    let Some(default_role) = manifest.default_role() else {
+        return Ok((Vec::new(), 0));
+    };
     let held: Vec<String> = conn
         .prepare("SELECT DISTINCT app_role FROM app_access WHERE app_id = ?1 ORDER BY app_role")?
         .query_map([app_id], |row| row.get(0))?
@@ -64,7 +72,7 @@ pub fn fall_back_to_default(
     for role in &gone {
         users += conn.execute(
             "UPDATE app_access SET app_role = ?3 WHERE app_id = ?1 AND app_role = ?2",
-            (app_id, role, &manifest.default_role().id),
+            (app_id, role, &default_role.id),
         )?;
     }
     Ok((gone, users))

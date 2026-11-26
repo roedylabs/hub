@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/server", "crates/jmap", "crates/contract", "crates/example-app"]
+# `cargo run` and `cargo build` without `-p` mean the hub; the checks use
+# `--workspace` and include everything.
+default-members = ["crates/server"]
 
 [workspace.package]
 version = "0.1.0"

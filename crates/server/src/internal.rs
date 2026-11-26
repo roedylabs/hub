@@ -78,9 +78,11 @@ pub fn invalid_credentials() -> ApiError {
 }
 
 /// The paired app whose secret the request carries
-/// (`Authorization: Bearer rhs_…`); otherwise [`invalid_credentials`].
+/// (`Authorization: Bearer rhs_…`), and the secret's hash – a change checks
+/// it again in its transaction, since pairing anew replaces the secret;
+/// otherwise [`invalid_credentials`].
 #[derive(Debug, Clone)]
-pub struct PairedApp(pub App);
+pub struct PairedApp(pub App, pub [u8; 32]);
 
 impl FromRequestParts<AppState> for PairedApp {
     type Rejection = ApiError;
@@ -106,7 +108,7 @@ impl FromRequestParts<AppState> for PairedApp {
             Ok(db::repo::apps::by_secret_hash(conn, &hash)?)
         })
         .await?
-        .map(Self)
+        .map(|app| Self(app, hash))
         .ok_or_else(invalid_credentials)
     }
 }

@@ -411,10 +411,7 @@ mod tests {
         );
         assert_ne!(code, new_pairing_code().unwrap());
         let secret = new_secret("01JDX4AAAAAAAAAAAAAAAAAAAA").unwrap();
-        assert!(
-            secret.starts_with("rhs_01JDX4AAAAAAAAAAAAAAAAAAAA_"),
-            "{secret}"
-        );
+        assert!(secret.starts_with("rhs_01JDX4AAAAAAAAAAAAAAAAAAAA_"));
         assert_eq!(secret.len(), 4 + 26 + 1 + 52);
         assert_eq!(hash(&secret), hash(&secret.clone()));
         assert_ne!(hash(&secret), hash(&code));
