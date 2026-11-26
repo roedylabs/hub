@@ -241,8 +241,8 @@ fn start_session(
 ) -> anyhow::Result<Started> {
     // The intermediate step was discarded after its code was checked (the
     // account was locked, removed or reset meanwhile, perhaps unlocked
-    // again): no session.
-    if ticket.is_some_and(Ticket::discarded) {
+    // again) or has expired while the job waited: no session.
+    if ticket.is_some_and(Ticket::spent) {
         return Ok(Started::Expired);
     }
     let tx = conn.transaction()?;

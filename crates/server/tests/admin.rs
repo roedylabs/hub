@@ -257,7 +257,12 @@ async fn locking_ends_sessions_and_pending_sign_ins() {
             .await
     };
     let old_step = totp(&challenge).await;
-    assert_ne!(old_step.status, StatusCode::OK, "{}", old_step.body);
+    assert_eq!(
+        (old_step.status, old_step.error().as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "login_expired"),
+        "{}",
+        old_step.body
+    );
     assert!(old_step.cookie(session::COOKIE).is_none());
     let reply = t.env.login("max", PASSWORD).await;
     assert_eq!(reply.json()["status"], "totp_required", "{}", reply.body);

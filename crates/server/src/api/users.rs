@@ -254,18 +254,21 @@ async fn one_user(
             if change.takes_away() && is_last_admin(tx, &user)? {
                 return Ok(Err(last_admin()));
             }
-            change.apply(tx, actor, &user)?;
-            Ok(Ok(
-                users::get_listed(tx, &target)?.map(|row| user_json(&row))
-            ))
+            // Like `bulk`: a lock or removal that took place ends the
+            // pending sign-in steps.
+            let done = change.apply(tx, actor, &user)?;
+            let ends_sign_ins = done && matches!(change, Change::Lock | Change::Remove);
+            let row = users::get_listed(tx, &target)?.map(|row| user_json(&row));
+            Ok(Ok((row, ends_sign_ins)))
         },
-        move |row| {
-            if row.as_ref().is_none_or(|row| row["status"] != "active") {
+        move |(_, ends_sign_ins)| {
+            if *ends_sign_ins {
                 challenges.discard_user(&id);
             }
         },
     )
     .await
+    .map(|(row, _)| row)
 }
 
 #[derive(Deserialize)]

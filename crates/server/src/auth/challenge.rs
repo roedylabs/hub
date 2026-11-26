@@ -138,11 +138,12 @@ impl Claim {
     /// Ends the intermediate step (signed in or no longer valid); the
     /// [`Ticket`] tells later whether it was discarded meanwhile.
     pub fn consume(mut self) -> (Challenge, Ticket) {
-        let challenge = self.entry.take().expect("present until consume").0;
+        let (challenge, expires) = self.entry.take().expect("present until consume");
         let ticket = Ticket {
             store: self.store.clone(),
             user_id: challenge.user_id.clone(),
             discards: self.discards,
+            expires,
         };
         (challenge, ticket)
     }
@@ -154,19 +155,33 @@ impl Claim {
 /// discarding happens on the same database thread right after the commit of
 /// such a change, so either the session exists before the change (and the
 /// change ends it) or the check sees the discard.
+///
+/// The step's expiry stays with it: discard notes live for [`TTL`] after
+/// the discard, which is at least as long as the step was valid, so the
+/// note can only be gone once the step has expired – and an expired ticket
+/// counts as spent.
 pub struct Ticket {
     store: Arc<Challenges>,
     user_id: String,
     discards: u64,
+    expires: Instant,
 }
 
 impl Ticket {
-    pub fn discarded(&self) -> bool {
-        self.store
-            .lock()
-            .discarded
-            .get(&self.user_id)
-            .is_some_and(|(n, _)| *n > self.discards)
+    /// Whether the step may no longer start a session: discarded since it
+    /// was taken out, or expired.
+    pub fn spent(&self) -> bool {
+        self.spent_at(Instant::now())
+    }
+
+    fn spent_at(&self, now: Instant) -> bool {
+        now >= self.expires
+            || self
+                .store
+                .lock()
+                .discarded
+                .get(&self.user_id)
+                .is_some_and(|(n, _)| *n > self.discards)
     }
 }
 
@@ -244,7 +259,7 @@ mod tests {
         let claim = store.claim(&headers).unwrap();
         let (taken, ticket) = claim.consume();
         assert_eq!(taken, challenge());
-        assert!(!ticket.discarded());
+        assert!(!ticket.spent());
         assert!(store.claim(&headers).is_none());
         assert!(store.claim(&HeaderMap::new()).is_none());
     }
@@ -259,12 +274,17 @@ mod tests {
         let claim = store.claim(&headers).unwrap();
         store.discard_user("u1");
         let (_, ticket) = claim.consume();
-        assert!(ticket.discarded());
+        assert!(ticket.spent());
         // Another user's discard does not count.
         let headers = request_with(&store.start(challenge()).unwrap());
         let claim = store.claim(&headers).unwrap();
         store.discard_user("u2");
-        assert!(!claim.consume().1.discarded());
+        let (_, ticket) = claim.consume();
+        assert!(!ticket.spent());
+        // Once the step has expired the ticket is spent, whether or not a
+        // discard note is still there.
+        assert!(ticket.spent_at(ticket.expires));
+        assert!(!ticket.spent_at(ticket.expires - Duration::from_secs(1)));
     }
 
     #[test]
