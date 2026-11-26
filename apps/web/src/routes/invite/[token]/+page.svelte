@@ -47,6 +47,8 @@
   let opened = 0;
   /** The page has gone: the account still loads, but no navigation follows. */
   let leaving = false;
+  /** An adoption came while another load ran: it follows once that load has ended, whatever its outcome. */
+  let queued = false;
 
   /** Loads settings and account of the new session; the flags only describe the load in progress. */
   async function loadAccount(): Promise<boolean> {
@@ -58,12 +60,21 @@
       return ok;
     } finally {
       loading = false;
+      if (queued) {
+        queued = false;
+        adopt();
+      }
     }
   }
 
-  /** The created account, unless it is loaded or loading already. */
+  /**
+   * The created account, unless it is loaded already. While another load runs (e.g. of an earlier invitation on this
+   * page), it waits for that one: a load that started before this account existed does not bring its session.
+   */
   function adopt() {
-    if (flow.accepted && !loading && !adopted) void loadAccount();
+    if (!flow.accepted || adopted) return;
+    if (loading) queued = true;
+    else void loadAccount();
   }
 
   /** Fields of the screens on the shared shell: on mobile entering one focuses the heading (no on-screen keyboard). */
