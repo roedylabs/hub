@@ -79,7 +79,7 @@ case "${1:-}" in
     command -v pnpm >/dev/null 2>&1 || fail "pnpm not found (see packageManager in package.json)"
 
     # Another server on the port would answer the readiness check in place of this run's Vite.
-    if curl -s -o /dev/null "http://127.0.0.1:$PORT/"; then
+    if curl -s -o /dev/null --connect-timeout 2 --max-time 5 "http://127.0.0.1:$PORT/"; then
       fail "port $PORT is already in use – stop the other server first"
     fi
 
@@ -110,7 +110,7 @@ case "${1:-}" in
     for _ in $(seq 1 120); do
       # Only while this run's Vite is alive (it exits at once with --strictPort if the port was taken meanwhile).
       kill -0 "$vite" 2>/dev/null || break
-      if curl -sf -o /dev/null "http://127.0.0.1:$PORT/" && kill -0 "$vite" 2>/dev/null; then
+      if curl -sf -o /dev/null --connect-timeout 2 --max-time 5 "http://127.0.0.1:$PORT/" && kill -0 "$vite" 2>/dev/null; then
         ready=1
         break
       fi

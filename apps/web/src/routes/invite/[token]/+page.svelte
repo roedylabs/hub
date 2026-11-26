@@ -39,14 +39,31 @@
 
   const targets = new InviteTargets();
   let netBox: HTMLDivElement | undefined = $state();
-  /** Settings and account are loading (after "Welcome" or on leaving). */
-  let signingIn = false;
+  /** Settings and account are loading (after "Welcome", on leaving or on another invitation). */
+  let loading = false;
+  /** The account of the invitation shown is loaded: leaving needs no second load. */
+  let adopted = false;
+  /** Counts the invitations opened in this page: a load finished for an earlier one adopts nothing for this one. */
+  let opened = 0;
   /** The page has gone: the account still loads, but no navigation follows. */
   let leaving = false;
 
-  function loadAccount(): Promise<boolean> {
-    signingIn = true;
-    return loadSignedIn();
+  /** Loads settings and account of the new session; the flags only describe the load in progress. */
+  async function loadAccount(): Promise<boolean> {
+    const run = opened;
+    loading = true;
+    try {
+      const ok = await loadSignedIn();
+      if (ok && run === opened) adopted = true;
+      return ok;
+    } finally {
+      loading = false;
+    }
+  }
+
+  /** The created account, unless it is loaded or loading already. */
+  function adopt() {
+    if (flow.accepted && !loading && !adopted) void loadAccount();
   }
 
   /** Fields of the screens on the shared shell: on mobile entering one focuses the heading (no on-screen keyboard). */
@@ -87,10 +104,7 @@
       if (left) void loadSignedIn();
     },
     signedIn: async () => {
-      if (!(await loadAccount())) {
-        signingIn = false;
-        return false;
-      }
+      if (!(await loadAccount())) return false;
       if (!leaving) void goto(resolve('/'));
       return true;
     },
@@ -115,7 +129,7 @@
     flow.dispose();
     net.close();
     // Page left after the account was created: the new session applies.
-    if (flow.accepted && !signingIn) void loadAccount();
+    adopt();
   });
 
   // New link (visit, switch between invitations): load from the start.
@@ -123,7 +137,9 @@
     const value = token;
     untrack(() => {
       // Another invitation in the same page: the account just created still applies before the flow starts anew.
-      if (flow.accepted && !signingIn) void loadAccount();
+      adopt();
+      opened++;
+      adopted = false;
       void flow.open(value);
     });
   });
