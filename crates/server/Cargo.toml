@@ -80,6 +80,9 @@ skrifa = { version = "0.50.0", default-features = false, features = ["std"] }
 [dev-dependencies]
 figment = { version = "0.10.19", features = ["env", "test"] }
 http-body-util = "0.1"
+# The example app: pairing over real connections (tests/apps.rs) and, with
+# the gateway, the proxy tests.
+roedy-hub-example = { path = "../example-app" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

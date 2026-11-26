@@ -33,6 +33,7 @@ use url::Url;
 
 use crate::{
     api::{self, health},
+    apps::{self, AppTable},
     auth::{challenge::Challenges, password::Hasher},
     config::{Config, TrustProxy},
     crypto::SecretKey,
@@ -94,6 +95,10 @@ pub struct AppState {
     pub keys: Arc<KeyStore>,
     /// Identity tokens for the apps (`identity`).
     pub identities: Arc<Identities>,
+    /// The apps by slug (`apps`); filled at start, reloaded on every change.
+    pub apps: Arc<AppTable>,
+    /// HTTP client for the apps' health checks (`apps::check_health`).
+    pub probe: reqwest::Client,
     pub background: Background,
 }
 
@@ -172,6 +177,8 @@ impl AppState {
             email_locks: Arc::new(KeyedLocks::default()),
             reset_locks: Arc::new(KeyedLocks::default()),
             instance: Arc::new(Instance::default()),
+            apps: Arc::new(AppTable::default()),
+            probe: apps::probe_client()?,
             background: Background::default(),
         })
     }
@@ -285,6 +292,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     db::call(&db, move |conn| instance.load(conn))
         .await
         .context("organization and branding not loaded")?;
+    let table = state.apps.clone();
+    db::call(&db, move |conn| table.reload(conn))
+        .await
+        .context("apps not loaded")?;
     // Before the listeners: a request may need an identity at once.
     signing::rotate_now(&db, state.secrets.clone(), &state.keys)
         .await

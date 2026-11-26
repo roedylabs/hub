@@ -436,7 +436,8 @@ Body: the manifest ([§ 8](#8-manifest)). Response `200`:
 
 If `public_url` differs from the app's `ROEDY_PUBLIC_URL` (the administrator
 changed the slug), the app logs an error and SHOULD refuse to start.
-Errors: `400 invalid_manifest` with `fields`, `401 invalid_app_credentials`.
+Errors: `400 invalid_manifest` with `fields` ([§ 8](#8-manifest)),
+`400 unsupported_contract` with `supported`, `401 invalid_app_credentials`.
 
 ### `GET /internal/v1/users`
 
@@ -455,7 +456,9 @@ reconciling after missed events). Ordered by `sub`, `limit` 1–500 (default
 }
 ```
 
-`status`: `active` or `locked`. Users without access to the app are not
+`status`: `active` or `locked`. For the next page the app passes
+`next_cursor` as `cursor`; it is `null` on the last page. A `limit` outside
+1–500 gets `400 bad_request`. Users without access to the app are not
 listed. **Absence from this list never means that a user was deleted** – only
 that they have no access (now); an app MUST NOT delete a user's data because
 of it.
@@ -511,6 +514,21 @@ hub stay current.
 Unknown fields are ignored; names starting with `x-` are reserved for
 experiments.
 
+**Errors.** A `contract` version the hub does not implement gets
+`400 unsupported_contract` with `supported` (the versions it does), whatever
+else the manifest holds. Any other manifest that breaks these rules gets
+`400 invalid_manifest` with `fields`: per broken field its path (`id`,
+`name.de`, `roles.1.id`, `icon`, …) and `{"code": "<code>"}`, for example
+`{"error": "invalid_manifest", "fields": {"roles": {"code": "default_role"}}}`.
+The codes: `required`, `invalid`, `too_long`, `too_many` (more than 16
+roles), `duplicate` (a role `id` twice), `default_role` (not exactly one
+default role), `admin_role` (more than one admin role); for `icon` also
+`too_large` (over 64 KiB, or too complex to draw), `not_square` (no square
+`viewBox`), `svg_text` (text elements: the hub draws icons without fonts)
+and `unreadable` (not an SVG the hub can sanitize, or nothing left to draw
+after sanitizing, such as only external images). The hub stores the icon
+as it sanitized it.
+
 **Changed roles:** when a manifest no longer contains a role, users who had it
 fall back to the default role (with an entry in the hub's audit log and a
 `access.changed` event).
@@ -561,6 +579,14 @@ source address, 30 in total), the code (unknown, used and expired codes give
 the same error), the manifest, and that `public_url` equals
 `<hub public URL>/<slug>`.
 
+Every attempt counts towards the rate limit, successful or not; an attempt
+refused by the limit per source address does not count towards the total.
+Only a pairing that succeeds
+uses up the code: after `invalid_manifest`, `unsupported_contract` or
+`public_url_mismatch` the app can correct what is wrong and try again with
+the same code while it is valid. `public_url` is compared exactly, without
+a trailing slash.
+
 Response `200`:
 
 ```json
@@ -589,6 +615,10 @@ instance key); the hub keeps only a hash and cannot show it again. It stores
 
 ### Before and after pairing
 
+- **Health:** right after pairing and then about every 30 seconds the hub
+  sends `GET /<slug>/readyz` to the app's internal address. A `2xx` answer
+  within 10 seconds counts as online
+  ([§ 6](#6-browser-api-of-the-hub) `status`), anything else as offline.
 - While an app waits for pairing, the hub forwards requests to it only for
   signed-in hub administrators (so that an administrator can complete the
   app's own setup through the hub, for example to enter the pairing code),

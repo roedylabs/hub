@@ -1,4 +1,10 @@
 {
+  "audit.apps.create": " hat die App {slug} hinzugefügt",
+  "audit.apps.pair": ": App {slug} gekoppelt, Version {version}",
+  "audit.apps.pairing_code": " hat einen Kopplungscode für {slug} erstellt",
+  "audit.apps.remove": " hat die App {slug} entfernt",
+  "audit.apps.roles_fallback": ": Rollen aus {slug} entfernt, ihre Benutzer haben jetzt die Standardrolle: {roles}",
+  "audit.apps.update": ": App {slug} auf Version {version} aktualisiert",
   "audit.audit.export": " hat das Protokoll exportiert",
   "audit.audit.retention": " hat die Aufbewahrung des Protokolls auf {keep} geändert",
   "audit.auth.email_change_confirm": " hat die E-Mail-Adresse {email} bestätigt",

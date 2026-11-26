@@ -1,28 +1,67 @@
 //! The internal API for the apps (docs/app-contract.md › Internal API) on
-//! the internal listener. So far only `GET /internal/v1/jwks`; pairing,
-//! manifest, users and events follow.
+//! the internal listener:
+//!
+//! - `GET /internal/v1/jwks`: the public signing keys, without
+//!   authentication.
+//! - `POST /internal/v1/pair` ([`pair`]): pairing with a code.
+//! - `PUT /internal/v1/manifest` ([`pair::put_manifest`]): the manifest on
+//!   every start of the app.
+//! - `GET /internal/v1/users[/<sub>]` ([`users`]): the users with access.
+//!
+//! Every endpoint but `pair` and `jwks` needs the app secret
+//! ([`PairedApp`]); the events (`/internal/v1/events`) follow with
+//! milestone 4.4. Responses are JSON with `Cache-Control: no-store` unless
+//! stated otherwise; bodies are limited to [`MAX_BODY`].
+
+pub mod pair;
+pub mod users;
 
 use axum::{
     Json, Router,
-    http::{HeaderValue, header},
+    extract::{DefaultBodyLimit, FromRequestParts, State},
+    http::{HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse as _, Response},
-    routing::get,
+    routing::{get, post, put},
 };
 use jiff::Timestamp;
+use roedy_hub_contract::pairing::APP_SECRET_PREFIX;
+use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::app::AppState;
+use crate::{
+    api::ApiError,
+    app::AppState,
+    apps,
+    db::{self, repo::apps::App},
+};
 
 /// Prefix of the internal API, version 1.
 pub const PREFIX: &str = "/internal/v1";
 
+/// Largest request body: a manifest with its icon (at most 64 KiB) fits
+/// many times over.
+pub const MAX_BODY: usize = 256 * 1024;
+
+/// Longest `Authorization` value that can hold a secret.
+const MAX_SECRET_LEN: usize = 128;
+
 /// The routes under [`PREFIX`]; `app::internal_router` adds the fallback.
 pub fn router() -> Router<AppState> {
-    Router::new().route(&format!("{PREFIX}/jwks"), get(jwks))
+    Router::new()
+        .route(&format!("{PREFIX}/jwks"), get(jwks))
+        .route(&format!("{PREFIX}/pair"), post(pair::pair))
+        .route(&format!("{PREFIX}/manifest"), put(pair::put_manifest))
+        .route(&format!("{PREFIX}/users"), get(users::list))
+        .route(&format!("{PREFIX}/users/{{sub}}"), get(users::show))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
 }
 
 /// `GET /internal/v1/jwks`: the public signing keys, without
 /// authentication, cacheable for 5 minutes (contract § 4.4 and § 7).
-async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> Response {
+async fn jwks(State(state): State<AppState>) -> Response {
     (
         [(
             header::CACHE_CONTROL,
@@ -33,8 +72,49 @@ async fn jwks(axum::extract::State(state): axum::extract::State<AppState>) -> Re
         .into_response()
 }
 
+/// `401 invalid_app_credentials`: unknown or revoked secret.
+pub fn invalid_credentials() -> ApiError {
+    ApiError::rejected(StatusCode::UNAUTHORIZED, "invalid_app_credentials")
+}
+
+/// The paired app whose secret the request carries
+/// (`Authorization: Bearer rhs_…`), and the secret's hash – a change checks
+/// it again in its transaction, since pairing anew replaces the secret;
+/// otherwise [`invalid_credentials`].
+#[derive(Debug, Clone)]
+pub struct PairedApp(pub App, pub [u8; 32]);
+
+impl FromRequestParts<AppState> for PairedApp {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let secret = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                let (scheme, secret) = value.trim().split_once(' ')?;
+                scheme.eq_ignore_ascii_case("bearer").then(|| secret.trim())
+            })
+            .filter(|secret| {
+                secret.starts_with(APP_SECRET_PREFIX) && secret.len() <= MAX_SECRET_LEN
+            })
+            .ok_or_else(invalid_credentials)?;
+        let hash = apps::hash(secret);
+        db::call(&state.db, move |conn| {
+            Ok(db::repo::apps::by_secret_hash(conn, &hash)?)
+        })
+        .await?
+        .map(|app| Self(app, hash))
+        .ok_or_else(invalid_credentials)
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt as _;
     use roedy_hub_contract::Jwks;

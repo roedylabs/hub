@@ -1,4 +1,10 @@
 {
+  "audit.apps.create": " added the app {slug}",
+  "audit.apps.pair": ": App {slug} paired, version {version}",
+  "audit.apps.pairing_code": " created a pairing code for {slug}",
+  "audit.apps.remove": " removed the app {slug}",
+  "audit.apps.roles_fallback": ": Roles removed from {slug}, their users now have the default role: {roles}",
+  "audit.apps.update": ": App {slug} updated to version {version}",
   "audit.audit.export": " exported the audit log",
   "audit.audit.retention": " changed the audit log retention to {keep}",
   "audit.auth.email_change_confirm": " confirmed the email address {email}",

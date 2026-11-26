@@ -134,6 +134,18 @@ impl<'a> Details<'a> {
     fn number(self, key: &str) -> Option<u64> {
         self.0?.get(key)?.as_u64()
     }
+
+    /// A list of texts, joined with commas.
+    fn list(self, key: &str) -> Option<String> {
+        let items: Option<Vec<&str>> = self
+            .0?
+            .get(key)?
+            .as_array()?
+            .iter()
+            .map(Value::as_str)
+            .collect();
+        Some(items?.join(", "))
+    }
 }
 
 /// Role within a sentence ("the user role").
@@ -242,6 +254,29 @@ fn known(row: &Row, lang: Language) -> Option<Line> {
             ),
         ),
         "users.mfa_reset" => with("ti-shield-off", "name", &p.text("name")?),
+        // Apps
+        "apps.create" => with("ti-apps", "slug", &p.text("slug")?),
+        "apps.pairing_code" => with("ti-key", "slug", &p.text("slug")?),
+        "apps.pair" | "apps.update" => Line::new(
+            if action == "apps.pair" {
+                "ti-plug-connected"
+            } else {
+                "ti-refresh"
+            },
+            act(
+                None,
+                &[("slug", &p.text("slug")?), ("version", &p.text("version")?)],
+            ),
+        ),
+        "apps.roles_fallback" => Line::new(
+            "ti-user-cog",
+            act(
+                None,
+                &[("slug", &p.text("slug")?), ("roles", &p.list("roles")?)],
+            ),
+        )
+        .warn(),
+        "apps.remove" => with("ti-trash", "slug", &p.text("slug")?),
         // Settings
         "org.update" => plain("ti-building"),
         "branding.update" => plain("ti-brush"),
@@ -312,8 +347,8 @@ mod tests {
 
     /// All action keys the hub writes, with their category. A new key
     /// belongs here and in both locale files.
-    const ACTIONS: [(&str, Category); 39] = {
-        use Category::{Login, Settings, System, Users};
+    const ACTIONS: [(&str, Category); 45] = {
+        use Category::{Apps, Login, Settings, System, Users};
         [
             ("auth.login", Login),
             ("auth.login_failed", Login),
@@ -345,6 +380,12 @@ mod tests {
             ("users.delete_self", Users),
             ("users.role", Users),
             ("users.mfa_reset", Users),
+            ("apps.create", Apps),
+            ("apps.pairing_code", Apps),
+            ("apps.pair", Apps),
+            ("apps.update", Apps),
+            ("apps.roles_fallback", Apps),
+            ("apps.remove", Apps),
             ("org.update", Settings),
             ("branding.update", Settings),
             ("system_mail.update", Settings),
@@ -364,6 +405,7 @@ mod tests {
             "method": "password", "reason": "password", "email": "a@example.com",
             "sessions_ended": 2, "name": "Mia Example", "role": "admin",
             "user": "Anna Example", "days": 365, "count": 2,
+            "slug": "mail", "version": "1.2.0", "roles": ["owner", "viewer"],
         })
     }
 
@@ -373,12 +415,13 @@ mod tests {
             "method": "recovery", "reason": "locked", "email": "a@example.com",
             "sessions_ended": 1, "name": "Mia Example", "role": "user",
             "user": "Anna Example", "days": 30, "count": 1,
+            "slug": "notes", "version": "0.1.0", "roles": ["editor"],
         })
     }
 
     #[test]
     fn lines_read_like_sentences() {
-        use Category::{Login, Settings, System, Users};
+        use Category::{Apps, Login, Settings, System, Users};
         let email = json!({ "email": "jonas@example.com", "role": "admin" });
         let name = json!({ "name": "Mia Example", "role": "user" });
         for (action, category, details, act) in [
@@ -479,6 +522,24 @@ mod tests {
                 System,
                 json!({ "user": "Anna Example" }),
                 " reset access for Anna Example",
+            ),
+            (
+                "apps.create",
+                Apps,
+                json!({ "slug": "mail" }),
+                " added the app mail",
+            ),
+            (
+                "apps.pair",
+                Apps,
+                json!({ "slug": "mail", "version": "0.6.0" }),
+                ": App mail paired, version 0.6.0",
+            ),
+            (
+                "apps.roles_fallback",
+                Apps,
+                json!({ "slug": "mail", "roles": ["owner", "viewer"] }),
+                ": Roles removed from mail, their users now have the default role: owner, viewer",
             ),
         ] {
             assert_eq!(shown_en(action, category, details).act, act, "{action}");

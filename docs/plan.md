@@ -324,9 +324,37 @@ checks pass in every PR; every PR has tests for what it adds.
       (`Cache-Control: max-age=300`) and `identity` (tokens per session and
       app, valid 60 s, reused for 30 s while claims and key stay the same,
       `forget_session` for revocation). The proxy sends them in part 3.
-   2. **Apps and pairing** – apps, pairing codes, manifest, the internal
+   2. [x] **Apps and pairing** – apps, pairing codes, manifest, the internal
       listener's `pair`, `manifest` and `users`, health poll, the example
-      app.
+      app. Done: migration 0006 (`apps`, `pairing_codes`, `app_access`,
+      `deleted_users`; `users::delete` leaves a tombstone, `users::insert`
+      grants the default role of "everyone" apps), the manifest's rules,
+      slugs with the reserved names, pairing codes and the internal API's
+      bodies in `roedy-hub-contract` (`manifest`, `pairing`), `admin/apps`
+      (list, add with slug and internal address – returns the first code –,
+      show, new pairing code, remove; audit category `apps` with en/de
+      texts), `POST /internal/v1/pair` (rate limit 10 per address and 30 in
+      total per 15 minutes, every attempt counts; code – only SHA-256
+      stored, one open code per app, 15 minutes, used up only by a pairing
+      that succeeds –, manifest, `public_url`; the icon sanitized like a
+      branding upload and with a square `viewBox`; secret `rhs_<app ID>_…`
+      stored as SHA-256; hub administrators get the admin role, with
+      "everyone" all others the default role, existing entries stay),
+      `PUT /internal/v1/manifest` (removed roles fall back to the default
+      role with an audit entry; the `access.changed` event follows with
+      part 4), `GET /internal/v1/users[/<sub>]` (pages by `sub`, locale from
+      the settings, `404 no_access`, `410 user_deleted`), the app secret as
+      `PairedApp`, the in-memory `AppTable` (reloaded in the database job of
+      every change, for the gateway), the job `health_poll` (every 30 s,
+      `GET /<slug>/readyz` with 5 s to connect and 10 s in total, 2xx is
+      online; once more right after pairing) and `crates/example-app`
+      (`roedy-hub-example`: pairs, sends its manifest, verifies the identity
+      with the contract crate and refreshes the JWKS for an unknown `kid`,
+      accepts events idempotently; echo, SSE, WebSocket echo with the
+      `Origin` check, streamed upload and download, slow and custom
+      responses for the gateway's tests; axum's `ws` brings
+      tokio-tungstenite, only into the example). Not yet: the browser API,
+      the icon endpoint, order and access default, access per user (5).
    3. **Gateway proxy** – routing, header rules, streaming, WebSocket,
       session cache, the identity header, cancelling streams on revocation.
    4. **Events** – delivery with backoff, catch-up, retention.
