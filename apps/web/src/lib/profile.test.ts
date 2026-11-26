@@ -402,6 +402,30 @@ describe('saving', () => {
     expect(ui.toast).toBeNull();
     expect(paths(calls).filter((c) => c === 'PATCH auth/me')).toHaveLength(2);
   });
+
+  it('an answer from before a switch to another account and back still counts as the previous account’s', async () => {
+    const other = { ...ME, id: '01JOTHER', username: 'jordan', email: 'jordan@example.com' };
+    const late = held();
+    const { p } = await loaded({
+      'GET auth/me': [{ body: other }, { body: ME }],
+      'PATCH auth/me': [late.reply],
+    });
+    // A asks for a new address; while the request runs, another tab signs in B and then A again.
+    p.edit('email');
+    p.setField('email', 'new@example.com');
+    const saving = p.save();
+    p.follow(other.id);
+    await vi.waitFor(() => expect(p.me?.id).toBe(other.id));
+    p.follow(ME.id);
+    await vi.waitFor(() => expect(p.me?.id).toBe(ME.id));
+    p.edit('login');
+    p.setField('login', 'alex2');
+    late.release({ body: { status: 'reauth_required', user: USER } });
+    await saving;
+    // The page was set up anew for A: the old answer opens no prompt and leaves the new edits alone.
+    expect([p.ea, p.drafts, p.saving]).toEqual([null, { login: 'alex2' }, false]);
+    expect(nav.goto).not.toHaveBeenCalled();
+  });
 });
 
 describe('send confirmation link', () => {
