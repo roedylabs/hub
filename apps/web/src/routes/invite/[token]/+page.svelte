@@ -53,16 +53,19 @@
   /** Loads settings and account of the new session; the flags only describe the load in progress. */
   async function loadAccount(): Promise<boolean> {
     const run = opened;
+    let done = false;
     loading = true;
     try {
-      const ok = await loadSignedIn();
-      if (ok && run === opened) adopted = true;
-      return ok;
+      done = await loadSignedIn();
+      if (done && run === opened) adopted = true;
+      return done;
     } finally {
       loading = false;
+      // A queued account was created after this load started: load again, even if another invitation is open by
+      // now – unless this load brought the session of the invitation still shown.
       if (queued) {
         queued = false;
-        adopt();
+        if (!(done && run === opened)) void loadAccount();
       }
     }
   }

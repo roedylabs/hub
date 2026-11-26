@@ -84,4 +84,33 @@ describe('Invitation page: the accounts of several invitations', () => {
     await vi.waitFor(() => expect(session.user?.email).toBe('b@example.com'));
     expect(calls.filter((c) => c.path === 'session')).toHaveLength(2);
   });
+
+  it('keeps a queued account when a third invitation opens before the pending load ends', async () => {
+    let first: (a: { status: number; body: unknown }) => void = () => {};
+    const { calls } = mockApi({
+      ...invitation('a', 'a@example.com'),
+      ...invitation('b', 'b@example.com'),
+      ...invitation('c', 'c@example.com'),
+      'GET settings': [{ body: { version: 1, settings: {} } }, { body: { version: 1, settings: {} } }],
+      'GET session': [
+        () => new Promise((resolve) => (first = resolve)),
+        { body: sessionOf({ id: 'b', email: 'b@example.com', name: 'Jonas Schulz' }) },
+      ],
+    });
+    session.config = { name: 'Roedy Hub', branding: BRAND0, org: {} as never, setup_required: false };
+    page.params = { token: 'a' };
+    const view = render(Page);
+    await acceptWithoutApp();
+    page.params = { token: 'b' };
+    await vi.waitFor(() => expect(calls.map((c) => c.path)).toContain('session'));
+    await acceptWithoutApp();
+
+    // Invitation C opens while A's load still runs: B's account stays queued.
+    page.params = { token: 'c' };
+    await screen.findByRole('button', { name: 'Accept invitation' });
+    first({ status: 500, body: { error: 'internal' } });
+    await vi.waitFor(() => expect(session.user?.email).toBe('b@example.com'));
+    expect(calls.filter((c) => c.path === 'session')).toHaveLength(2);
+    view.unmount();
+  });
 });
