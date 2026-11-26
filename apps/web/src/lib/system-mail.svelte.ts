@@ -480,6 +480,8 @@ export class SystemMailPage {
   #disposed = false;
   /** The running `PUT`: checking and sending wait for it, otherwise they would use the old secret. */
   #inflight: Promise<unknown> | null = null;
+  /** Counts saves: only the save that is still the latest clears `#inflight`. */
+  #saveId = 0;
 
   constructor(scrollTo: (section: MailSection) => void = () => {}) {
     this.#scrollTo = scrollTo;
@@ -697,12 +699,13 @@ export class SystemMailPage {
     // A load still running started before this save: its response is older.
     this.#seq++;
     this.saving = true;
+    const id = ++this.#saveId;
     const run = this.#put(body, d);
     this.#inflight = run;
     try {
       await run;
     } finally {
-      if (this.#inflight === run) this.#inflight = null;
+      if (this.#saveId === id) this.#inflight = null;
       this.saving = false;
     }
   }
