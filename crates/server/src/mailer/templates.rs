@@ -451,11 +451,11 @@ pub struct SecurityPassword<'a> {
     /// Newly set via the link from "Reset password": all devices are
     /// already signed out, own advice and button to Account › Security.
     /// Otherwise the advice goes via "Forgot password" (signs out all
-    /// devices without a code), the button to `/password/forgot`.
+    /// devices without a code), the button to `/login/forgot`.
     pub reset: bool,
     /// The recipient is the sole active administrator:
     /// nobody in the app can lock their account, so the advice names
-    /// `roedy-mail reset-admin`. No effect with `reset`.
+    /// the server operator. No effect with `reset`.
     pub sole_admin: bool,
     pub at: Timestamp,
 }
@@ -485,11 +485,11 @@ pub struct SecurityTotpAdded<'a> {
     /// The first app: multi-factor is thereby on, removing it
     /// and changing the password require a code from exactly this app – the advice
     /// therefore goes via "Forgot password" (ends all sessions without a code)
-    /// to the administration, the button to `/password/forgot`.
+    /// to the administration, the button to `/login/forgot`.
     pub first_app: bool,
-    /// The recipient is the sole active administrator:
-    /// instead of the administration, the mail advises asking the operator for `roedy-mail
-    /// reset-admin`. Only effective with `first_app`.
+    /// The recipient is the sole active administrator: instead of the
+    /// administration, the mail advises contacting the server operator. Only
+    /// effective with `first_app`.
     pub sole_admin: bool,
     /// Device of the session that added it.
     pub device: &'a str,
@@ -1447,7 +1447,7 @@ pub(super) mod tests {
         );
     }
 
-    /// The sole administrator is told about `roedy-hub reset-admin`, nobody
+    /// The sole administrator is sent to the server operator, nobody
     /// else; after "Reset password" and for further apps it makes no
     /// difference.
     #[test]
@@ -1465,9 +1465,11 @@ pub(super) mod tests {
                     password(false, sole).render(ctx).unwrap(),
                     totp_added(true, sole).render(ctx).unwrap(),
                 ] {
-                    assert_eq!(mail.html.contains(">roedy-hub reset-admin</span>"), sole);
-                    assert_eq!(mail.text.contains("roedy-hub reset-admin"), sole);
-                    assert!(!mail.text.contains("<span"));
+                    assert_eq!(mail.html.contains("server operator"), sole);
+                    assert_eq!(mail.text.contains("server operator"), sole);
+                    assert!(
+                        !mail.text.contains("reset-admin") && !mail.html.contains("reset-admin")
+                    );
                 }
             }
         });

@@ -205,8 +205,8 @@ checks pass in every PR; every PR has tests for what it adds.
       Mails use the default time zone (Europe/Berlin) until the settings
       offer one; their links point to `/login/forgot`, `/login/reset/…`,
       `/invite/…` and `/account/confirm-email/…`. The advice for the sole
-      administrator names `roedy-hub reset-admin`, which follows with the
-      administration.
+      administrator sends them to the server operator; it can name
+      `roedy-hub reset-admin` once that command exists (administration).
    3. [ ] **Administration (API)** – users (lock, roles, reset the second
       factor), audit log with texts, branding and organization, cleanup of
       expired sessions.

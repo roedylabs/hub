@@ -15,7 +15,7 @@ Gerät: {{ v.device }}
 
 {% if t.first_app -%}
 {% if t.sole_admin -%}
-Waren Sie das nicht? Dann kennt jemand Ihr Passwort und hat eine eigene App eingerichtet. Sie sind der einzige Administrator, deshalb kann niemand in {{ f.app }} Ihr Konto sperren. Setzen Sie sofort über „Passwort vergessen“ ein neues Passwort – das meldet das fremde Gerät ab – und bitten Sie den Betreiber des Servers, Ihren Zugang mit dem Befehl roedy-hub reset-admin zurückzusetzen. Das vergibt ein neues Passwort und entfernt alle Authenticator-Apps.
+Waren Sie das nicht? Dann kennt jemand Ihr Passwort und hat eine eigene App eingerichtet. Sie sind der einzige Administrator, deshalb kann niemand in {{ f.app }} Ihr Konto sperren. Setzen Sie sofort über „Passwort vergessen“ ein neues Passwort – das meldet das fremde Gerät ab – und wenden Sie sich an den Betreiber des Servers: Er kann Ihren Zugang auf dem Server zurücksetzen und damit auch die fremde App entfernen.
 {%- else -%}
 Waren Sie das nicht? Dann kennt jemand Ihr Passwort und hat eine eigene App eingerichtet. Wenden Sie sich sofort an Ihre Administration: Sie kann Ihr Konto sperren – das meldet auch das fremde Gerät ab – und die Multi-Faktor-Authentifizierung zurücksetzen. Setzen Sie außerdem über „Passwort vergessen“ ein neues Passwort. Bis die Administration zurücksetzt, verlangt die Anmeldung einen Code aus der fremden App.
 {%- endif %}

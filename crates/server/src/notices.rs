@@ -88,7 +88,7 @@ pub enum Security<'a> {
     /// "Password changed" (`security_password`). `device` is the session that
     /// changed it, or the browser that opened the link from "Forgot password"
     /// (`reset`). Without `reset` the mail advises "Forgot password" and the
-    /// administration, the sole administrator `roedy-hub reset-admin`
+    /// administration, the sole administrator the server operator
     /// ([`users::sole_admin`]).
     PasswordChanged { device: Device, reset: bool },
     /// "Authenticator app added" (`security_totp_add`). `first`: multi-factor
@@ -180,8 +180,8 @@ impl Security<'_> {
 }
 
 /// Reports a security event to `to` by mail via `outbox`, in their language.
-/// In the event's transaction: the advice names `reset-admin` only if nobody
-/// else can lock the account.
+/// In the event's transaction: the advice names the server operator only if
+/// nobody else can lock the account.
 pub fn security(
     conn: &Connection,
     outbox: &mut Outbox,
@@ -498,7 +498,7 @@ mod tests {
 
     /// The advice for the sole administrator is decided in the transaction.
     #[test]
-    fn sole_admin_gets_the_reset_admin_advice() {
+    fn sole_admin_is_sent_to_the_server_operator() {
         let conn = conn();
         let admin = add(&conn, "anna", "anna@example.com", Role::Admin);
         let user = add(&conn, "max", "max@example.com", Role::User);
@@ -512,8 +512,8 @@ mod tests {
             security(&conn, &mut outbox, (&profile).into(), event).unwrap();
         }
         let texts = texts(&outbox);
-        assert!(texts[0].contains("roedy-hub reset-admin"), "{}", texts[0]);
-        assert!(!texts[1].contains("reset-admin"), "{}", texts[1]);
+        assert!(texts[0].contains("server operator"), "{}", texts[0]);
+        assert!(!texts[1].contains("server operator"), "{}", texts[1]);
     }
 
     /// German users get German mails.
