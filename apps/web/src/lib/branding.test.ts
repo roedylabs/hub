@@ -568,6 +568,33 @@ describe('BrandingPage', () => {
     expect(b.dirty).toBe(false);
   });
 
+  it('a queued save builds its request on the state the save before it stored', async () => {
+    const plain = { ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '' } as const;
+    session.config = { ...session.config!, branding: { ...plain } };
+    const before = plain.color;
+    const slow = later({ ...plain, color: 'rose' });
+    const fast = later({ ...plain, color: before, tilt: !plain.tilt });
+    const api = mockApi({ 'PUT admin/branding': [slow.reply, fast.reply] });
+    const a = new BrandingPage(ctx);
+    a.set('color', 'rose');
+    const first = a.save();
+    a.dispose();
+    // Opened before the first save answered: it still sees the old colour and sets it explicitly.
+    const b = new BrandingPage(ctx);
+    b.set('color', before === 'rose' ? 'sky' : before);
+    b.set('color', before);
+    b.set('tilt', !plain.tilt);
+    const second = b.save();
+    slow.release();
+    await first;
+    await vi.waitFor(() => expect(sent(api.calls)).toEqual(['PUT admin/branding', 'PUT admin/branding']));
+    // Against the stored "rose" the colour is a change and goes along; the tilt as well.
+    expect(api.calls[1]?.body).toEqual({ color: before, tilt: !plain.tilt });
+    fast.release();
+    await second;
+    expect(session.branding.color).toBe(before);
+  });
+
   it('a failed save does not hold up the next one', async () => {
     const failing = later({ error: 'internal' }, 500);
     const api = mockApi({

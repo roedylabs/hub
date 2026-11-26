@@ -275,16 +275,18 @@ export class OrgPage {
     }
     this.serverErrors = {};
     const draft = this.draft;
-    const prev = this.saved;
-    const next = orgOf(draft);
-    const body: Partial<Org> = {};
-    for (const k of ORG_KEYS) if (next[k] !== prev[k]) body[k] = next[k];
-    // Only whitespace changed: nothing to send.
-    if (Object.keys(body).length === 0) {
-      this.edits = {};
-      ui.toasts.show(m.org_saved());
-      return;
-    }
+    const sent = this.edits;
+    /**
+     * The request from the inputs sent on top of the state saved when it goes out: a save still queued before it
+     * (another page instance) may have changed fields this one does not touch, and they must stay.
+     */
+    const bodyNow = (): Partial<Org> => {
+      const prev = this.saved;
+      const next = orgOf({ ...draftOf(prev), ...sent });
+      const out: Partial<Org> = {};
+      for (const k of ORG_KEYS) if (next[k] !== prev[k]) out[k] = next[k];
+      return out;
+    };
     // A load still running started before this save: its response is older.
     this.#seq++;
     saves.started++;
@@ -292,8 +294,13 @@ export class OrgPage {
     try {
       // Waits for a save still running on a page left meanwhile. The session state is global: it follows the
       // server even if the page was left.
-      const org = await saves.queue(() => api<Org>('PUT', 'admin/org', body));
-      applyOrg(org);
+      // Only whitespace changed (also against a save that went out before): nothing to send.
+      // The response goes into the session before the next save in the queue builds its request.
+      await saves.queue(async () => {
+        const body = bodyNow();
+        if (Object.keys(body).length === 0) return;
+        applyOrg(await api<Org>('PUT', 'admin/org', body));
+      });
       // Inputs made during the request stay; the sent ones are saved now.
       const rest: Partial<OrgDraft> = {};
       for (const k of ORG_KEYS) {

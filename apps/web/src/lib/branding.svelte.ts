@@ -424,22 +424,18 @@ export class BrandingPage {
       return;
     }
     if (!this.dirty) return;
-    const next = normalized(draft);
-    const body = bodyOf(next, this.saved);
     const sent = this.edits;
+    /**
+     * The request from the inputs sent on top of the state saved when it goes out: a save still queued before it
+     * (another page instance) may have changed fields this one does not touch, and they must stay.
+     */
+    const bodyNow = (): Partial<AdminBranding> => bodyOf(normalized({ ...this.saved, ...sent }), this.saved);
     // Inputs made while the request runs stay as inputs; the ones sent go.
     const settle = (): void => {
       this.edits = Object.fromEntries(
         Object.entries(this.edits).filter(([k, v]) => sent[k as keyof BrandingDraft] !== v),
       );
     };
-    if (Object.keys(body).length === 0) {
-      // Only whitespace changed: nothing to send.
-      settle();
-      this.error = null;
-      ui.toasts.show(m.branding_saved());
-      return;
-    }
     // A load still running would bring back the state before the save.
     this.#seq++;
     // A later file, a read finished, "Discard", "Remove", "Reset" or another kind: the logo error then belongs to
@@ -448,8 +444,13 @@ export class BrandingPage {
     this.saving = true;
     try {
       // Waits for a save still running on a page left meanwhile; the responses arrive in the order of the saves.
-      const saved = await saves(() => api<AdminBranding>('PUT', 'admin/branding', body));
-      this.#accept(saved);
+      // Only whitespace changed (also against a save that went out before): nothing to send.
+      // The response goes into the session before the next save in the queue builds its request.
+      await saves(async () => {
+        const now = bodyNow();
+        if (Object.keys(now).length === 0) return;
+        this.#accept(await api<AdminBranding>('PUT', 'admin/branding', now));
+      });
       settle();
       if (read === this.#read) this.error = null;
       ui.toasts.show(m.branding_saved());

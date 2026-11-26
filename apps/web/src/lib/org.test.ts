@@ -410,6 +410,29 @@ describe('OrgPage', () => {
     expect(b.dirty).toBe(false);
   });
 
+  it('a queued save builds its request on the state the save before it stored', async () => {
+    const older = later();
+    const newer = later();
+    const api = mockApi({ 'PUT admin/org': [older.reply, newer.reply] });
+    const a = new OrgPage(ctx);
+    a.set('name', 'Older Ltd');
+    const first = a.save();
+    a.dispose();
+    // Opened before the first save answered: it still sees the old name and sets it explicitly.
+    const b = new OrgPage(ctx);
+    b.set('name', ORG0.name ?? '');
+    b.set('website', 'https://example.com/b');
+    const second = b.save();
+    older.answer({ body: { ...ORG0, name: 'Older Ltd' } });
+    await first;
+    await vi.waitFor(() => expect(sent(api.calls)).toEqual(['PUT admin/org', 'PUT admin/org']));
+    // Against the stored "Older Ltd" the name is a change and goes along.
+    expect(api.calls[1]?.body).toEqual({ name: ORG0.name, website: 'https://example.com/b' });
+    newer.answer({ body: { ...ORG0, website: 'https://example.com/b' } });
+    await second;
+    expect(session.appName).toBe(ORG0.name);
+  });
+
   it('a failed save does not hold up the next one', async () => {
     const failing = later();
     const api = mockApi({ 'PUT admin/org': [failing.reply, { body: { ...ORG0, name: 'Newer Ltd' } }] });
