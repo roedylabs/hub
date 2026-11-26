@@ -60,7 +60,7 @@ Each can follow later; v1 stays small.
 | Path | Content |
 |---|---|
 | `crates/server` | `roedy-hub-server`, binary `roedy-hub` |
-| `crates/contract` | `roedy-hub-contract`: manifest, claims, events, Ed25519 JWS signing and verification, test vectors. Used by the server and the example app. |
+| `crates/contract` | `roedy-hub-contract`: manifest, claims, events, Ed25519 JWS signing and verification, test vectors (`docs/app-contract/vectors.json`). Used by the server and the example app. |
 | `crates/example-app` | `roedy-hub-example`: the test app that implements the whole contract. Not part of the image. |
 | `apps/web` | `@roedy/hub-web`: SvelteKit SPA (home page, sign-in, setup, account, administration) |
 | `packages/tokens` | Copy of Roedy Mail's design tokens |
@@ -303,6 +303,33 @@ checks pass in every PR; every PR has tests for what it adds.
    `public_url`, oversized or malicious SVG, invalid manifest); events
    (order, retry, idempotency, catch-up, 410); revoked session closes streams;
    test vectors from `crates/contract`.
+   Split into four PRs (decided on 2026-11-26):
+   1. [x] **Contract crate, signing keys and identity** – `crates/contract`
+      with the JWS, signing keys with rotation, the JWKS and issuing
+      identity tokens. Done: `crates/contract` (`roedy-hub-contract`:
+      `Identity` and `Event` claims, `Jwks`/`Jwk`, the compact JWS on `ring`,
+      `base64` and `serde_json` – `alg` checked before anything else, `typ`
+      tied to the claims type so that an event never passes as an identity,
+      strict base64url and JSON objects, `crit` rejected, times with the
+      leeway of 10 s; error codes as in the vectors), test vectors in
+      `docs/app-contract/vectors.json` (RFC 8037's test key as in contract
+      § 4.4, the examples of § 15 and every rejection case; made and checked
+      by `crates/contract/tests/vectors.rs`), migration 0005
+      (`signing_keys`, the Ed25519 seed sealed with the instance key per
+      `kid`), `signing` (rotation at start and daily in the job
+      `key_rotation`: every 90 days, the next key published 10 min before it
+      signs, the previous one published 10 min after; keys that cannot be
+      decrypted are retired and replaced at once; the key store picks the
+      signing key by time), `GET /internal/v1/jwks` on the internal listener
+      (`Cache-Control: max-age=300`) and `identity` (tokens per session and
+      app, valid 60 s, reused for 30 s while claims and key stay the same,
+      `forget_session` for revocation). The proxy sends them in part 3.
+   2. **Apps and pairing** – apps, pairing codes, manifest, the internal
+      listener's `pair`, `manifest` and `users`, health poll, the example
+      app.
+   3. **Gateway proxy** – routing, header rules, streaming, WebSocket,
+      session cache, the identity header, cancelling streams on revocation.
+   4. **Events** – delivery with backoff, catch-up, retention.
 5. **Home page and permissions** – home page tiles, browser API
    (`/api/v1/session`, `/api/v1/apps`, icons), administration of apps (add,
    pairing code, status, order, access default, remove), access and roles per

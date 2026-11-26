@@ -1,0 +1,22 @@
+[package]
+name = "roedy-hub-contract"
+description = "Shared types of the Roedy Hub app contract and its strict JWS (Ed25519)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# No JWT library: the JWS is small on top of these, which keeps `alg`
+# handling strict (docs/plan.md › New dependencies).
+[dependencies]
+# Base64url of the JWS segments and JWK coordinates; already used by the server.
+base64 = "0.23.1"
+# Ed25519 signatures; already in the tree through rustls, the same version
+# Roedy Mail uses.
+ring = { version = "0.17.14", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

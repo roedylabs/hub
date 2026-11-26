@@ -5,8 +5,8 @@
 //! - **public** (`ROEDY_LISTEN`): the web app, `/api/v1`, `/healthz` and
 //!   `/readyz`, later the gateway. `/internal/…` is 404 here.
 //! - **internal** (`ROEDY_INTERNAL_LISTEN`, off when empty): only
-//!   `/internal/…` for the apps (docs/app-contract.md › Internal API); 404
-//!   until pairing exists.
+//!   `/internal/…` for the apps (docs/app-contract.md › Internal API,
+//!   [`internal`]); everything else is 404 there.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/app.rs`) without the mail
 //! specific state and jobs (the hub's are in `jobs`); the graceful shutdown
@@ -37,8 +37,9 @@ use crate::{
     config::{Config, TrustProxy},
     crypto::SecretKey,
     db::{self, Db},
+    identity::Identities,
     instance::Instance,
-    jobs,
+    internal, jobs,
     locks::KeyedLocks,
     logging::{self, SETUP_TARGET},
     logo::IMAGE_PATH,
@@ -48,6 +49,7 @@ use crate::{
     },
     rate_limit::RateLimiter,
     setup_token,
+    signing::{self, KeyStore},
     web::{
         branding::{
             self, APP_ICON_PATH, MANIFEST_PATH, MASKABLE_ICON_PATH, SMALL_ICON_PATH,
@@ -88,6 +90,10 @@ pub struct AppState {
     pub reset_locks: Arc<KeyedLocks>,
     /// Organization and branding (`instance`).
     pub instance: Arc<Instance>,
+    /// Signing keys for identities and events (`signing`); filled at start.
+    pub keys: Arc<KeyStore>,
+    /// Identity tokens for the apps (`identity`).
+    pub identities: Arc<Identities>,
     pub background: Background,
 }
 
@@ -158,6 +164,8 @@ impl AppState {
             limiter: Arc::new(RateLimiter::default()),
             challenges: Arc::new(Challenges::default()),
             trust_proxy: config.trust_proxy,
+            identities: Arc::new(Identities::new(&public_url)),
+            keys: Arc::new(KeyStore::default()),
             public_url: Arc::new(public_url),
             secrets: Arc::new(secrets),
             mailer: Arc::new(Mailer::new(mailer::http_client()?)),
@@ -226,10 +234,10 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Router of the internal listener: only `/internal/…`, all 404 until
-/// pairing (docs/app-contract.md › Internal API) exists.
+/// Router of the internal listener: only the internal API
+/// (docs/app-contract.md › Internal API), everything else 404.
 pub fn internal_router(state: AppState) -> Router {
-    Router::new()
+    internal::router()
         .fallback(internal_not_found)
         .layer(TraceLayer::new_for_http().make_span_with(logging::request_span))
         .with_state(state)
@@ -277,6 +285,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     db::call(&db, move |conn| instance.load(conn))
         .await
         .context("organization and branding not loaded")?;
+    // Before the listeners: a request may need an identity at once.
+    signing::rotate_now(&db, state.secrets.clone(), &state.keys)
+        .await
+        .context("signing keys not loaded")?;
     let background = state.background.clone();
     let result = async {
         // Placeholder hash before the first request, so that even the first
@@ -464,6 +476,9 @@ pub(crate) mod tests {
         .unwrap();
         // Low cost so that tests stay fast.
         state.hasher = Arc::new(password::tests::fast());
+        signing::rotate_now(&state.db, state.secrets.clone(), &state.keys)
+            .await
+            .unwrap();
         (state, tmp)
     }
 
@@ -734,7 +749,9 @@ pub(crate) mod tests {
             "/readyz",
             "/api/v1/x",
             "/_hub/version.json",
-            "/internal/v1/jwks",
+            "/internal/v1/x",
+            "/internal/v2/jwks",
+            "/internal/v1/jwks/",
         ] {
             let reply = get(&internal, path).await;
             assert_eq!(reply.status, StatusCode::NOT_FOUND, "{path}");
@@ -790,7 +807,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             status_line(internal_addr, "/internal/v1/jwks").await,
-            "HTTP/1.1 404 Not Found"
+            "HTTP/1.1 200 OK"
         );
         assert!(
             healthcheck::check(internal_addr, healthcheck::DEFAULT_TIMEOUT)

@@ -1,0 +1,354 @@
+{
+  "description": "Test vectors of the Roedy Hub app contract, version 1 (docs/app-contract.md § 4 and § 10.1). For each case, verify `token` as `typ` against `jwks` with `issuer`, `audience` and `now` (Unix seconds): a valid token gives `claims`; an invalid one must be rejected, and `error` names the first check that fails in the order of § 4.3. The private keys are published test keys: never use them for anything else. Made by crates/contract/tests/vectors.rs.",
+  "issuer": "https://app.example.com",
+  "audience": "mail",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        "kid": "01JDX3M8Q4V6S2T0R9P7N5K3H1",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    ]
+  },
+  "private_keys": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "kid": "01JDX3M8Q4V6S2T0R9P7N5K3H1",
+      "use": "sig",
+      "alg": "EdDSA",
+      "d": "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"
+    },
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "kid": "01JDX3M8Q4V6S2T0R9P7N5K3H2",
+      "use": "sig",
+      "alg": "EdDSA",
+      "d": "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio"
+    }
+  ],
+  "cases": [
+    {
+      "name": "identity",
+      "description": "The identity of contract § 15.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": true,
+      "claims": {
+        "iss": "https://app.example.com",
+        "aud": "mail",
+        "sub": "01JDX2Q7B5W3Y1Z9X7V5T3R1P0",
+        "username": "alex",
+        "email": "alex@example.com",
+        "name": "Alex Example",
+        "role": "user",
+        "app_role": "user",
+        "locale": "de",
+        "sid": "01JDX3A1C3E5G7J9K1M3N5P7Q9",
+        "auth_time": 1795600000,
+        "iat": 1795600123,
+        "exp": 1795600183
+      }
+    },
+    {
+      "name": "identity-unknown-claim",
+      "description": "Unknown claims are ignored.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImZ1dHVyZV9jbGFpbSI6eyJuZXN0ZWQiOnRydWV9LCJpYXQiOjE3OTU2MDAxMjMsImlzcyI6Imh0dHBzOi8vYXBwLmV4YW1wbGUuY29tIiwibG9jYWxlIjoiZGUiLCJuYW1lIjoiQWxleCBFeGFtcGxlIiwicm9sZSI6InVzZXIiLCJzaWQiOiIwMUpEWDNBMUMzRTVHN0o5SzFNM041UDdROSIsInN1YiI6IjAxSkRYMlE3QjVXM1kxWjlYN1Y1VDNSMVAwIiwidXNlcm5hbWUiOiJhbGV4In0.zjOG625fXgIb1qHx-82GwnXdIttCS9vRP14LImBjlxCQcuzFhJ9Z7QCYnEYCDJcb821JS2oWJRlsY5tKUvzlCQ",
+      "valid": true,
+      "claims": {
+        "app_role": "user",
+        "aud": "mail",
+        "auth_time": 1795600000,
+        "email": "alex@example.com",
+        "exp": 1795600183,
+        "future_claim": {
+          "nested": true
+        },
+        "iat": 1795600123,
+        "iss": "https://app.example.com",
+        "locale": "de",
+        "name": "Alex Example",
+        "role": "user",
+        "sid": "01JDX3A1C3E5G7J9K1M3N5P7Q9",
+        "sub": "01JDX2Q7B5W3Y1Z9X7V5T3R1P0",
+        "username": "alex"
+      }
+    },
+    {
+      "name": "identity-expiring-within-leeway",
+      "description": "now = exp + 9: still valid with the leeway of 10 s.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600192,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": true,
+      "claims": {
+        "iss": "https://app.example.com",
+        "aud": "mail",
+        "sub": "01JDX2Q7B5W3Y1Z9X7V5T3R1P0",
+        "username": "alex",
+        "email": "alex@example.com",
+        "name": "Alex Example",
+        "role": "user",
+        "app_role": "user",
+        "locale": "de",
+        "sid": "01JDX3A1C3E5G7J9K1M3N5P7Q9",
+        "auth_time": 1795600000,
+        "iat": 1795600123,
+        "exp": 1795600183
+      }
+    },
+    {
+      "name": "identity-iat-within-leeway",
+      "description": "iat = now + 10: valid with the leeway of 10 s.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600113,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": true,
+      "claims": {
+        "iss": "https://app.example.com",
+        "aud": "mail",
+        "sub": "01JDX2Q7B5W3Y1Z9X7V5T3R1P0",
+        "username": "alex",
+        "email": "alex@example.com",
+        "name": "Alex Example",
+        "role": "user",
+        "app_role": "user",
+        "locale": "de",
+        "sid": "01JDX3A1C3E5G7J9K1M3N5P7Q9",
+        "auth_time": 1795600000,
+        "iat": 1795600123,
+        "exp": 1795600183
+      }
+    },
+    {
+      "name": "event",
+      "description": "The event of contract § 15, verified as an event.",
+      "typ": "roedy-event+jwt",
+      "now": 1795600210,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWV2ZW50K2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJqdGkiOiIwMUpEWDVSMlQ0VjZYOFowQjJENEY2SDhKMCIsInNlcSI6NDIsInR5cGUiOiJzZXNzaW9uLnJldm9rZWQiLCJkYXRhIjp7InJlYXNvbiI6ImxvZ291dCIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAifSwiaWF0IjoxNzk1NjAwMjAwLCJleHAiOjE3OTU2MDA1MDB9.p13hvX-4n-tJG8ezRieCAaaJ2O9khVg7cWE3VktJPhvZPFPbDI6QxvIYaScE-X8Y35JzIYCwJtQfoWAiNwmqBA",
+      "valid": true,
+      "claims": {
+        "iss": "https://app.example.com",
+        "aud": "mail",
+        "jti": "01JDX5R2T4V6X8Z0B2D4F6H8J0",
+        "seq": 42,
+        "type": "session.revoked",
+        "data": {
+          "reason": "logout",
+          "sid": "01JDX3A1C3E5G7J9K1M3N5P7Q9",
+          "sub": "01JDX2Q7B5W3Y1Z9X7V5T3R1P0"
+        },
+        "iat": 1795600200,
+        "exp": 1795600500
+      }
+    },
+    {
+      "name": "identity-expired",
+      "description": "now = exp + 10.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600193,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": false,
+      "error": "expired"
+    },
+    {
+      "name": "identity-iat-in-future",
+      "description": "iat = now + 11.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600112,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": false,
+      "error": "iat"
+    },
+    {
+      "name": "identity-lifetime-61",
+      "description": "exp − iat = 61 s, longer than an identity may live.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODQsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.KEWT1TYA9Wq9cPcyMBrlQgQTsobbaUlfA86nsIKjWnsM-ozpcnn3GTQ9F37to7k7Eb0FetkAqoQ0GeNh3QyDAg",
+      "valid": false,
+      "error": "lifetime"
+    },
+    {
+      "name": "event-lifetime-301",
+      "description": "exp − iat = 301 s, longer than an event may live.",
+      "typ": "roedy-event+jwt",
+      "now": 1795600210,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktZXZlbnQrand0In0.eyJhdWQiOiJtYWlsIiwiZGF0YSI6eyJyZWFzb24iOiJsb2dvdXQiLCJzaWQiOiIwMUpEWDNBMUMzRTVHN0o5SzFNM041UDdROSIsInN1YiI6IjAxSkRYMlE3QjVXM1kxWjlYN1Y1VDNSMVAwIn0sImV4cCI6MTc5NTYwMDUwMSwiaWF0IjoxNzk1NjAwMjAwLCJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImp0aSI6IjAxSkRYNVIyVDRWNlg4WjBCMkQ0RjZIOEowIiwic2VxIjo0MiwidHlwZSI6InNlc3Npb24ucmV2b2tlZCJ9.LVcbtDmmAUCY-X5UHckb3UPsHSH227E9gUjstw6g7uhekQcOgYrkksBRiXWSRQBVF-TEhgk8-Pey4IEDxtKMDw",
+      "valid": false,
+      "error": "lifetime"
+    },
+    {
+      "name": "forged-signature",
+      "description": "One bit of the signature flipped.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-qHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": false,
+      "error": "signature"
+    },
+    {
+      "name": "tampered-claims",
+      "description": "app_role changed to admin, the signature of the original kept.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJhcHBfcm9sZSI6ImFkbWluIiwiYXVkIjoibWFpbCIsImF1dGhfdGltZSI6MTc5NTYwMDAwMCwiZW1haWwiOiJhbGV4QGV4YW1wbGUuY29tIiwiZXhwIjoxNzk1NjAwMTgzLCJpYXQiOjE3OTU2MDAxMjMsImlzcyI6Imh0dHBzOi8vYXBwLmV4YW1wbGUuY29tIiwibG9jYWxlIjoiZGUiLCJuYW1lIjoiQWxleCBFeGFtcGxlIiwicm9sZSI6InVzZXIiLCJzaWQiOiIwMUpEWDNBMUMzRTVHN0o5SzFNM041UDdROSIsInN1YiI6IjAxSkRYMlE3QjVXM1kxWjlYN1Y1VDNSMVAwIiwidXNlcm5hbWUiOiJhbGV4In0.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": false,
+      "error": "signature"
+    },
+    {
+      "name": "wrong-key",
+      "description": "Signed by a key that is not in the JWKS, with the kid of one that is.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.PN0cXlWHoGtKVjDBnTFFfGZPQJbPlLezKqeNJXUee1ID9bPCw8GhrtgD3LxLT3xg4IF2hAFYe-ho9goDwZrNBQ",
+      "valid": false,
+      "error": "signature"
+    },
+    {
+      "name": "alg-none",
+      "description": "alg none without a signature.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJub25lIiwia2lkIjoiMDFKRFgzTThRNFY2UzJUMFI5UDdONUszSDEiLCJ0eXAiOiJyb2VkeS1pZCtqd3QifQ.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.",
+      "valid": false,
+      "error": "alg"
+    },
+    {
+      "name": "alg-hs256-key-confusion",
+      "description": "alg HS256 with the public key (32 bytes) as the HMAC secret.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJIUzI1NiIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.z2oiTpuJtlhfBMrpwsB5lrQfUx_HhtmuM3cmc0LqIX0",
+      "valid": false,
+      "error": "alg"
+    },
+    {
+      "name": "alg-missing",
+      "description": "No alg in the header, otherwise properly signed.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJraWQiOiIwMUpEWDNNOFE0VjZTMlQwUjlQN041SzNIMSIsInR5cCI6InJvZWR5LWlkK2p3dCJ9.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.fNMiZ0Wnm4lJvepm8XePVjuvu9HfB-AnqMqOhbIqgN65BzQkCn0VMkTqicreXl3ZOTiFjl7I64TQ9h4yY2jbCA",
+      "valid": false,
+      "error": "alg"
+    },
+    {
+      "name": "event-as-identity",
+      "description": "A valid event presented as an identity.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWV2ZW50K2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJqdGkiOiIwMUpEWDVSMlQ0VjZYOFowQjJENEY2SDhKMCIsInNlcSI6NDIsInR5cGUiOiJzZXNzaW9uLnJldm9rZWQiLCJkYXRhIjp7InJlYXNvbiI6ImxvZ291dCIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAifSwiaWF0IjoxNzk1NjAwMjAwLCJleHAiOjE3OTU2MDA1MDB9.p13hvX-4n-tJG8ezRieCAaaJ2O9khVg7cWE3VktJPhvZPFPbDI6QxvIYaScE-X8Y35JzIYCwJtQfoWAiNwmqBA",
+      "valid": false,
+      "error": "typ"
+    },
+    {
+      "name": "identity-as-event",
+      "description": "A valid identity presented as an event.",
+      "typ": "roedy-event+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": false,
+      "error": "typ"
+    },
+    {
+      "name": "typ-jwt",
+      "description": "typ JWT instead of roedy-id+jwt.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoiSldUIn0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.d7v0MycQ--e3rF7wryLSdCLsUqQJ6-S42s5RC384YBJpUPr2eu3FwdOxZYNWJhd4YX1eXvziqg70h4pU7oOQDg",
+      "valid": false,
+      "error": "typ"
+    },
+    {
+      "name": "unknown-kid",
+      "description": "Signed by a key whose kid is not in the JWKS: refresh the JWKS, then reject.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gyIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.OeKCk9El-7dVDV1VaFzdDc4pk7odo0rPOidCAxLU-ZboGad_zCs11MAUnyDItaBhCy42RzvGxW6GqbuTYcFFCA",
+      "valid": false,
+      "error": "unknown_kid"
+    },
+    {
+      "name": "kid-missing",
+      "description": "No kid in the header.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCJ9.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.ksBlnbLVtjYM4I2ZVGNAKrTZgUl4qzd5WtrGBt7WG5oZs-PYapCwzC9PKQJHkxxJqr10d4t5MGeiJYmeM0fIBg",
+      "valid": false,
+      "error": "malformed"
+    },
+    {
+      "name": "crit",
+      "description": "A crit header member: the contract has no extensions.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImNyaXQiOlsiZXhwIl0sImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.6_bWKjuKf5-5pO7uiWA3dOQPTtnzPtFwr_svOsCfgSGle6Hu-gRykIh26al9MXSN5cTAOxG6c1eX4zfZYMczAg",
+      "valid": false,
+      "error": "malformed"
+    },
+    {
+      "name": "crit-null",
+      "description": "A crit header member with the value null: rejected all the same.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImNyaXQiOm51bGwsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.oVqAzXRu-ggWoZBk01t7f9gRG4tWmRDsWH5ksfe14nAWplU-0RVpuAwqH0bIrd4KOlI7jAwqXr7is2exJ2ZbBw",
+      "valid": false,
+      "error": "malformed"
+    },
+    {
+      "name": "two-segments",
+      "description": "Header and claims without a signature segment.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ",
+      "valid": false,
+      "error": "malformed"
+    },
+    {
+      "name": "padding",
+      "description": "Base64url with padding.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsInR5cCI6InJvZWR5LWlkK2p3dCIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIn0=.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImF1ZCI6Im1haWwiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCIsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsImFwcF9yb2xlIjoidXNlciIsImxvY2FsZSI6ImRlIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImlhdCI6MTc5NTYwMDEyMywiZXhwIjoxNzk1NjAwMTgzfQ.fDX13A5lk4GtL-uHS6a8p83Y5pFGmvp3B7xh1ODbkTHtXJcVSTjq8PhSWBrzrf9YpB8ZWNM-ekBP3H5rVPd_Cw",
+      "valid": false,
+      "error": "malformed"
+    },
+    {
+      "name": "wrong-aud",
+      "description": "aud is another app.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJjb250YWN0cyIsImF1dGhfdGltZSI6MTc5NTYwMDAwMCwiZW1haWwiOiJhbGV4QGV4YW1wbGUuY29tIiwiZXhwIjoxNzk1NjAwMTgzLCJpYXQiOjE3OTU2MDAxMjMsImlzcyI6Imh0dHBzOi8vYXBwLmV4YW1wbGUuY29tIiwibG9jYWxlIjoiZGUiLCJuYW1lIjoiQWxleCBFeGFtcGxlIiwicm9sZSI6InVzZXIiLCJzaWQiOiIwMUpEWDNBMUMzRTVHN0o5SzFNM041UDdROSIsInN1YiI6IjAxSkRYMlE3QjVXM1kxWjlYN1Y1VDNSMVAwIiwidXNlcm5hbWUiOiJhbGV4In0.7i2kSkHhpHKCU_ZfdX08PyDP6d7o1FKxIcS1TsVlyKJuZSiD1k5pxv34TuFE8sB3PjlqCJ7X87gup8Q4DjFpCw",
+      "valid": false,
+      "error": "aud"
+    },
+    {
+      "name": "aud-array",
+      "description": "aud as an array: always a string in the contract.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOlsibWFpbCJdLCJhdXRoX3RpbWUiOjE3OTU2MDAwMDAsImVtYWlsIjoiYWxleEBleGFtcGxlLmNvbSIsImV4cCI6MTc5NTYwMDE4MywiaWF0IjoxNzk1NjAwMTIzLCJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbSIsImxvY2FsZSI6ImRlIiwibmFtZSI6IkFsZXggRXhhbXBsZSIsInJvbGUiOiJ1c2VyIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCJ9.FOofP717Bg1XOEajGZTV-GJULnhgdG9YLU1KQEDI3tSvbMV2rexsLEHycnPwA15_5aB1qQih-hIpYwMKlcz7Aw",
+      "valid": false,
+      "error": "claims"
+    },
+    {
+      "name": "wrong-iss",
+      "description": "iss is another hub.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9vdGhlci5leGFtcGxlLmNvbSIsImxvY2FsZSI6ImRlIiwibmFtZSI6IkFsZXggRXhhbXBsZSIsInJvbGUiOiJ1c2VyIiwic2lkIjoiMDFKRFgzQTFDM0U1RzdKOUsxTTNONVA3UTkiLCJzdWIiOiIwMUpEWDJRN0I1VzNZMVo5WDdWNVQzUjFQMCIsInVzZXJuYW1lIjoiYWxleCJ9.V70iZLmQGm8uJEY2Y-r34md5v5kt33MCFtnxcQgxMlvDmXoR7v5tYv9G3Qwu1V1qUpi59KLH4l4QbAjDJTSyDA",
+      "valid": false,
+      "error": "iss"
+    }
+  ]
+}

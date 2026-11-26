@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/server", "crates/jmap"]
+members = ["crates/server", "crates/jmap", "crates/contract"]
 
 [workspace.package]
 version = "0.1.0"

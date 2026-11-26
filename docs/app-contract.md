@@ -196,6 +196,9 @@ JOSE header:
 { "alg": "EdDSA", "typ": "roedy-id+jwt", "kid": "01JDX3…" }
 ```
 
+Header, claims and signature are base64url without padding, joined by dots
+(RFC 7515 compact serialization); header and claims are JSON objects.
+
 Claims:
 
 | Claim | Type | Meaning |
@@ -224,12 +227,15 @@ For every request, the app:
    signed in**;
 2. parses the compact JWS; the header MUST have `alg` = `EdDSA`,
    `typ` = `roedy-id+jwt` and a `kid`. Any other `alg` (including `none`) is
-   rejected, regardless of the key;
+   rejected, regardless of the key. Values compare exactly (case-sensitive).
+   A header with `crit` is rejected: the contract defines no extensions;
 3. looks up `kid` in its cached JWKS; if unknown, refreshes the JWKS
    ([§ 4.4](#44-keys-jwks)) at most once per 30 s and tries again;
 4. verifies the Ed25519 signature over the signing input;
 5. checks `iss` = the issuer stored at pairing, `aud` = its own slug,
-   `exp` > now − 10 s, `iat` ≤ now + 10 s and `exp − iat` ≤ 60.
+   `exp` > now − 10 s, `iat` ≤ now + 10 s and 0 ≤ `exp − iat` ≤ 60.
+
+The test vectors ([§ 15](#15-examples)) cover each step.
 
 If any step fails, the request counts as **not signed in** – the app does not
 answer 400 for it. It SHOULD log the reason at most once a minute (a failing
@@ -256,7 +262,11 @@ The hub signs with Ed25519 keys and publishes their public parts as a JWK Set
 - **Rotation:** the hub publishes a new key at least 10 minutes before it
   signs with it, and keeps a retired key in the set for at least 10 minutes
   after its last signature. An app that refreshes as above never rejects a
-  valid header.
+  valid header. The hub rotates every 90 days; apps MUST NOT rely on that
+  interval.
+- The one exception: if the hub can no longer decrypt its key (its instance
+  key was replaced), it signs with a new key at once. Apps pick it up through
+  the refresh for an unknown `kid`.
 - Only `EdDSA` keys with `use` = `sig` are valid.
 
 ### 4.5 Users in the app
@@ -813,9 +823,18 @@ It SHOULD:
 ## 15. Examples
 
 The example app in this repository (`crates/example-app`) implements the whole
-contract and is what the hub's end-to-end tests run against. Test vectors –
-a key pair, signed identities and events with the expected verification result
-– will be in `docs/app-contract/vectors.json`.
+contract and is what the hub's end-to-end tests run against.
+
+**Test vectors** are in [`app-contract/vectors.json`](app-contract/vectors.json):
+the JWKS (the public key of RFC 8037, appendix A.1, as in § 4.4), the
+published test keys (never use them for anything else), and cases with a
+token, the `typ` to verify it as, `now` and the result – the claims of a valid
+token, or for an invalid one an `error` naming the first check that fails in
+the order of [§ 4.3](#43-verification): `malformed`, `alg`, `typ`,
+`unknown_kid`, `signature`, `claims` (not the expected shape, e.g. `aud` as an
+array), `iss`, `aud`, `expired`, `iat`, `lifetime`. An app only has to reject
+an invalid token; the code helps to find out why it did not. The hub's own
+implementation (`crates/contract`) makes and checks the file.
 
 Decoded identity:
 
