@@ -54,12 +54,11 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 |---|---|
 | `crates/server` | Server (Rust, axum, SQLite), binary `roedy-hub` |
 | `crates/contract` | The app contract's types, signing and verification (`roedy-hub-contract`); makes and checks the test vectors in `docs/app-contract/vectors.json` |
+| `crates/example-app` | The example app (`roedy-hub-example`): a test app that implements the contract, for the hub's tests; not part of the image |
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
 | `scripts/` | Git hooks and developer tooling |
-
-`crates/example-app` (a test app that implements the contract) follows with the gateway.
 
 ## Conventions
 

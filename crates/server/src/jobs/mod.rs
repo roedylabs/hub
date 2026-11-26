@@ -2,9 +2,11 @@
 //! registers them.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/jobs/mod.rs`) with the two
-//! cleanup jobs the hub needs, plus the rotation of the signing keys.
+//! cleanup jobs the hub needs, plus the rotation of the signing keys and the
+//! health checks of the apps.
 
 pub mod audit_retention;
+pub mod health_poll;
 pub mod key_rotation;
 pub mod scheduler;
 pub mod session_cleanup;
@@ -20,6 +22,7 @@ pub fn start(state: &AppState) -> Scheduler {
             session_cleanup::job(),
             audit_retention::job(),
             key_rotation::job(),
+            health_poll::job(),
         ],
     )
 }

@@ -6,7 +6,14 @@
 use anyhow::Context as _;
 use rusqlite::{Connection, OptionalExtension as _};
 
-use crate::{auth::username, db, settings::Language};
+use crate::{
+    auth::username,
+    db::{
+        self,
+        repo::{app_access, deleted_users},
+    },
+    settings::Language,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -42,9 +49,10 @@ pub struct NewUser<'a> {
     pub password_hash: &'a str,
 }
 
-/// Creates an active user and returns its ID. If the username or email
-/// address is taken, the call fails on the uniqueness constraint
-/// (`rusqlite::ErrorCode::ConstraintViolation`).
+/// Creates an active user and returns its ID; the user gets access to the
+/// apps whose default is "everyone" (`app_access::grant_to_new_user`). If
+/// the username or email address is taken, the call fails on the uniqueness
+/// constraint (`rusqlite::ErrorCode::ConstraintViolation`).
 pub fn insert(conn: &Connection, user: &NewUser<'_>) -> anyhow::Result<String> {
     anyhow::ensure!(
         username::is_valid(user.username),
@@ -65,6 +73,7 @@ pub fn insert(conn: &Connection, user: &NewUser<'_>) -> anyhow::Result<String> {
         ),
     )
     .context("user not created")?;
+    app_access::grant_to_new_user(conn, &id).context("app access not granted")?;
     Ok(id)
 }
 
@@ -410,10 +419,14 @@ pub fn get_listed(conn: &Connection, id: &str) -> rusqlite::Result<Option<Listed
 }
 
 /// Removes the user with everything attached to them (`ON DELETE CASCADE`:
-/// sessions, authenticator apps, codes, settings); their name stays in the
-/// audit log.
+/// sessions, authenticator apps, codes, settings, app access); their name
+/// stays in the audit log, their ID in `deleted_users` for the apps.
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    Ok(conn.execute("DELETE FROM users WHERE id = ?1", [id])? == 1)
+    if conn.execute("DELETE FROM users WHERE id = ?1", [id])? != 1 {
+        return Ok(false);
+    }
+    deleted_users::record(conn, id)?;
+    Ok(true)
 }
 
 /// Free username from the email address: the suggestion from

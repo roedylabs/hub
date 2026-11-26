@@ -1,9 +1,12 @@
 //! Data access per table. The functions are synchronous and run in
 //! `db::call` or in `spawn_blocking`.
 
+pub mod app_access;
 pub mod app_settings;
+pub mod apps;
 pub mod assets;
 pub mod audit_log;
+pub mod deleted_users;
 pub mod email_changes;
 pub mod invitations;
 pub mod known_devices;

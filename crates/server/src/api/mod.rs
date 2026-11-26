@@ -5,6 +5,7 @@
 //! Taken over from Roedy Mail (`crates/server/src/api/mod.rs`): the same
 //! middleware order and CSRF rules, without maintenance mode.
 
+pub mod apps;
 pub mod audit;
 pub mod auth;
 pub mod branding;
@@ -54,6 +55,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(email::routes())
         .merge(invites::routes())
         .merge(users::routes())
+        .merge(apps::routes())
         .merge(audit::routes())
         .merge(organization::routes())
         .merge(branding::routes())

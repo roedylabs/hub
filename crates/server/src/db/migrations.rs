@@ -39,6 +39,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "signing_keys",
         sql: include_str!("migrations/0005_signing_keys.sql"),
     },
+    Migration {
+        version: 6,
+        name: "apps",
+        sql: include_str!("migrations/0006_apps.sql"),
+    },
 ];
 
 /// Applies all pending migrations and returns the schema version.
@@ -146,12 +151,16 @@ mod tests {
         assert_eq!(
             table_names(&conn),
             [
+                "app_access",
                 "app_settings",
+                "apps",
                 "assets",
                 "audit_log",
+                "deleted_users",
                 "email_changes",
                 "invitations",
                 "known_devices",
+                "pairing_codes",
                 "password_resets",
                 "recovery_codes",
                 "schema_migrations",

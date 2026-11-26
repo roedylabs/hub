@@ -9,6 +9,10 @@
 //! (an event never passes as an identity and the other way round), and the
 //! times are checked with the contract's leeway.
 //!
+//! The manifest ([`Manifest`], § 8) with its rules, slugs, pairing codes and
+//! the bodies of the internal API ([`pairing`], § 7 and § 9) are shared the
+//! same way, so that the hub and the example app agree on them.
+//!
 //! The test vectors in `docs/app-contract/vectors.json` (contract § 15) are
 //! made and checked with this crate (`tests/vectors.rs`); apps in other
 //! languages can check their verification against them.
@@ -16,10 +20,13 @@
 mod claims;
 mod jwks;
 mod jws;
+pub mod manifest;
+pub mod pairing;
 
 pub use claims::{Event, Identity};
 pub use jwks::{Jwk, Jwks};
 pub use jws::{Error, Expected, InvalidKey, SigningKey, verify};
+pub use manifest::{Manifest, ManifestError};
 
 /// The request header with the identity (contract § 4.1).
 pub const IDENTITY_HEADER: &str = "X-Roedy-Identity";

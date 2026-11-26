@@ -1,4 +1,4 @@
-//! Delete expired sessions and links from mails (hourly). They are no longer
+//! Delete expired sessions, links from mails and pairing codes (hourly). They are no longer
 //! valid anyway (`sessions::authenticate` and the links check the expiry);
 //! the cleanup keeps the tables small and removes IP addresses nobody needs
 //! any more. Pending email changes stay until the person discards or
@@ -12,7 +12,7 @@ use super::Job;
 use crate::{
     app::AppState,
     db,
-    db::repo::{email_changes, password_resets, sessions},
+    db::repo::{apps, email_changes, password_resets, sessions},
 };
 
 pub fn job() -> Job<AppState> {
@@ -28,7 +28,9 @@ pub fn job() -> Job<AppState> {
 pub async fn run(state: &AppState) -> anyhow::Result<(usize, usize)> {
     let (deleted, links) = db::call(&state.db, |conn| {
         let deleted = sessions::delete_expired(conn)?;
-        let links = password_resets::delete_expired(conn)? + email_changes::delete_stale(conn)?;
+        let links = password_resets::delete_expired(conn)?
+            + email_changes::delete_stale(conn)?
+            + apps::delete_expired_codes(conn)?;
         Ok((deleted, links))
     })
     .await?;
@@ -36,7 +38,7 @@ pub async fn run(state: &AppState) -> anyhow::Result<(usize, usize)> {
         tracing::info!(deleted, "expired sessions deleted");
     }
     if links > 0 {
-        tracing::info!(deleted = links, "expired links from mails deleted");
+        tracing::info!(deleted = links, "expired links and pairing codes deleted");
     }
     Ok((deleted, links))
 }

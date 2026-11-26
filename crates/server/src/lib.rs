@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod app;
+pub mod apps;
 pub mod auth;
 pub mod cli;
 pub mod client_ip;
