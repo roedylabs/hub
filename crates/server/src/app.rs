@@ -9,8 +9,7 @@
 //!   until pairing exists.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/app.rs`) without the mail
-//! specific state, jobs and background tasks; the graceful shutdown covers
-//! both listeners.
+//! specific state and jobs; the graceful shutdown covers both listeners.
 
 use std::{
     future::{Future, IntoFuture as _},
@@ -27,12 +26,13 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{any, get},
 };
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{net::TcpListener, sync::watch, task::JoinSet};
 use tower_http::trace::TraceLayer;
 use url::Url;
 
 use crate::{
     api::{self, health},
+    auth::{challenge::Challenges, password::Hasher},
     config::{Config, TrustProxy},
     crypto::SecretKey,
     db::{self, Db},
@@ -47,6 +47,8 @@ use crate::{
 
 /// Grace period for running requests after SIGTERM; Docker kills after 10 s.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(8);
+/// Then for background tasks (audit entries of failed sign-ins, rehashing).
+const BACKGROUND_GRACE: Duration = Duration::from_secs(2);
 
 /// First path segment of the internal API, on both listeners.
 const INTERNAL: &str = "/internal";
@@ -55,12 +57,57 @@ const INTERNAL: &str = "/internal";
 pub struct AppState {
     pub db: Db,
     pub web: Arc<WebAssets>,
+    pub hasher: Arc<Hasher>,
     pub limiter: Arc<RateLimiter>,
+    /// Sign-ins between password and second factor (`auth::challenge`).
+    pub challenges: Arc<Challenges>,
     pub trust_proxy: TrustProxy,
     /// Public address of the hub (`ROEDY_PUBLIC_URL`).
     pub public_url: Arc<Url>,
     /// Key for secrets in the database.
     pub secrets: Arc<SecretKey>,
+    pub background: Background,
+}
+
+/// Tasks that keep running after the response. On shutdown `serve` waits
+/// briefly for them ([`Self::finish`]) before the database closes.
+#[derive(Clone)]
+pub struct Background(Arc<std::sync::Mutex<Option<JoinSet<()>>>>);
+
+impl Default for Background {
+    fn default() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(JoinSet::new()))))
+    }
+}
+
+impl Background {
+    /// Starts `task`; once [`Self::finish`] has begun, the task is dropped
+    /// (logged): nothing would wait for it before the database closes.
+    pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(tasks) = tasks.as_mut() else {
+            tracing::warn!("background task dropped during shutdown");
+            return;
+        };
+        // Clean up finished ones so the list does not grow.
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(task);
+    }
+
+    /// Closes admission, waits at most `within` for running tasks and aborts
+    /// the rest.
+    pub async fn finish(&self, within: Duration) {
+        let taken = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(mut tasks) = taken else {
+            return;
+        };
+        let drained =
+            tokio::time::timeout(within, async { while tasks.join_next().await.is_some() {} })
+                .await;
+        if drained.is_err() {
+            tracing::warn!(open = tasks.len(), "background tasks aborted");
+        }
+    }
 }
 
 impl AppState {
@@ -74,17 +121,27 @@ impl AppState {
         Self {
             db,
             web,
+            hasher: Arc::new(Hasher::default()),
             limiter: Arc::new(RateLimiter::default()),
+            challenges: Arc::new(Challenges::default()),
             trust_proxy: config.trust_proxy,
             public_url: Arc::new(public_url),
             secrets: Arc::new(secrets),
+            background: Background::default(),
         }
+    }
+}
+
+impl AppState {
+    /// Issuer of the authenticator apps (the name the app shows).
+    pub fn issuer(&self) -> &'static str {
+        "Roedy Hub"
     }
 }
 
 /// Router of the public listener.
 pub fn router(state: AppState) -> Router {
-    let api = api::router();
+    let api = api::router(state.clone());
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
@@ -152,9 +209,22 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let db = Db::from(conn);
 
     let state = AppState::new(db.clone(), web, &config, public_url, secrets);
+    let background = state.background.clone();
     let result = async {
+        // Placeholder hash before the first request, so that even the first
+        // sign-in of an unknown user takes no longer than that of a known one.
+        // It fails only without a random source; then nothing else works
+        // either, so the start fails.
+        state
+            .hasher
+            .prepare()
+            .await
+            .context("placeholder password hash not created")?;
         let listeners = Listeners::bind(&config).await?;
-        run_http(listeners, state, shutdown).await
+        let served = run_http(listeners, state, shutdown).await;
+        // Before closing the database: audit entries after the last responses.
+        background.finish(BACKGROUND_GRACE).await;
+        served
     }
     .await;
     // Close even after errors so that SQLite checkpoints the WAL file.
@@ -299,8 +369,10 @@ pub(crate) mod tests {
     };
     use tower::ServiceExt as _;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
-    use crate::{healthcheck, web::security_headers::InlineScripts};
+    use crate::{auth::password, healthcheck, web::security_headers::InlineScripts};
 
     /// State with a fresh database in a temporary directory (kept alive by
     /// the returned guard) and without a web app.
@@ -312,13 +384,15 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_path_buf();
         let conn = db::blocking(move || db::open(&data_dir)).await.unwrap();
-        let state = AppState::new(
+        let mut state = AppState::new(
             Db::from(conn),
             Arc::new(web),
             &Config::default(),
             Url::parse("https://app.example.com").unwrap(),
             SecretKey::random().unwrap(),
         );
+        // Low cost so that tests stay fast.
+        state.hasher = Arc::new(password::tests::fast());
         (state, tmp)
     }
 
@@ -369,6 +443,36 @@ pub(crate) mod tests {
 
     fn start_script_hash() -> String {
         InlineScripts::of_html(INDEX_HTML.as_bytes()).0.remove(0)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn background_waits_briefly_then_aborts() {
+        let done = Arc::new(AtomicUsize::new(0));
+        let background = Background::default();
+        for secs in [1, 60] {
+            let done = done.clone();
+            background.spawn(async move {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                done.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        background.finish(Duration::from_secs(5)).await;
+        assert_eq!(
+            done.load(Ordering::SeqCst),
+            1,
+            "the short one, not the long one"
+        );
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        assert_eq!(done.load(Ordering::SeqCst), 1, "the long one is aborted");
+
+        // After the start of `finish` nothing new is admitted.
+        let late = done.clone();
+        background.spawn(async move {
+            late.fetch_add(1, Ordering::SeqCst);
+        });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(done.load(Ordering::SeqCst), 1, "dropped after shutdown");
+        background.finish(Duration::from_secs(5)).await;
     }
 
     #[tokio::test]

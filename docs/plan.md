@@ -51,7 +51,7 @@ origin in each file's module comment:
   change and the security notices that go with them (password changed, email
   changed, new sign-in), with the snapshot tests.
 
-Not taken over: JMAP, token broker, mail servers, tags, notifications (bell,
+Not taken over: the token broker, mail servers, tags, notifications (bell,
 push, digests), backups in the app, update check, maintenance mode, GeoIP.
 Each can follow later; v1 stays small.
 
@@ -138,7 +138,8 @@ New:
 | Crate | Why |
 |---|---|
 | `hyper`, `hyper-util` (client, http1), `http-body-util` | Proxy client with streaming and upgrades; `hyper` already comes with axum |
-| `lettre` (smtp, tokio, rustls) | Only if system mails go via SMTP (open question, decided before milestone 3) |
+| `roedy-jmap` (copy of Mail's `crates/jmap`) | System mails go out over JMAP from a sending account, as in Mail (decided on 2026-11-26) |
+| `argon2`, `totp-rs`, `icu_properties` | Same as Mail: password hashes, authenticator apps, letters in display names (`icu_properties` already comes with `url`) |
 | `ulid`, `ring`, `usvg` | Same as Mail: IDs, Ed25519, sanitizing the app icons |
 
 No JWT library: the JWS is ~150 lines on top of `ring`, `base64` and
@@ -179,6 +180,21 @@ checks pass in every PR; every PR has tests for what it adds.
    organization.
    *Tests:* API integration tests per flow (as in Mail), rate limits, CSRF,
    `next` open-redirect cases, mail snapshots, component tests, axe.
+   Split into four PRs (decided on 2026-11-26):
+   1. [ ] **Auth core (API)** – migration 0002 (authenticator apps, recovery
+      codes, user settings), setup with mandatory TOTP, sign-in with
+      password, TOTP and recovery codes, a fresh sign-in in the same session
+      (`auth_time`, the session ID stays), sign-out with `Clear-Site-Data`,
+      `GET /api/v1/session`, profile, password change, authenticator apps,
+      signed-in devices, settings, deleting the own account.
+   2. [ ] **System mails (API)** – JMAP sending account, templates and
+      snapshots, invitations, password reset, email change, security notices
+      with known devices.
+   3. [ ] **Administration (API)** – users (lock, roles, reset the second
+      factor), audit log with texts, branding and organization, cleanup of
+      expired sessions.
+   4. [ ] **Pages** – setup, sign-in (with `?next=` and `reauth=1`),
+      invitation, account and administration in the web app.
 4. **Gateway, pairing, identity** – `crates/contract`, signing keys and
    rotation, the proxy, internal listener, pairing, manifest, events with
    delivery and catch-up, users endpoint, health poll, the example app.

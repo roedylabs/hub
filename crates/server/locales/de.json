@@ -1,0 +1,6 @@
+{
+  "device.browser_on": "Browser auf {os}",
+  "device.label": "{browser} auf {os}",
+  "device.unknown": "Unbekanntes Gerät",
+  "totp.default_name": "Authenticator-App"
+}

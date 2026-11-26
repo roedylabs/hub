@@ -12,9 +12,11 @@ name = "roedy-hub"
 path = "src/main.rs"
 
 # Same crates and versions as Roedy Mail's server (../mail), trimmed to what
-# the server base needs.
+# the hub needs so far.
 [dependencies]
 anyhow = "1.0.104"
+# Password hashes (`auth::password`): Argon2id as in Roedy Mail.
+argon2 = "0.6.0"
 axum = "0.8.9"
 # Instance key in Base64 (`crypto`) and the CSP hashes of inline scripts.
 base64 = "0.23.1"
@@ -25,6 +27,9 @@ figment = { version = "0.10.19", features = ["env"] }
 getrandom = "0.4.3"
 # MACs with the instance key (`crypto`); the same trait crate as chacha20poly1305.
 hmac = "0.13.0"
+# Letters and marks in display names (general category); already comes with
+# url/idna.
+icu_properties = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 mimalloc = "0.1.52"
 # Decoding request paths for the embedded web app.
 percent-encoding = "2.3.2"
@@ -33,10 +38,15 @@ rust-embed = { version = "8.13.0", features = ["debug-embed", "deterministic-tim
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+# Authenticator apps (`auth::totp`): RFC 6238 and otpauth URIs as in Roedy Mail.
+totp-rs = { version = "6.0.0", default-features = false, features = ["otpauth"] }
 tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.7.1", features = ["set-header", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# IDs of users, sessions and devices (`db::new_id`). Without `std`, which
+# brings in `rand`; randomness comes from getrandom.
+ulid = { version = "3.0.0", default-features = false }
 url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]

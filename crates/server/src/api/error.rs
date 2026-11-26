@@ -2,7 +2,7 @@
 //! stable; the web app shows its own localized texts for them.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/api/error.rs`) without
-//! `busy` (password hashing follows with sign-in) and `maintenance`.
+//! `maintenance`.
 
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use axum::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::rate_limit::Limited;
+use crate::{auth::password::Busy, rate_limit::Limited};
 
 #[derive(Debug)]
 pub enum ApiError {
@@ -30,6 +30,8 @@ pub enum ApiError {
     NotFound,
     /// 429 `rate_limited` with `Retry-After` and `retry_after` (seconds).
     RateLimited(Duration),
+    /// 503 `busy`: all slots for password hashing are taken.
+    Busy,
     /// 500 `internal`; the cause is only in the log.
     Internal(anyhow::Error),
     /// Domain error: own status and code, further fields next to `error`
@@ -72,6 +74,7 @@ impl ApiError {
             Self::Csrf => (StatusCode::FORBIDDEN, "csrf"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
             Self::Rejected { status, code, .. } => (*status, code),
         }
@@ -158,7 +161,11 @@ impl IntoResponse for ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
-        Self::Internal(error)
+        if error.is::<Busy>() {
+            Self::Busy
+        } else {
+            Self::Internal(error)
+        }
     }
 }
 
@@ -218,6 +225,14 @@ mod tests {
         assert_eq!(
             render(ApiError::from(anyhow::anyhow!("cause"))).await.0,
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            render(ApiError::from(anyhow::Error::new(Busy))).await,
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                r#"{"error":"busy"}"#.into()
+            )
         );
     }
 

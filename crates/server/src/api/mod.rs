@@ -1,26 +1,33 @@
 //! HTTP handlers: operational endpoints (`/healthz`, `/readyz`) and the API
-//! under `/api/v1` with JSON errors, CSRF protection and
-//! `Cache-Control: no-store`. The endpoints themselves follow with sign-in and
-//! the administration (docs/plan.md › Milestones).
+//! under `/api/v1` with JSON errors, CSRF protection, sessions and
+//! `Cache-Control: no-store`.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/api/mod.rs`): the same
-//! middleware order and CSRF rules, without sessions and maintenance mode yet.
+//! middleware order and CSRF rules, without maintenance mode.
 
+pub mod auth;
 pub mod error;
 pub mod health;
+pub mod me;
+pub mod mfa;
+pub mod session;
+pub mod sessions;
+pub mod settings;
+pub mod setup;
 
 use axum::{
     Router,
-    extract::Request,
+    extract::{FromRequest, Request},
     http::{HeaderMap, HeaderValue, Method, header},
     middleware::{self, Next},
     response::{IntoResponse as _, Response},
 };
+use serde::de::DeserializeOwned;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use error::{ApiError, FieldErrors};
 
-use crate::app::AppState;
+use crate::{app::AppState, auth::extract};
 
 /// Path under which [`router`] is mounted.
 pub const PREFIX: &str = "/api/v1";
@@ -31,18 +38,25 @@ pub const PREFIX: &str = "/api/v1";
 /// does not allow.
 pub const CSRF_HEADER: &str = "x-requested-with";
 
-pub fn router() -> Router<AppState> {
-    with_middleware(Router::new())
+pub fn router(state: AppState) -> Router<AppState> {
+    let routes = setup::routes()
+        .merge(auth::routes())
+        .merge(session::routes())
+        .merge(me::routes())
+        .merge(mfa::routes())
+        .merge(sessions::routes())
+        .merge(settings::routes());
+    with_middleware(routes, state)
 }
 
 /// Wraps the API's fallback and middleware around `routes`. Tests put their
 /// own routes behind the same stack this way.
-pub fn with_middleware(routes: Router<AppState>) -> Router<AppState> {
+pub fn with_middleware(routes: Router<AppState>, state: AppState) -> Router<AppState> {
     routes
         .fallback(not_found)
-        // Order from inside to outside: CSRF (before any database query), then
-        // `no-store` for every response, errors included. The session layer
-        // follows between the two with sign-in.
+        // Order from inside to outside: session, CSRF (before any database
+        // query), then `no-store` for every response, errors included.
+        .layer(middleware::from_fn_with_state(state, extract::resolve))
         .layer(middleware::from_fn(require_csrf_header))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
@@ -117,6 +131,21 @@ fn is_subresource(headers: &HeaderMap) -> bool {
         .is_some_and(|dest| SUBRESOURCES.iter().any(|d| dest.eq_ignore_ascii_case(d)))
 }
 
+/// JSON body of a request. If it does not fit, the API answers with 400
+/// `bad_request` as JSON instead of axum's text response.
+pub struct JsonBody<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for JsonBody<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        axum::Json::<T>::from_request(request, state)
+            .await
+            .map(|axum::Json(value)| Self(value))
+            .map_err(|rejection| ApiError::BadRequest(rejection.body_text()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::{body::Body, http::StatusCode, routing::get};
@@ -133,7 +162,7 @@ mod tests {
             get(|| async { "read" }).post(|| async { "written" }),
         );
         Router::new()
-            .nest(PREFIX, with_middleware(routes))
+            .nest(PREFIX, with_middleware(routes, state.clone()))
             .with_state(state)
     }
 
