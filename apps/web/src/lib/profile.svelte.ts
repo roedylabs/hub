@@ -8,8 +8,9 @@
  * `auth/me` › `email_change`, with "Resend link" (`POST auth/me/email/resend`)
  * and "Discard change" (`DELETE auth/me/email`). "Delete account" asks for
  * the confirmation word and is locked for the only active administrator
- * (`sole_admin`, 409 `last_admin`); afterwards the session is gone and the
- * sign-in opens.
+ * (`sole_admin`, 409 `last_admin`); it names the account, so nothing is
+ * deleted once the session belongs to another one (409 `account_mismatch`);
+ * afterwards the session is gone and the sign-in opens.
  *
  * The page loads `auth/me` itself (the session's account from `GET session`
  * has no `mfa_enabled`, `email_change` or `sole_admin`); only the latest read
@@ -128,6 +129,8 @@ export class ProfilePage {
   #disposed = false;
   /** Counts the writes of `me` and the starts of `load`: a read applies only if nothing happened since it started. */
   #version = 0;
+  /** Counts the accounts shown (`follow`): an answer for the previous account changes nothing on the page. */
+  #account = 0;
   /**
    * `run` of this page's open "Delete account" confirmation; it closes when the account changes. (`ui.confirm` holds
    * a proxy of the request, the function stays the same.)
@@ -170,6 +173,7 @@ export class ProfilePage {
   follow(id: string | undefined): void {
     const me = this.me;
     if (!me || !id || id === me.id) return;
+    this.#account++;
     // The confirmation names the previous account: confirming must not delete the new one.
     this.#closeAsk();
     this.discardDrafts();
@@ -301,19 +305,20 @@ export class ProfilePage {
     }
     this.saving = true;
     const named = body.display_name !== undefined || body.username !== undefined;
+    const account = this.#account;
     try {
       const res = await api<ProfileResponse>('PATCH', 'auth/me', body);
       // Header and account menu follow a saved name also after the page was left.
       if (named) this.#syncSession();
-      // Left in the meantime: no toast, no prompt for the address.
-      if (this.#disposed) return;
+      // Left, or another account shown, in the meantime: no draft reset, toast or prompt for the address.
+      if (this.#disposed || account !== this.#account) return;
       this.#applyUser(res.user);
       this.discardDrafts();
       if (named) ui.toasts.show(m.profile_saved());
       if (res.status === 'reauth_required' && body.email) this.#openAuth(body.email);
     } catch (error) {
-      // Left in the meantime: no message and no redirect to a fresh sign-in.
-      if (!this.#disposed) this.#saveFailed(error);
+      // Left, or another account shown, in the meantime: no message and no redirect to a fresh sign-in.
+      if (!this.#disposed && account === this.#account) this.#saveFailed(error);
     } finally {
       this.saving = false;
     }
@@ -556,26 +561,22 @@ export class ProfilePage {
 
   /**
    * Deletes the account `id` named by the confirmation. `DELETE auth/me` deletes the account of the session cookie,
-   * which another tab may already have replaced before this tab noticed: `auth/me` is read first and nothing is
-   * deleted if it names a different account.
+   * which another tab may already have replaced before this tab noticed: the request names `id`, and the server
+   * deletes nothing if the session belongs to a different account (409 `account_mismatch`).
    */
   async #delete(id: string): Promise<void> {
     if (this.deleting || this.me?.id !== id || session.user?.id !== id) return;
     this.deleting = true;
     try {
-      const now = await api<ProfileMe>('GET', 'auth/me', undefined, {
-        signal: AbortSignal.timeout(READ_TIMEOUT_MS),
-      });
-      if (now.id !== id) {
-        this.deleting = false;
+      await api('DELETE', 'auth/me', { confirm: DELETE_CONFIRM, id });
+    } catch (error) {
+      this.deleting = false;
+      if (isApiError(error, 409, 'account_mismatch')) {
         // The session's account reloads, the layout then shows the other account.
         ui.toasts.error(m.profile_delete_switched());
         this.#syncSession();
         return;
       }
-      await api('DELETE', 'auth/me', { confirm: DELETE_CONFIRM });
-    } catch (error) {
-      this.deleting = false;
       if (isApiError(error, 409, 'last_admin')) {
         // Meanwhile no other administrator is active any more: from now on the notice instead of the button.
         const me = this.me;

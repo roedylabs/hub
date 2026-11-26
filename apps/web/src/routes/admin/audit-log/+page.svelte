@@ -43,17 +43,25 @@
     input?.focus();
   }
 
+  /** Whether "Load more entries" had the focus just before it disappeared (afterwards the focus is on the page). */
+  let moreHadFocus = false;
+  // Runs before the DOM update that removes the button.
+  $effect.pre(() => {
+    if (!v.aMore.show && moreButton?.isConnected) moreHadFocus = document.activeElement === moreButton;
+  });
+
   /**
-   * "Load more entries". On the last page the button disappears; if it had the focus (it then falls back to the
-   * page), the focus goes to the first new entry. Whoever has moved on in the meantime keeps their focus.
+   * "Load more entries". On the last page the button disappears; if it had the focus until then, the focus goes to
+   * the first new entry. Whoever has moved on in the meantime (also to the page itself) keeps their focus.
    */
   async function more(): Promise<void> {
     const button = moreButton;
     const from = p.entries.length;
+    moreHadFocus = false;
     await v.aMore.onClick();
     await tick();
     const first = p.entries[from];
-    if (!first || !button || button.isConnected) return;
+    if (!first || !button || button.isConnected || !moreHadFocus) return;
     if (document.activeElement !== null && document.activeElement !== document.body) return;
     days?.querySelector<HTMLElement>(`[data-entry="${first.id}"]`)?.focus();
   }

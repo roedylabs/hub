@@ -306,6 +306,23 @@ describe('Audit log page', () => {
     expect(document.activeElement).toBe(search);
   });
 
+  it('leaves the focus on the page if the user left the button there while the last page loads', async () => {
+    const page = held({ body: { ...DATA, entries: ENTRIES.slice(3), next: null } });
+    const view = renderPage({
+      'GET admin/audit': [{ body: { ...DATA, entries: ENTRIES.slice(0, 3), next: 2 } }],
+      'GET admin/audit?before=2': [page.reply],
+    });
+    const more = await view.findByRole('button', { name: 'Load more entries' });
+    more.focus();
+    await fireEvent.click(more);
+    more.blur();
+    expect(document.activeElement).toBe(document.body);
+    page.release();
+    await view.findByText('Robin Lee');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('moves "Today" and "Yesterday" on at midnight', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     // 23:59 in Berlin.

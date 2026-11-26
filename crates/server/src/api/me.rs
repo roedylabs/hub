@@ -681,13 +681,20 @@ const DELETE_WORD: &str = "delete";
 #[serde(deny_unknown_fields)]
 struct DeleteBody {
     confirm: String,
+    /// The account the confirmation named (its ID). If the session belongs
+    /// to another account by now – another tab signed in someone else
+    /// meanwhile –, nothing is deleted: 409 `account_mismatch`. Optional for
+    /// older clients; the web app always sends it.
+    #[serde(default)]
+    id: Option<String>,
 }
 
 /// "Delete account": with the confirmation word `confirm` the hub removes
 /// the user with everything attached to them (`users::delete`: sessions,
 /// authenticator apps, codes, settings) and signs out. The only active
-/// administrator cannot delete their account: 409 `last_admin`. The audit
-/// log keeps the entry with their name.
+/// administrator cannot delete their account: 409 `last_admin`. With `id`
+/// of another account than the session's: 409 `account_mismatch`. The
+/// audit log keeps the entry with their name.
 async fn delete_me(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -698,6 +705,9 @@ async fn delete_me(
         let mut errors = FieldErrors::default();
         errors.code("confirm", "invalid");
         return Err(errors.into_error());
+    }
+    if body.id.as_deref().is_some_and(|id| id != user.id) {
+        return Err(ApiError::rejected(StatusCode::CONFLICT, "account_mismatch"));
     }
     let removed = user.id.clone();
     let deleted = db::call(&state.db, move |conn| {

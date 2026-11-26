@@ -723,35 +723,109 @@ describe('Recovery codes', () => {
     ]);
   });
 
-  it('an earlier regeneration answering last does not replace the newer codes', async () => {
+  it('sends one regeneration at a time; the latest answer wins even with an earlier stamp', async () => {
     const first = later();
     const set = (stamp: string, codes: string[]): MfaOverview => ({
       ...MFA,
       recovery: { total: 10, unused: 10, created_at: stamp },
       recovery_codes: codes,
     });
-    const older = set('2026-10-26T11:59:59.100Z', CODES);
-    const newer = set(
-      '2026-10-26T11:59:59.200Z',
+    // Wall-clock stamps that cannot order the sets: equal, then going backwards.
+    const a = set('2026-10-26T11:59:59.100Z', CODES);
+    const b = set(
+      '2026-10-26T11:59:59.100Z',
       CODES.map((c) => c.replace('ABCD', 'WXYZ')),
     );
-    const { p, v } = await loaded({ 'POST auth/recovery-codes': [first.reply, { body: newer }] });
+    const c = set(
+      '2026-10-26T11:59:58.000Z',
+      CODES.map((c) => c.replace('ABCD', 'QRST')),
+    );
+    const { p, v, calls } = await loaded({ 'POST auth/recovery-codes': [first.reply, { body: b }, { body: c }] });
     p.openRegen();
     p.setRcPw('Secret-123');
     p.setRcCode('123456');
-    const a = p.regenerate();
-    // Closed while on its way, opened again and sent once more; the second answers first.
+    const going = p.regenerate();
+    // Closed while on its way and opened again: the new form waits for the first answer.
     p.cancelRegen();
+    expect(p.rcBusy).toBe(true);
     p.openRegen();
     p.setRcPw('Secret-123');
     p.setRcCode('654321');
+    expect(v().rcBusy).toBe(true);
     await p.regenerate();
-    expect(p.codes).toEqual(newer.recovery_codes);
-    first.release({ body: older });
-    await a;
-    expect(p.codes).toEqual(newer.recovery_codes);
-    expect(p.recovery).toEqual(newer.recovery);
-    expect(v().rcShow).toBe(true);
+    expect(count(calls, 'auth/recovery-codes')).toBe(1);
+    first.release({ body: a });
+    await going;
+    // The first set is the valid one: shown, and the form opened in the meantime has its codes now.
+    expect([p.codes, p.recovery, p.rcForm, p.rcPw, p.rcBusy]).toEqual([CODES, a.recovery, false, '', false]);
+    for (const next of [b, c]) {
+      p.openRegen();
+      p.setRcPw('Secret-123');
+      p.setRcCode('123456');
+      await p.regenerate();
+      expect([p.codes, p.recovery]).toEqual([next.recovery_codes, next.recovery]);
+    }
+    expect(count(calls, 'auth/recovery-codes')).toBe(3);
+  });
+
+  it('a regeneration answering after a reload found multi-factor off restores nothing', async () => {
+    const answer = later();
+    const after: MfaOverview = {
+      ...MFA,
+      recovery: { total: 10, unused: 10, created_at: minutesAgo(0) },
+      recovery_codes: CODES,
+    };
+    const { p, v } = await loaded({
+      'POST auth/recovery-codes': [answer.reply],
+      'GET auth/totp/devices': [{ body: MFA }, { body: NO_MFA }],
+    });
+    p.openRegen();
+    p.setRcPw('Secret-123');
+    p.setRcCode('123456');
+    const going = p.regenerate();
+    // The set was generated, then another tab removed the last app; the reload answers first.
+    await p.load();
+    expect(p.devices).toEqual([]);
+    answer.release({ body: after });
+    await going;
+    expect([p.codes, p.devices, p.recovery, p.rcBusy, v().rcOff, v().rcShow]).toEqual([
+      null,
+      [],
+      null,
+      false,
+      true,
+      false,
+    ]);
+    expect(ui.toast).toBeNull();
+  });
+
+  it('a regeneration answering after the last app was removed here restores nothing', async () => {
+    const answer = later();
+    const after: MfaOverview = {
+      ...MFA,
+      recovery: { total: 10, unused: 10, created_at: minutesAgo(0) },
+      recovery_codes: CODES,
+    };
+    const { p } = await loaded(
+      {
+        'POST auth/recovery-codes': [answer.reply],
+        'DELETE auth/totp/devices/t1': [{ body: NO_MFA }],
+      },
+      { ...MFA, devices: [IPHONE] },
+    );
+    p.openRegen();
+    p.setRcPw('Secret-123');
+    p.setRcCode('123456');
+    const going = p.regenerate();
+    p.askRemove('t1');
+    p.setTPw('Secret-123');
+    p.setTCode('111111');
+    await p.confirmTotp();
+    expect(p.devices).toEqual([]);
+    answer.release({ body: after });
+    await going;
+    expect([p.codes, p.devices, p.recovery]).toEqual([null, [], null]);
+    expect(ui.toast?.text).toBe(m.security_mfa_off());
   });
 
   it('shows new codes whose form was closed while they were on their way', async () => {

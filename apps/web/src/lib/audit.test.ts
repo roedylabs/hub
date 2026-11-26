@@ -103,6 +103,12 @@ describe('untilNextDay', () => {
     expect(untilNextDay(at('2026-10-24T22:30:00Z'), 'Europe/Berlin')).toBe(24.5 * 3_600_000);
   });
 
+  it('wakes when the date changes even if midnight is skipped', () => {
+    // 6 September 2026 in Santiago: 23:59:59 on the 5th is followed by 01:00 on the 6th (04:00 UTC).
+    expect(untilNextDay(at('2026-09-06T02:00:00Z'), 'America/Santiago')).toBe(2 * 3_600_000);
+    expect(untilNextDay(at('2026-09-05T04:00:00Z'), 'America/Santiago')).toBe(24 * 3_600_000);
+  });
+
   it('waits at least a second', () => {
     expect(untilNextDay(at('2026-11-05T22:59:59.900Z'), 'Europe/Berlin')).toBe(1000);
   });
@@ -772,6 +778,50 @@ describe('export', () => {
     answer.release();
     await first;
     expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+
+  it('neither offers the file nor reports after leaving the page', async () => {
+    const answer = later(csv(1));
+    const api = mockApi({ 'GET admin/audit': [data(), data()], 'POST admin/audit/export': [answer.reply] });
+    const p = new AuditPage();
+    await p.load();
+    const exporting = p.exportCsv('UTC');
+    await vi.waitFor(() => expect(api.calls.some((c) => c.method === 'POST')).toBe(true));
+    p.dispose();
+    answer.release();
+    await exporting;
+    expect(downloadBlob).not.toHaveBeenCalled();
+    expect(ui.toast).toBeNull();
+    expect(api.calls).toHaveLength(2);
+  });
+
+  it('neither offers the file nor reports if the page is left while the file is read', async () => {
+    let read: (text: string) => void = () => {};
+    const text = vi.spyOn(Blob.prototype, 'text').mockReturnValueOnce(new Promise((resolve) => (read = resolve)));
+    const api = mockApi({ 'GET admin/audit': [data(), data()], 'POST admin/audit/export': [csv(1)] });
+    const p = new AuditPage();
+    await p.load();
+    const exporting = p.exportCsv('UTC');
+    await vi.waitFor(() => expect(text).toHaveBeenCalled());
+    p.dispose();
+    read(csv(1).raw);
+    await exporting;
+    expect(downloadBlob).not.toHaveBeenCalled();
+    expect(ui.toast).toBeNull();
+    expect(api.calls).toHaveLength(2);
+  });
+
+  it('reports no failure after leaving the page', async () => {
+    const answer = later({ status: 500 });
+    const api = mockApi({ 'GET admin/audit': [data()], 'POST admin/audit/export': [answer.reply] });
+    const p = new AuditPage();
+    await p.load();
+    const exporting = p.exportCsv('UTC');
+    await vi.waitFor(() => expect(api.calls.some((c) => c.method === 'POST')).toBe(true));
+    p.dispose();
+    answer.release();
+    await exporting;
+    expect(ui.toast).toBeNull();
   });
 });
 

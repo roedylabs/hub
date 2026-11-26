@@ -1107,6 +1107,72 @@ describe('Actions per row', () => {
     expect(listed(p, 'u2')?.role).toBe('admin');
   });
 
+  it('keeps the baseline of a later confirmed change when an earlier one is confirmed late', async () => {
+    const first = held();
+    const second = held();
+    const third = held();
+    const { p } = await loaded();
+    const { calls } = mockApi({
+      'PATCH users/u2': [first.reply, second.reply, third.reply],
+      'GET users': always({ status: 500, body: { error: 'internal' } }),
+    });
+    p.setRole(listed(p, 'u2') as ListedUser, 'admin');
+    p.setRole(listed(p, 'u2') as ListedUser, 'user');
+    // The later change is confirmed first: the server has "user" (it applied "admin" before).
+    second.release({ body: { user: null } });
+    await vi.waitFor(() => expect(loads(calls)).toBe(1));
+    p.setRole(listed(p, 'u2') as ListedUser, 'admin');
+    // The earlier change's late confirmation is older than "user".
+    first.release({ body: { user: null } });
+    await vi.waitFor(() => expect(loads(calls)).toBe(2));
+    // Rejected with 429 (no reload): back to what the server has.
+    third.release({ status: 429, body: { error: 'rate_limited', retry_after: 30 } });
+    await vi.waitFor(() => expect(ui.toast?.text).toContain('30 seconds'));
+    expect(listed(p, 'u2')?.role).toBe('user');
+    expect(loads(calls)).toBe(2);
+  });
+
+  it('takes a field changed by someone else from a newer list when the server skips the row', async () => {
+    const bulk = held();
+    const { p, v, server } = await loaded();
+    const { calls } = mockApi({
+      'POST users/bulk': [bulk.reply],
+      'GET users': [() => ({ body: { users: server.users } }), ...always({ status: 500, body: { error: 'internal' } })],
+    });
+    p.selected = ['u1', 'u2'];
+    v().uBulkLock();
+    ui.confirmOk();
+    // Another administrator locked Luke Walker meanwhile; a list loaded now says so.
+    server.users = USERS.map((u) => (u.id === 'u2' ? { ...u, status: 'locked' as const } : u));
+    await p.load();
+    expect(listed(p, 'u2')?.status).toBe('locked');
+    bulk.release({ body: { changed: ['u1'] } });
+    await vi.waitFor(() => expect(loads(calls)).toBe(2));
+    expect([listed(p, 'u1')?.status, listed(p, 'u2')?.status]).toEqual(['locked', 'locked']);
+  });
+
+  it('brings back a skipped removal without a change of it rejected meanwhile', async () => {
+    const role = held();
+    const bulk = held();
+    const { p, v } = await loaded();
+    const { calls } = mockApi({
+      'PATCH users/u2': [role.reply],
+      'POST users/bulk': [bulk.reply],
+      'GET users': always({ status: 500, body: { error: 'internal' } }),
+    });
+    p.setRole(listed(p, 'u2') as ListedUser, 'admin');
+    p.selected = ['u2', 'u3'];
+    v().uBulkRemove();
+    ui.confirmOk();
+    expect(listed(p, 'u2')).toBeUndefined();
+    role.release({ status: 429, body: { error: 'rate_limited', retry_after: 30 } });
+    await vi.waitFor(() => expect(ui.toast?.text).toContain('30 seconds'));
+    bulk.release({ body: { changed: ['u3'] } });
+    await vi.waitFor(() => expect(loads(calls)).toBe(1));
+    expect(listed(p, 'u3')).toBeUndefined();
+    expect(listed(p, 'u2')?.role).toBe('user');
+  });
+
   it('names the last administrator (`last_admin`)', async () => {
     const { p } = await loaded({ 'PATCH users/u1': [{ status: 409, body: { error: 'last_admin' } }] });
     p.setRole(listed(p, 'u1') as ListedUser, 'user');

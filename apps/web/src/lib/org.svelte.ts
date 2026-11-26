@@ -18,10 +18,10 @@
  * toast until the field is changed; the page does not add `https://`.
  *
  * Requests are sequenced: a response of `admin/org` that started before a
- * save (or an earlier `load`) never overwrites the newer state, also across
- * page instances (a save that answers after the page was left and reopened
- * does not replace a newer save's state), and nothing writes page state after
- * `dispose`.
+ * save (or an earlier `load`) never overwrites the newer state; saves run one
+ * after another, also across page instances (`serial`), so the session ends
+ * with the state the server stored last (saves from another browser aside);
+ * nothing writes page state after `dispose`.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/org.svelte.ts`) without the
  * deferred save with undo (the hub's toasts only inform) and the link to
@@ -31,6 +31,7 @@ import { lostAccess } from '#lib/access.ts';
 import { api, fieldsOf, isApiError } from '#lib/api.ts';
 import { failText } from '#lib/errors.ts';
 import { m } from '#lib/paraglide/messages.js';
+import { serial } from '#lib/serial.ts';
 import { session, type Org } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
 import { trimWs } from '#lib/trim.ts';
@@ -190,11 +191,12 @@ export function applyOrg(org: Org): void {
 }
 
 /**
- * Saves across page instances (each opening creates a new `OrgPage`): numbered when they start; a response only
- * goes into the session if no later save has been taken over. A save that answers after the page was left still
- * applies if it is the latest, so the session follows the server.
+ * Saves across page instances (each opening creates a new `OrgPage`): counted when they start (a load started
+ * before does not apply) and run one after another, so the server stores them in that order and each response goes
+ * into the session, also after the page was left; the last one is the state stored last. (The server has no
+ * revision to order saves of several browsers.)
  */
-const saves = { started: 0, applied: 0 };
+const saves = { started: 0, queue: serial() };
 
 export class OrgPage {
   /** Saved state: `org` of `session.config` (until the response of `admin/org` the one from `public/config`). */
@@ -285,16 +287,13 @@ export class OrgPage {
     }
     // A load still running started before this save: its response is older.
     this.#seq++;
-    const ticket = ++saves.started;
+    saves.started++;
     this.saving = true;
     try {
-      const org = await api<Org>('PUT', 'admin/org', body);
-      // The session state is global: it follows the server even if the page was left, unless a save started later
-      // (on a page opened since) has already been taken over.
-      if (ticket > saves.applied) {
-        saves.applied = ticket;
-        applyOrg(org);
-      }
+      // Waits for a save still running on a page left meanwhile. The session state is global: it follows the
+      // server even if the page was left.
+      const org = await saves.queue(() => api<Org>('PUT', 'admin/org', body));
+      applyOrg(org);
       // Inputs made during the request stay; the sent ones are saved now.
       const rest: Partial<OrgDraft> = {};
       for (const k of ORG_KEYS) {

@@ -16,11 +16,12 @@
  *
  * Request sequencing: a load only applies if no save started meanwhile, the
  * session's branding is still the one it started from and the page is still
- * open; a save's response only goes into the session if no save started later
- * (also on a page opened since) has been taken over; reading a file only
- * applies if no later file, "Discard", "Remove", "Reset" or other kind came in
- * between; a save's response only sets or clears the logo error if none of
- * these came in meanwhile; inputs made while a save runs stay as inputs.
+ * open; saves run one after another, also across page instances (`serial`), so
+ * the session ends with the state the server stored last (saves from another
+ * browser aside); reading a file only applies if no later file, "Discard",
+ * "Remove", "Reset" or other kind came in between; a save's response only sets
+ * or clears the logo error if none of these came in and no read finished
+ * meanwhile; inputs made while a save runs stay as inputs.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/branding.svelte.ts`) without
  * the app name (the hub's name is the organization's, which also gives the
@@ -36,6 +37,7 @@ import type { IconName } from '#lib/icons.ts';
 import { intlLocale } from '#lib/locale.ts';
 import { mkLogo, type LogoValues } from '#lib/logo.ts';
 import { m } from '#lib/paraglide/messages.js';
+import { serial } from '#lib/serial.ts';
 import { BRAND0, session, type Branding, type PlateName } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
 
@@ -256,11 +258,11 @@ function publish(b: Branding): void {
 }
 
 /**
- * Saves across page instances (each opening creates a new `BrandingPage`): numbered when they start; a response
- * only goes into the session if no later save has been taken over. A save that answers after the page was left
- * still applies if it is the latest.
+ * Saves across page instances (each opening creates a new `BrandingPage`) one after another: the server stores them
+ * in that order and each response goes into the session, also after the page was left; the last one is the state
+ * stored last. (The server has no revision to order saves of several browsers.)
  */
-const saves = { started: 0, applied: 0 };
+const saves = serial();
 
 /** Name and details of the saved file, only from `admin/branding`; they apply to the logo under `image`. */
 interface FileInfo {
@@ -293,7 +295,7 @@ export class BrandingPage {
   #ctx: BrandingContext;
   /** Counts loads and saves: a load only applies if it is the latest of them. */
   #seq = 0;
-  /** Counts file reads and what cancels them. */
+  /** Counts file reads, their results and what cancels them. */
   #read = 0;
   #disposed = false;
 
@@ -376,11 +378,12 @@ export class BrandingPage {
         if (size.width > MAX_PIXELS || size.height > MAX_PIXELS) content = 'dimensions';
       }
     } catch {
-      if (seq === this.#read && !this.#disposed) this.error = imageErrorText('unreadable');
-      return;
+      content = 'unreadable';
     }
     // A later file, Discard, Remove, Reset or another kind win.
     if (seq !== this.#read || this.#disposed) return;
+    // The result counts as new logo input too: a save started while the file was read sent the logo before it.
+    this.#read++;
     if (content) {
       this.error = imageErrorText(content);
       return;
@@ -439,17 +442,14 @@ export class BrandingPage {
     }
     // A load still running would bring back the state before the save.
     this.#seq++;
-    const ticket = ++saves.started;
-    // A later file, "Discard", "Remove", "Reset" or another kind: the logo error then belongs to newer inputs.
+    // A later file, a read finished, "Discard", "Remove", "Reset" or another kind: the logo error then belongs to
+    // newer inputs.
     const read = this.#read;
     this.saving = true;
     try {
-      const saved = await api<AdminBranding>('PUT', 'admin/branding', body);
-      // A save started later (on a page opened since) has already been taken over: its state is newer.
-      if (ticket > saves.applied) {
-        saves.applied = ticket;
-        this.#accept(saved);
-      }
+      // Waits for a save still running on a page left meanwhile; the responses arrive in the order of the saves.
+      const saved = await saves(() => api<AdminBranding>('PUT', 'admin/branding', body));
+      this.#accept(saved);
       settle();
       if (read === this.#read) this.error = null;
       ui.toasts.show(m.branding_saved());

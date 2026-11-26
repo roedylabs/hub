@@ -83,29 +83,42 @@
 
   /**
    * Initial (`onBrLetter`): the model limits it to two characters (code points, so `A😀` fits; a native `maxlength`
-   * counts UTF-16 units and would block it); the field then shows the limited value again.
+   * counts UTF-16 units and would block it); the field then shows the limited value again. Not during an IME
+   * composition (rewriting the field would break it): the limit applies when it ends (`compositionend`).
    */
   function onLetter(e: Event & { currentTarget: HTMLInputElement }): void {
+    if (e instanceof InputEvent && e.isComposing) return;
     const el = e.currentTarget;
     v.onBrLetter(el.value);
     if (el.value !== v.brLetter) el.value = v.brLetter;
   }
 
   /**
-   * Remove and the first upload swap the drop zone and the file card: if the focus was in there and went with the
-   * removed control, it moves to the new Upload or Replace button; a focus moved elsewhere stays.
+   * Remove and the first upload swap the drop zone and the file card, the breakpoint swaps the card's buttons: if
+   * the focus was in there and went with the removed control, it moves to the same action in its other form
+   * (`data-act`, breakpoint only), otherwise to the new Upload or Replace button; a focus moved elsewhere stays.
    */
   const hasImg = $derived(v.brHasImg);
-  let imgFocused = false;
+  /** Before the change: `data-act` of the focused control in the image area (`''` without one), `null` outside. */
+  let imgFocus: string | null = null;
+  /** Image state of the last run: unchanged means only the breakpoint changed. */
+  let hadImg: boolean | null = null;
   $effect.pre(() => {
     void hasImg;
-    imgFocused = !!imgPick && imgPick.contains(document.activeElement);
+    void isMobile;
+    const el = document.activeElement;
+    imgFocus = imgPick && el instanceof HTMLElement && imgPick.contains(el) ? (el.dataset.act ?? '') : null;
   });
   $effect(() => {
-    void hasImg;
+    const img = hasImg;
+    void isMobile;
     const lost = !document.activeElement || document.activeElement === document.body;
-    if (imgFocused && lost) imgPick?.querySelector<HTMLButtonElement>('button')?.focus();
-    imgFocused = false;
+    if (imgFocus !== null && lost) {
+      const same = img === hadImg && imgFocus ? imgPick?.querySelector<HTMLElement>(`[data-act="${imgFocus}"]`) : null;
+      (same ?? imgPick?.querySelector<HTMLButtonElement>('button'))?.focus();
+    }
+    imgFocus = null;
+    hadImg = img;
   });
 
   onMount(() => {
@@ -224,6 +237,7 @@
             placeholder={v.brLetterPh}
             aria-label={m.branding_letter()}
             oninput={onLetter}
+            oncompositionend={onLetter}
           />
         </div>
       {/if}
@@ -288,9 +302,12 @@
               </div>
               {#if !isMobile}
                 <div class="img-actions">
-                  <button type="button" class="replace" onclick={pick}>{m.branding_replace()}</button>
+                  <button type="button" class="replace" data-act="replace" onclick={pick}>
+                    {m.branding_replace()}
+                  </button>
                   <button
                     type="button"
+                    data-act="remove"
                     class="round remove"
                     aria-label={m.branding_remove()}
                     use:tooltip={m.branding_remove()}
@@ -300,10 +317,22 @@
                   </button>
                 </div>
               {:else}
-                <button type="button" class="round" aria-label={m.branding_replace_label()} onclick={pick}>
+                <button
+                  type="button"
+                  class="round"
+                  data-act="replace"
+                  aria-label={m.branding_replace_label()}
+                  onclick={pick}
+                >
                   <Icon name="ti-replace" />
                 </button>
-                <button type="button" class="round remove" aria-label={m.branding_remove()} onclick={v.brImgRemove}>
+                <button
+                  type="button"
+                  class="round remove"
+                  data-act="remove"
+                  aria-label={m.branding_remove()}
+                  onclick={v.brImgRemove}
+                >
                   <Icon name="ti-trash" />
                 </button>
               {/if}

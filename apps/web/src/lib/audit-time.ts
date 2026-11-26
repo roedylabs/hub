@@ -85,15 +85,23 @@ function wallClock(t: number, tz: string): number {
 }
 
 /**
- * Milliseconds until the next day begins in the time zone, so that "Today" and "Yesterday" move on at midnight. A
- * change to or from summer time before then is taken into account; at least one second, the caller checks again.
+ * Milliseconds until the next day begins in the time zone, so that "Today" and "Yesterday" move on at midnight: the
+ * first instant with a later local date, found by bisection, so that a change to or from summer time before then
+ * and a skipped midnight (the clock jumps from 23:59:59 to 01:00) are taken into account. At least one second, the
+ * caller checks again.
  */
 export function untilNextDay(now: number, tz: string): number {
-  const midnight = (Math.floor(wallClock(now, tz) / DAY) + 1) * DAY;
-  let next = now + midnight - wallClock(now, tz);
-  // The offset at midnight may differ from the one now (summer time).
-  next += midnight - wallClock(next, tz);
-  return Math.max(1000, next - now);
+  const date = (t: number) => Math.floor(wallClock(t, tz) / DAY);
+  const today = date(now);
+  // `lo` is still today, `hi` already a later date (no time zone changes its offset by a day).
+  let lo = now;
+  let hi = now + 2 * DAY;
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (date(mid) > today) hi = mid;
+    else lo = mid;
+  }
+  return Math.max(1000, hi - now);
 }
 
 /** Date in the time zone as `YYYY-MM-DD`. */

@@ -293,11 +293,14 @@ export class AuditPage {
       if (!(await this.#settled())) return;
       const blob = await apiBlob('POST', auditPath(EXPORT, this.filter, this.#sent));
       const n = csvRows(await blob.text());
+      // After leaving the page neither file nor toast: they would land on the next page.
+      if (this.#disposed) return;
       if (!downloadBlob(exportName(Date.now(), tz), blob)) ui.toasts.error(m.error_act());
       else ui.toasts.show(n === 1 ? m.audit_exported_one() : m.audit_exported({ n }));
       // The export is itself an entry.
       void this.load();
     } catch (error) {
+      if (this.#disposed) return;
       lostAccess(error);
       ui.toasts.error(exportFailText(error));
     } finally {

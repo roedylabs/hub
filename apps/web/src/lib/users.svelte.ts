@@ -10,7 +10,9 @@
  * to the server right away (removing, revoking and the reset after the
  * confirmation). If one fails, the rows return with the error toast. Local
  * changes the server does not know yet also apply to lists loaded in the
- * meantime (`#overlays`); after every action the list loads again.
+ * meantime (`#overlays`); after every action the list loads again. A row
+ * that returns gets the values the server confirmed last in request order
+ * (`#confirmed`, `#stamp`), never those of a change rejected meanwhile.
  *
  * Request sequencing: only the latest list load writes (`#seq`), and only the
  * latest details request for the row that is still open (`#detailSeq`); an
@@ -141,20 +143,22 @@ const STATUS_ORDER: Record<UserStatus, number> = { active: 0, invited: 1, locked
 const FILTERS: readonly UsersFilter[] = ['all', 'active', 'invited', 'locked'];
 /** Fields that actions of the list change. */
 type RowPatch = Partial<Pick<ListedUser, 'role' | 'status' | 'mfa'>>;
-const patchKeys = (patch: RowPatch) => Object.keys(patch) as (keyof RowPatch)[];
+const patchKeys = (patch: Partial<Record<keyof RowPatch, unknown>>) => Object.keys(patch) as (keyof RowPatch)[];
+
+/**
+ * Value of a field the server has, and when it was confirmed: the position (`#stamp`) of the change or list
+ * request that reported it. The server applies requests in the order they arrive, so a later position wins.
+ */
+interface Confirmed {
+  value: RowPatch[keyof RowPatch];
+  at: number;
+}
 
 /** Local change the server does not know yet (call on its way). */
 interface Overlay {
   ids: readonly string[];
   /** Changed fields; without: rows removed. */
   patch?: RowPatch;
-  /**
-   * Last confirmed values of the changed fields per row (patches only). A
-   * change on its way is no baseline: a later change of the same field takes
-   * over the earlier one's, and a settled change confirms its values for the
-   * later ones.
-   */
-  base?: Partial<Record<string, RowPatch>>;
   /** These of its rows without this change (as the server still knows them). */
   undo: (rows: ListedUser[], ids: readonly string[]) => ListedUser[];
   /** A newer list from the server: the base for `undo`. */
@@ -260,6 +264,14 @@ export class UsersPage {
   readonly #taken = new SvelteSet<string>();
   readonly #invalid = new SvelteSet<string>();
   #overlays: Overlay[] = [];
+  /**
+   * Confirmed values of the fields changes are on their way for, per row; kept while any change (also a removal)
+   * of the row is on its way. A change on its way is no baseline: reverting or restoring a row falls back to these.
+   */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping, nothing renders it (like `#overlays`)
+  readonly #confirmed = new Map<string, Partial<Record<keyof RowPatch, Confirmed>>>();
+  /** Counts changes and list requests in the order they go out (`Confirmed.at`). */
+  #stamp = 0;
   #seq = 0;
   #detailSeq = 0;
   #formId = 0;
@@ -359,10 +371,11 @@ export class UsersPage {
   /** Loads the list; after the first load it stays as it is on an error. Only the latest load writes. */
   async load(): Promise<void> {
     const seq = ++this.#seq;
+    const at = ++this.#stamp;
     try {
       const { users } = await this.loading.run(api<{ users: ListedUser[] }>('GET', 'users'));
       if (seq !== this.#seq || this.#disposed) return;
-      this.rows = this.#overlaid(users);
+      this.rows = this.#overlaid(users, at);
       this.status = 'ready';
       // Loads before the invitation write nothing any more (`#seq`): this list knows its invitations.
       if (this.result && !this.result.listed) this.result = { ...this.result, listed: true };
@@ -382,8 +395,13 @@ export class UsersPage {
     }
   }
 
-  /** Loaded list with the local changes the server does not know yet. */
-  #overlaid(users: ListedUser[]): ListedUser[] {
+  /** Loaded list (requested at `at`) with the local changes the server does not know yet. */
+  #overlaid(users: ListedUser[], at: number): ListedUser[] {
+    // What the server listed is confirmed, unless a change sent after the list request confirmed something newer.
+    for (const u of users) {
+      const known = this.#confirmed.get(u.id);
+      if (known) for (const key of patchKeys(known)) this.#confirm(u.id, key, u[key], at);
+    }
     let rows = users;
     for (const o of this.#overlays) {
       o.rebase?.(users);
@@ -395,33 +413,43 @@ export class UsersPage {
     return rows;
   }
 
+  /** The server has `value` since `at`: it becomes the field's baseline unless something later confirmed one. */
+  #confirm(id: string, key: keyof RowPatch, value: RowPatch[keyof RowPatch], at: number): void {
+    const known = this.#confirmed.get(id) ?? {};
+    const was = known[key];
+    if (was && was.at > at) return;
+    known[key] = { value, at };
+    this.#confirmed.set(id, known);
+  }
+
+  /** A row with its confirmed values and the changes still on their way (never one already lifted). */
+  #restored(u: ListedUser): ListedUser {
+    const row = { ...u };
+    for (const [key, c] of Object.entries(this.#confirmed.get(u.id) ?? {})) Object.assign(row, { [key]: c.value });
+    for (const o of this.#overlays) if (o.patch && o.ids.includes(u.id)) Object.assign(row, o.patch);
+    return row;
+  }
+
   /** Local change until the server knows it (`settle`) or rejects it (`revert`). */
   #change(o: Overlay): Change {
+    // Requests go out in this order; the server applies them in it.
+    const at = ++this.#stamp;
     this.#overlays.push(o);
-    const lift = () => {
+    /** Lift the change, bring back these rows without it; forget confirmed values nothing needs any more. */
+    const lift = (back: readonly string[]) => {
       this.#overlays = this.#overlays.filter((x) => x !== o);
+      if (back.length && !this.#disposed) this.rows = o.undo(this.rows, back);
+      for (const id of o.ids) if (!this.#overlays.some((x) => x.ids.includes(id))) this.#confirmed.delete(id);
     };
     return {
       settle: (confirmed = o.ids) => {
-        lift();
-        // The server has these values now: the baseline of later changes of the same fields.
+        // The server has these values now: the baseline of the other changes of the same fields.
         const { patch } = o;
-        if (patch) {
-          for (const x of this.#overlays) {
-            for (const id of confirmed) {
-              const b = x.base?.[id];
-              if (b)
-                for (const key of patchKeys(patch)) if (Object.hasOwn(b, key)) Object.assign(b, { [key]: patch[key] });
-            }
-          }
-        }
-        const skipped = o.ids.filter((id) => !confirmed.includes(id));
-        if (skipped.length && !this.#disposed) this.rows = o.undo(this.rows, skipped);
+        if (patch)
+          for (const id of confirmed) for (const key of patchKeys(patch)) this.#confirm(id, key, patch[key], at);
+        lift(o.ids.filter((id) => !confirmed.includes(id)));
       },
-      revert: () => {
-        lift();
-        if (!this.#disposed) this.rows = o.undo(this.rows, o.ids);
-      },
+      revert: () => lift(o.ids),
     };
   }
 
@@ -712,32 +740,16 @@ export class UsersPage {
    * are reverted – then only exactly these fields of these rows.
    */
   #patch(ids: readonly string[], patch: RowPatch): Change {
-    const keys = patchKeys(patch);
-    const base: Partial<Record<string, RowPatch>> = {};
     for (const u of this.rows) {
       if (!ids.includes(u.id)) continue;
-      const b: RowPatch = {};
-      for (const key of keys) {
-        // A change of this field on its way shows an unconfirmed value: its baseline is the confirmed one.
-        const pending = this.#overlays.map((o) => o.base?.[u.id]).find((x) => x && Object.hasOwn(x, key));
-        Object.assign(b, { [key]: pending ? pending[key] : u[key] });
-      }
-      base[u.id] = b;
+      // A row without a change of this field on its way shows the confirmed value (a change on its way has one).
+      for (const key of patchKeys(patch)) if (!this.#confirmed.get(u.id)?.[key]) this.#confirm(u.id, key, u[key], 0);
     }
     this.rows = this.rows.map((u) => (ids.includes(u.id) ? { ...u, ...patch } : u));
-    // Back to the newest change still on its way, otherwise to the confirmed value (`revert` lifts this one first).
+    // Back to the confirmed value with the changes still on their way (`settle`/`revert` lift this one first).
     const undo = (rows: ListedUser[], only: readonly string[]) =>
-      rows.map((u) => {
-        const b = only.includes(u.id) ? base[u.id] : undefined;
-        if (!b) return u;
-        const back: RowPatch = {};
-        for (const key of patchKeys(b)) {
-          const newer = this.#overlays.findLast((o) => o.ids.includes(u.id) && o.patch && Object.hasOwn(o.patch, key));
-          Object.assign(back, { [key]: newer?.patch ? newer.patch[key] : b[key] });
-        }
-        return { ...u, ...back };
-      });
-    return this.#change({ ids, patch, base, undo });
+      rows.map((u) => (only.includes(u.id) ? this.#restored(u) : u));
+    return this.#change({ ids, patch, undo });
   }
 
   /** Remove rows (remove, revoke) until the response; `revert` if the server rejects. */
@@ -747,9 +759,13 @@ export class UsersPage {
     this.rows = rows.filter((u) => !ids.includes(u.id));
     this.selected = this.selected.filter((id) => !ids.includes(id));
     if (this.open && ids.includes(this.open)) this.#close();
+    // Rows come back with their confirmed values: a change of them rejected meanwhile is not shown again.
     const undo = (now: ListedUser[], only: readonly string[]) => {
       const known = now.map((u) => u.id);
-      return [...now, ...rows.filter((u) => only.includes(u.id) && !known.includes(u.id))];
+      return [
+        ...now,
+        ...rows.filter((u) => only.includes(u.id) && !known.includes(u.id)).map((u) => this.#restored(u)),
+      ];
     };
     const rebase = (users: ListedUser[]) => {
       rows = users;

@@ -695,10 +695,16 @@ export class SystemMailPage {
     }
   }
 
-  /** Field errors at the fields that still show the sent value, and the jump to the first one; otherwise a toast. */
+  /**
+   * Field errors at the fields that are shown (sign-in method of the current draft) and still show the sent value,
+   * and the jump to the first one; otherwise a toast.
+   */
   #showErrors(errors: MailErrors, sent: MailDraft): void {
     const fields: MailErrors = {};
-    for (const k of FIELD_ORDER) if (errors[k] && this.draft[k] === sent[k]) fields[k] = errors[k];
+    const auth = this.draft.auth;
+    for (const k of FIELD_ORDER) {
+      if (errors[k] && shownField(k, auth) && this.draft[k] === sent[k]) fields[k] = errors[k];
+    }
     const section = firstBadSection(fields);
     if (!section) {
       ui.toasts.error(m.error_act());

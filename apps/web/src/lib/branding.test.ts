@@ -507,11 +507,72 @@ describe('BrandingPage', () => {
     expect(q.error).toBe('This format isn’t supported. Use PNG, SVG, JPG, or WebP.');
   });
 
-  it('an older save that answers late does not replace a newer save from a page opened since', async () => {
-    const slow = later({ ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '', color: 'rose' });
-    mockApi({
+  it('a file still being read when saving owns the logo error once it is done', async () => {
+    // The draft shows an SVG, a PNG is still being read on "Save": the SVG goes, the PNG comes in afterwards.
+    const put = later({ error: 'invalid', fields: { image: { code: 'svg_text' } } }, 422);
+    const api = mockApi({ 'PUT admin/branding': [put.reply] });
+    const p = new BrandingPage(ctx);
+    await p.readFile(png(10, 'logo.svg', 'image/svg+xml'));
+    const reading = p.readFile(png(20, 'other.png'));
+    const saving = p.save();
+    expect((api.calls[0]?.body as { imageName: string }).imageName).toBe('logo.svg');
+    await reading;
+    expect(p.draft.imageName).toBe('other.png');
+    put.release();
+    await saving;
+    // The rejection belongs to the SVG: a toast, no mark at the PNG.
+    expect(p.error).toBeNull();
+    expect(ctx.scrollTo).not.toHaveBeenCalled();
+    expect(ui.toast).toMatchObject({ text: 'Text in SVG isn’t supported. Convert the text to paths.', error: true });
+
+    // The read fails while a successful save runs: its error stays.
+    const ok = later({ ...SAVED, imageName: 'logo.png', imageMeta: 'PNG · 1 KB' });
+    mockApi({ 'PUT admin/branding': [ok.reply] });
+    const q = new BrandingPage(ctx);
+    await q.readFile(png(10));
+    pixels = { width: 5000, height: 100 };
+    const big = q.readFile(png(10, 'big.png'));
+    const again = q.save();
+    await big;
+    expect(q.error).toBe('The image is too large. Use no more than 4096 × 4096 pixels.');
+    ok.release();
+    await again;
+    expect(q.error).toBe('The image is too large. Use no more than 4096 × 4096 pixels.');
+  });
+
+  it('saves run one after another across page instances, so the session ends with the state stored last', async () => {
+    const plain = { ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '' } as const;
+    const slow = later({ ...plain, color: 'rose' });
+    const fast = later({ ...plain, color: 'sky' });
+    const api = mockApi({ 'PUT admin/branding': [slow.reply, fast.reply] });
+    const a = new BrandingPage(ctx);
+    a.set('color', 'rose');
+    const first = a.save();
+    a.dispose();
+    const b = new BrandingPage(ctx);
+    b.set('color', 'sky');
+    const second = b.save();
+    await tick();
+    // The later save waits for the earlier one: the server cannot store them in the other order.
+    expect(sent(api.calls)).toEqual(['PUT admin/branding']);
+    expect(b.saving).toBe(true);
+    slow.release();
+    await first;
+    expect(session.branding.color).toBe('rose');
+    await vi.waitFor(() => expect(sent(api.calls)).toEqual(['PUT admin/branding', 'PUT admin/branding']));
+    expect(api.calls[1]?.body).toEqual({ color: 'sky' });
+    fast.release();
+    await second;
+    expect(session.branding.color).toBe('sky');
+    expect(b.draft.color).toBe('sky');
+    expect(b.dirty).toBe(false);
+  });
+
+  it('a failed save does not hold up the next one', async () => {
+    const failing = later({ error: 'internal' }, 500);
+    const api = mockApi({
       'PUT admin/branding': [
-        slow.reply,
+        failing.reply,
         { body: { ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '', color: 'sky' } },
       ],
     });
@@ -521,13 +582,11 @@ describe('BrandingPage', () => {
     a.dispose();
     const b = new BrandingPage(ctx);
     b.set('color', 'sky');
-    await b.save();
+    const second = b.save();
+    failing.release();
+    await Promise.all([first, second]);
+    expect(sent(api.calls)).toEqual(['PUT admin/branding', 'PUT admin/branding']);
     expect(session.branding.color).toBe('sky');
-    slow.release();
-    await first;
-    expect(session.branding.color).toBe('sky');
-    expect(b.draft.color).toBe('sky');
-    expect(b.dirty).toBe(false);
   });
 
   it('a save that answers after the page was left still applies if it is the latest', async () => {

@@ -609,6 +609,20 @@ describe('saving', () => {
     expect(ui.toast).toBeNull();
   });
 
+  it('a 422 on a field hidden meanwhile (other sign-in method) shows the error toast', async () => {
+    const put = later();
+    const { p } = await loaded(STORED, { 'PUT admin/system-mail': [put.reply] });
+    p.set('pass', 'pw');
+    const run = p.save();
+    // The password field is hidden with a token, but still holds the sent value.
+    p.set('auth', 'token');
+    put.answer({ status: 422, body: { error: 'invalid', fields: { app_password: { code: 'invalid' } } } });
+    await run;
+    expect(p.serverErrors).toEqual({});
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(ui.toast).toMatchObject({ text: 'That didn’t work. Please try again.', error: true });
+  });
+
   it('a server error keeps the inputs with the secret and the bar', async () => {
     const { p } = await loaded(STORED, { 'PUT admin/system-mail': [{ status: 500, body: { error: 'internal' } }] });
     p.set('pass', 'pw');

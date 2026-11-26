@@ -433,6 +433,24 @@ describe('"Back" of the shell', () => {
     expect(nav.goto).toHaveBeenLastCalledWith('/account');
   });
 
+  it('does not take a replaced entry for the one before (without the Navigation API)', async () => {
+    const browser = { length: 4, back: vi.fn() };
+    vi.stubGlobal('history', browser);
+    const { view } = await shellAt('/account/profile', 'admin', true);
+    // `/` → `/account` (a new entry) → `/account/profile` in its place (the desktop's redirect).
+    arrived('/');
+    arrived('/account', 'goto');
+    await fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(browser.back).not.toHaveBeenCalled();
+    expect(nav.goto).toHaveBeenLastCalledWith('/account');
+    // Two entries back, then on to a new one: the two ahead are dropped, the history shrinks, the entry is new.
+    arrived('/', 'popstate', -2);
+    browser.length = 3;
+    arrived('/account');
+    await fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(browser.back).toHaveBeenCalledOnce();
+  });
+
   it('checks the entry before with the Navigation API', async () => {
     const back = vi.spyOn(history, 'back').mockImplementation(() => {});
     const entries = (...paths: string[]) => paths.map((p) => ({ url: `http://localhost${p}` }));

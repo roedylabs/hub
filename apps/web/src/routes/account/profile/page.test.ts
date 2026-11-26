@@ -140,12 +140,12 @@ describe('Profile page', () => {
   });
 
   it('deletes the account after the confirmation and opens the sign-in', async () => {
-    const { calls, ...view } = show(ME, { 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 204 }] });
+    const { calls, ...view } = show(ME, { 'DELETE auth/me': [{ status: 204 }] });
     await fireEvent.click(await view.findByRole('button', { name: 'Delete account' }));
     expect(ui.confirm?.word).toBe('DELETE');
     ui.confirm?.run();
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/login', { replace: true }));
-    expect(calls.at(-1)).toMatchObject({ method: 'DELETE', path: 'auth/me', body: { confirm: 'delete' } });
+    expect(calls.at(-1)).toMatchObject({ method: 'DELETE', path: 'auth/me', body: { confirm: 'delete', id: ME.id } });
     expect(session.user).toBeNull();
   });
 

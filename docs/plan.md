@@ -269,7 +269,9 @@ checks pass in every PR; every PR has tests for what it adds.
          Mail's markup on the hub's API: profile (name, username, email
          change with password and code, pending confirmation with resend and
          discard, deleting the account with the typed word and
-         `last_admin`), security (password, authenticator apps with QR code,
+         `last_admin`; `DELETE auth/me` now also takes the confirmed
+         account's `id` and answers 409 `account_mismatch` when another
+         account signed in meanwhile), security (password, authenticator apps with QR code,
          recovery codes, signed-in devices), appearance and language (the
          three stored settings; the accent is locked without `userAccent`),
          users with invitations (search, filters, sorting, details with

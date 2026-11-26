@@ -365,6 +365,43 @@ describe('saving', () => {
     expect(p.me?.display_name).toBe('Alex Example');
     expect(calls.map((c) => c.path)).toContain('session');
   });
+
+  it('an answer for the previous account leaves the new account’s edits, prompt and messages alone', async () => {
+    const other = { ...ME, id: '01JOTHER', username: 'jordan', email: 'jordan@example.com' };
+    const ok = held();
+    const fail = held();
+    const { p, calls } = await loaded({
+      'GET auth/me': [{ body: other }, { body: ME }],
+      'PATCH auth/me': [ok.reply, fail.reply],
+    });
+    // Account A asks for a new address; another tab signs in B, who starts editing.
+    p.edit('email');
+    p.setField('email', 'new@example.com');
+    const first = p.save();
+    p.follow(other.id);
+    await vi.waitFor(() => expect(p.me?.id).toBe(other.id));
+    p.edit('login');
+    p.setField('login', 'jordan2');
+    ok.release({ body: { status: 'reauth_required', user: USER } });
+    await first;
+    expect([p.ea, p.drafts, p.saving]).toEqual([null, { login: 'jordan2' }, false]);
+
+    // B saves, and A signs in again meanwhile: the failure (a fresh sign-in asked for) concerns B and neither marks
+    // A's row nor redirects, although A is shown again.
+    p.edit('email');
+    p.setField('email', 'taken@example.com');
+    const second = p.save();
+    p.follow(ME.id);
+    await vi.waitFor(() => expect(p.me?.id).toBe(ME.id));
+    p.edit('email');
+    p.setField('email', 'taken@example.com');
+    fail.release({ status: 403, body: { error: 'reauth_required' } });
+    await second;
+    expect([p.errors, p.drafts, p.saving]).toEqual([{}, { email: 'taken@example.com' }, false]);
+    expect(nav.goto).not.toHaveBeenCalled();
+    expect(ui.toast).toBeNull();
+    expect(paths(calls).filter((c) => c === 'PATCH auth/me')).toHaveLength(2);
+  });
 });
 
 describe('send confirmation link', () => {
@@ -902,7 +939,7 @@ describe('confirmation pending', () => {
 
 describe('delete account', () => {
   it('asks with the confirmation word, then signs out and opens the sign-in', async () => {
-    const { p, calls } = await loaded({ 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 204 }] });
+    const { p, calls } = await loaded({ 'DELETE auth/me': [{ status: 204 }] });
     profileValues(p).del.onClick();
     expect(ui.confirm).toMatchObject({
       title: 'Permanently delete account?',
@@ -915,10 +952,8 @@ describe('delete account', () => {
     ui.confirm?.run();
     expect(profileValues(p).del).toMatchObject({ label: 'Deleting …', dis: true, busy: true });
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/login', { replace: true }));
-    expect(sent(calls).slice(-2)).toEqual([
-      { call: 'GET auth/me', body: undefined },
-      { call: 'DELETE auth/me', body: { confirm: 'delete' } },
-    ]);
+    // The request names the account, so the server deletes nothing if the session belongs to another one by now.
+    expect(sent(calls).slice(1)).toEqual([{ call: 'DELETE auth/me', body: { confirm: 'delete', id: ME.id } }]);
     expect(session.user).toBeNull();
     expect(p.deleting).toBe(false);
   });
@@ -937,9 +972,8 @@ describe('delete account', () => {
     expect(p.deleting).toBe(false);
   });
 
-  it('deletes nothing if the session already belongs to another account', async () => {
-    const other = { ...ME, id: '01JOTHER', display_name: 'Jordan Hale', email: 'jordan@example.com' };
-    const { p, calls } = await loaded({ 'GET auth/me': [{ body: other }] });
+  it('reports `account_mismatch`: the session already belongs to another account', async () => {
+    const { p, calls } = await loaded({ 'DELETE auth/me': [{ status: 409, body: { error: 'account_mismatch' } }] });
     p.deleteAccount();
     ui.confirm?.run();
     await vi.waitFor(() =>
@@ -948,7 +982,7 @@ describe('delete account', () => {
         error: true,
       }),
     );
-    expect(paths(calls)).toEqual(['GET auth/me', 'GET auth/me']);
+    expect(paths(calls)).toEqual(['GET auth/me', 'DELETE auth/me']);
     // The session's account reloads (then the layout follows the other account).
     expect(calls.map((c) => c.path)).toContain('session');
     expect(p.deleting).toBe(false);
@@ -979,7 +1013,7 @@ describe('delete account', () => {
 
   it('locks the button after `last_admin`', async () => {
     const { p } = await loaded(
-      { 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 409, body: { error: 'last_admin' } }] },
+      { 'DELETE auth/me': [{ status: 409, body: { error: 'last_admin' } }] },
       {
         ...ME,
         role: 'admin',
@@ -994,10 +1028,7 @@ describe('delete account', () => {
   });
 
   it('leads to a fresh sign-in after `reauth_required`', async () => {
-    const { p } = await loaded({
-      'GET auth/me': [{ body: ME }],
-      'DELETE auth/me': [{ status: 403, body: { error: 'reauth_required' } }],
-    });
+    const { p } = await loaded({ 'DELETE auth/me': [{ status: 403, body: { error: 'reauth_required' } }] });
     p.deleteAccount();
     ui.confirm?.run();
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/login?reauth=1&next=%2Faccount%2Fprofile'));
@@ -1006,7 +1037,7 @@ describe('delete account', () => {
   });
 
   it('keeps the account and shows the error toast if deleting fails', async () => {
-    const { p } = await loaded({ 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 500, body: {} }] });
+    const { p } = await loaded({ 'DELETE auth/me': [{ status: 500, body: {} }] });
     p.deleteAccount();
     ui.confirm?.run();
     await vi.waitFor(() => expect(ui.toast).toMatchObject({ text: 'That didn’t work. Please try again.' }));

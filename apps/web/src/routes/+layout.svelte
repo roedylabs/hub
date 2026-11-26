@@ -89,16 +89,23 @@
 
   /**
    * Path of the page before the current history entry as far as the app saw it (`null` at the start or unknown):
-   * after browser Back or a jump of several entries the page left is not the one before.
+   * after browser Back or a jump of several entries the page left is not the one before, nor after a replacement
+   * (a redirect) of its entry.
    */
   let cameFrom: string | null = null;
+  /** `history.length` after the last navigation. */
+  let historyLength = 0;
 
   // In the SPA `from.url` is `null` at the start, unlike in SvelteKit's type.
   afterNavigate((navigation) => {
     const { from } = navigation;
     if (from) ui.navigated = true;
-    const unknown = navigation.type === 'popstate' && navigation.delta !== 1;
-    cameFrom = unknown ? null : (from?.url?.pathname ?? null);
+    // SvelteKit does not say whether a navigation pushed or replaced the entry. A replacement keeps the length; a
+    // push makes it grow, or shrink when it drops several entries ahead. Unchanged = possibly a replacement.
+    const pushed = history.length !== historyLength;
+    historyLength = history.length;
+    const known = navigation.type === 'popstate' ? navigation.delta === 1 : pushed;
+    cameFrom = known ? (from?.url?.pathname ?? null) : null;
   });
 
   /** Navigation API (where the browser has it): the history entries of the app and the current one. */

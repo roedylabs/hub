@@ -383,21 +383,47 @@ describe('OrgPage', () => {
     expect(p.errors).toEqual({});
   });
 
-  it('a late save from a page left meanwhile does not replace a newer save from a page opened since', async () => {
-    const put = later();
-    mockApi({ 'PUT admin/org': [put.reply, { body: { ...ORG0, name: 'Newer Ltd' } }] });
+  it('saves run one after another across page instances, so the session ends with the state stored last', async () => {
+    const older = later();
+    const newer = later();
+    const api = mockApi({ 'PUT admin/org': [older.reply, newer.reply] });
     const a = new OrgPage(ctx);
     a.set('name', 'Older Ltd');
     const first = a.save();
     a.dispose();
     const b = new OrgPage(ctx);
     b.set('name', 'Newer Ltd');
-    await b.save();
-    put.answer({ body: { ...ORG0, name: 'Older Ltd' } });
+    const second = b.save();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The later save waits for the earlier one: the server cannot store them in the other order.
+    expect(sent(api.calls)).toEqual(['PUT admin/org']);
+    expect(b.saving).toBe(true);
+    older.answer({ body: { ...ORG0, name: 'Older Ltd' } });
     await first;
+    expect(session.appName).toBe('Older Ltd');
+    await vi.waitFor(() => expect(sent(api.calls)).toEqual(['PUT admin/org', 'PUT admin/org']));
+    expect(api.calls[1]?.body).toEqual({ name: 'Newer Ltd' });
+    newer.answer({ body: { ...ORG0, name: 'Newer Ltd' } });
+    await second;
     expect(session.config?.org.name).toBe('Newer Ltd');
     expect(session.appName).toBe('Newer Ltd');
     expect(b.dirty).toBe(false);
+  });
+
+  it('a failed save does not hold up the next one', async () => {
+    const failing = later();
+    const api = mockApi({ 'PUT admin/org': [failing.reply, { body: { ...ORG0, name: 'Newer Ltd' } }] });
+    const a = new OrgPage(ctx);
+    a.set('name', 'Older Ltd');
+    const first = a.save();
+    a.dispose();
+    const b = new OrgPage(ctx);
+    b.set('name', 'Newer Ltd');
+    const second = b.save();
+    failing.answer({ status: 500, body: { error: 'internal' } });
+    await Promise.all([first, second]);
+    expect(sent(api.calls)).toEqual(['PUT admin/org', 'PUT admin/org']);
+    expect(session.appName).toBe('Newer Ltd');
   });
 
   it('a load on a page opened since does not overwrite a save that answers after it started', async () => {

@@ -339,6 +339,39 @@ describe('Branding page', () => {
     expect([...root.querySelectorAll('section')].map((s) => s.dataset.sec)).toEqual(['logo', 'color']);
   });
 
+  it('limits the initial only once an IME composition ends', async () => {
+    await renderPage();
+    await fireEvent.click(radio('Type', 'Initials'));
+    const input = field('Characters');
+    // While composing, the field is not rewritten and the draft waits.
+    await fireEvent.input(input, { target: { value: 'にほん' }, isComposing: true });
+    expect(input).toHaveValue('にほん');
+    expect(within(stage('Header')).getByText('E')).toBeInTheDocument();
+    await fireEvent.compositionEnd(input);
+    expect(input).toHaveValue('にほ');
+    expect(within(stage('Header')).getByText('にほ')).toBeInTheDocument();
+  });
+
+  it('keeps the focus on the same image action across the mobile breakpoint', async () => {
+    const view = await renderPage();
+    await fireEvent.click(radio('Type', 'Image'));
+    await fireEvent.change(fileInput(view.container), { target: { files: [png()] } });
+    await vi.waitFor(() => expect(view.getByText('logo.png')).toBeInTheDocument());
+    view.getByRole('button', { name: 'Remove image' }).focus();
+    setPhone(true);
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'Replace image' })).toBeInTheDocument());
+    expect(view.getByRole('button', { name: 'Remove image' })).toHaveFocus();
+    view.getByRole('button', { name: 'Replace image' }).focus();
+    setPhone(false);
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'Replace' })).toBeInTheDocument());
+    expect(view.getByRole('button', { name: 'Replace' })).toHaveFocus();
+    // A focus elsewhere stays.
+    radio('Type', 'Image').focus();
+    setPhone(true);
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'Replace image' })).toBeInTheDocument());
+    expect(radio('Type', 'Image')).toHaveFocus();
+  });
+
   it('shows only the header, shorter texts and icon buttons at the image on mobile', async () => {
     setPhone(true);
     const view = await renderPage();
