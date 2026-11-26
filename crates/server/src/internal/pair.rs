@@ -98,12 +98,21 @@ async fn accept_manifest(value: Option<Value>) -> Result<Manifest, ApiError> {
     .map_err(|error| ApiError::Internal(error.into()))?
 }
 
+/// JSON from the body, read like axum's `Json` extractor reads the API's
+/// bodies – but only once the handler wants it, so that the rate limit of
+/// `pair` comes first; else `400 bad_request`. Untyped: every field is
+/// checked afterwards.
+fn json_value(body: &Bytes) -> Result<Value, ApiError> {
+    Json::<Value>::from_bytes(body)
+        .map(|Json(value)| value)
+        .map_err(|rejection| ApiError::BadRequest(rejection.body_text()))
+}
+
 /// A JSON object from the body, else `400 bad_request`.
 fn json_body(body: &Bytes) -> Result<Map<String, Value>, ApiError> {
-    match serde_json::from_slice::<Value>(body) {
-        Ok(Value::Object(object)) => Ok(object),
-        Ok(_) => Err(ApiError::BadRequest("expected a JSON object".into())),
-        Err(error) => Err(ApiError::BadRequest(error.to_string())),
+    match json_value(body)? {
+        Value::Object(object) => Ok(object),
+        _ => Err(ApiError::BadRequest("expected a JSON object".into())),
     }
 }
 
@@ -235,9 +244,7 @@ pub async fn put_manifest(
     body: Bytes,
 ) -> Result<Json<ManifestAccepted>, ApiError> {
     let ip = ClientIp(peer.ip());
-    let value = serde_json::from_slice::<Value>(&body)
-        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-    let manifest = accept_manifest(Some(value)).await?;
+    let manifest = accept_manifest(Some(json_value(&body)?)).await?;
     let table = state.apps.clone();
     let app = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
