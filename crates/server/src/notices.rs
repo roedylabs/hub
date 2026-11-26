@@ -4,9 +4,10 @@
 //! the warning off.
 //!
 //! Callers report an event in the transaction of the change ([`security`]);
-//! the mail is collected in an [`Outbox`] and sent after the commit with
-//! [`Outbox::send`] – in the background, so the response does not wait for
-//! the mail server. Without a sending account the mail is dropped (only in
+//! the mail is collected in an [`Outbox`] and sent right after the commit,
+//! still in the database job, with [`Outbox::send`] – in the background, so
+//! the response does not wait for the mail server, and a cancelled request
+//! (whose job still commits) does not lose the notice. Without a sending account the mail is dropped (only in
 //! the log); a sending error does not change the event. The notices of the
 //! email change (`security_email`, `email_confirm`) are sent by its flow
 //! itself (`api::email`), before the link is valid.
@@ -370,7 +371,8 @@ pub struct Outbox(Vec<Pending>);
 
 impl Outbox {
     /// Sends the mails one after the other in the background (the mailer
-    /// sends one at a time anyway).
+    /// sends one at a time anyway). Call it right after the commit, also from
+    /// the database thread.
     pub fn send(self, state: &AppState) {
         if self.0.is_empty() {
             return;

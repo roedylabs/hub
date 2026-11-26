@@ -630,6 +630,7 @@ async fn change_password(
         Some(code) => reauth.totp(&state, &user, code).await?,
         None => reauth.guard(),
     };
+    let worker = state.clone();
     let changed = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
@@ -661,11 +662,12 @@ async fn change_password(
                 .details(json!({ "sessions_ended": ended })),
         )?;
         tx.commit()?;
-        Ok(Ok((changed_at, ended, outbox)))
+        // Right after the commit, even if the request is gone by now.
+        outbox.send(&worker);
+        Ok(Ok((changed_at, ended)))
     })
     .await?;
-    let (changed_at, ended, outbox) = changed?;
-    outbox.send(&state);
+    let (changed_at, ended) = changed?;
     Ok(Json(
         json!({ "password_changed_at": changed_at, "sessions_ended": ended }),
     ))

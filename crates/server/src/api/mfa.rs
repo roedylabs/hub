@@ -135,7 +135,7 @@ fn check_name(errors: &mut FieldErrors, name: Option<&str>) -> Option<String> {
 
 /// Result of the transaction in [`confirm`].
 enum Confirmed {
-    Done(Value, Outbox),
+    Done(Value),
     Invalid,
     NotFound,
     /// Session ended or password changed (see `me::Guard`).
@@ -168,6 +168,7 @@ async fn confirm(
     let origin = auth::origin(&state, &headers, ip);
     // Device, with the first one the recovery codes, notice and audit log in
     // one transaction: never multi-factor without codes.
+    let worker = state.clone();
     let outcome = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         // Before the code: an ended session does not use it up.
@@ -210,12 +211,13 @@ async fn confirm(
         let mut overview = overview(&tx, &user.id)?;
         tx.commit()?;
         overview["recovery_codes"] = json!(codes);
-        Ok(Confirmed::Done(overview, outbox))
+        // Right after the commit, even if the request is gone by now.
+        outbox.send(&worker);
+        Ok(Confirmed::Done(overview))
     })
     .await?;
     match outcome {
-        Confirmed::Done(overview, outbox) => {
-            outbox.send(&state);
+        Confirmed::Done(overview) => {
             reauth.finish(CodeResult::Accepted)?;
             Ok(Json(overview))
         }
@@ -269,6 +271,7 @@ async fn remove(
     let guard = verify(&state, &user, body).await?;
     let owner = user.id.clone();
     let origin = auth::origin(&state, &headers, ip);
+    let worker = state.clone();
     let result = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
@@ -299,11 +302,11 @@ async fn remove(
         )?;
         let overview = overview(&tx, &user.id)?;
         tx.commit()?;
-        Ok(Ok((overview, outbox, last)))
+        outbox.send(&worker);
+        Ok(Ok((overview, last)))
     })
     .await?;
-    let (overview, outbox, last) = result?;
-    outbox.send(&state);
+    let (overview, last) = result?;
     // Without an app no pending sign-in step applies any more; otherwise one
     // would come back to life as soon as a new app is confirmed within five
     // minutes (like `reset-mfa`).
@@ -331,6 +334,7 @@ async fn regenerate(
     }
     let guard = verify(&state, &user, body).await?;
     let origin = auth::origin(&state, &headers, ip);
+    let worker = state.clone();
     let result = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
@@ -355,12 +359,11 @@ async fn regenerate(
         let mut overview = overview(&tx, &user.id)?;
         tx.commit()?;
         overview["recovery_codes"] = json!(codes);
-        Ok(Ok((overview, outbox)))
+        outbox.send(&worker);
+        Ok(Ok(overview))
     })
     .await?;
-    let (overview, outbox) = result?;
-    outbox.send(&state);
-    Ok(Json(overview))
+    Ok(Json(result?))
 }
 
 pub(super) fn mfa_disabled() -> ApiError {

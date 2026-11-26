@@ -336,7 +336,8 @@ async fn sign_in(
     previous: Option<CurrentUser>,
     method: Method,
 ) -> Result<Option<(AuthUser, Option<HeaderValue>)>, ApiError> {
-    let (started, outbox) = db::call(&state.db, move |conn| {
+    let worker = state.clone();
+    let started = db::call(&state.db, move |conn| {
         let previous = previous.map(|CurrentUser(user)| user);
         let mut outbox = Outbox::default();
         let started = start_session(
@@ -349,10 +350,11 @@ async fn sign_in(
             previous.as_ref(),
             &method,
         )?;
-        Ok((started, outbox))
+        // Right after the commit, even if the request is gone by now.
+        outbox.send(&worker);
+        Ok(started)
     })
     .await?;
-    outbox.send(state);
     match started {
         Started::Done(user, cookie) => {
             tracing::info!(user = %user.id, "signed in");

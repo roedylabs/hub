@@ -187,7 +187,7 @@ async fn reset(
     // password hash, also when the same link is sent many times at once –
     // after the first one it is used up before the next one hashes.
     let key: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-    let _lock = state.reset_locks.lock(&key).await;
+    let lock = state.reset_locks.lock(&key).await;
     match db::call(&state.db, move |conn| {
         Ok(password_resets::lookup(conn, &hash)?)
     })
@@ -206,54 +206,68 @@ async fn reset(
         return Err(errors.into_error());
     }
 
-    let new_hash = state.hasher.hash(&body.password).await?;
     let device = auth::device(&headers);
-    let done = db::call(&state.db, move |conn| {
-        let tx = conn.transaction()?;
-        // Used up only now: two concurrent requests set a password only once,
-        // an account locked in the meantime none at all.
-        let Some(user_id) = password_resets::redeem(&tx, &hash)? else {
-            return Ok(None);
+    // Hashing, redeeming and the limits in a separate task that keeps the
+    // link's lock until the link is used up – also when the client drops
+    // the request while the hash runs.
+    let worker = state.clone();
+    let password = body.password;
+    let done = tokio::spawn(async move {
+        let _lock = lock;
+        let new_hash = worker.hasher.hash(&password).await?;
+        let mailer = worker.clone();
+        let done = db::call(&worker.db, move |conn| {
+            let tx = conn.transaction()?;
+            // Used up only now: two concurrent requests set a password only
+            // once, an account locked in the meantime none at all.
+            let Some(user_id) = password_resets::redeem(&tx, &hash)? else {
+                return Ok(None);
+            };
+            let Some(user) = users::credentials_by_id(&tx, &user_id)?.map(|c| c.user) else {
+                return Ok(None);
+            };
+            users::set_password(&tx, &user.id, &new_hash)?;
+            let ended = sessions::delete_for_user(&tx, &user.id, None)?;
+            repo::discard_links(&tx, &user.id)?;
+            let mut outbox = Outbox::default();
+            let event = Security::PasswordChanged {
+                device,
+                reset: true,
+            };
+            notices::security(&tx, &mut outbox, (&user).into(), event)?;
+            audit_log::insert(
+                &tx,
+                &Entry::new(Category::Login, "auth.password_reset")
+                    .actor_profile(&user)
+                    .target(&user.id)
+                    .ip(ip.0)
+                    .details(json!({ "sessions_ended": ended })),
+            )?;
+            tx.commit()?;
+            outbox.send(&mailer);
+            Ok(Some((user, ended)))
+        })
+        .await?;
+        let Some((user, ended)) = done else {
+            return Err(invalid_token());
         };
-        let Some(user) = users::credentials_by_id(&tx, &user_id)?.map(|c| c.user) else {
-            return Ok(None);
-        };
-        users::set_password(&tx, &user.id, &new_hash)?;
-        let ended = sessions::delete_for_user(&tx, &user.id, None)?;
-        repo::discard_links(&tx, &user.id)?;
-        let mut outbox = Outbox::default();
-        let event = Security::PasswordChanged {
-            device,
-            reset: true,
-        };
-        notices::security(&tx, &mut outbox, (&user).into(), event)?;
-        audit_log::insert(
-            &tx,
-            &Entry::new(Category::Login, "auth.password_reset")
-                .actor_profile(&user)
-                .target(&user.id)
-                .ip(ip.0)
-                .details(json!({ "sessions_ended": ended })),
-        )?;
-        tx.commit()?;
-        Ok(Some((user, ended, outbox)))
+        // Often the reason for the reset: with the new password, sign-in
+        // should work right away, with address as well as username. The
+        // limits for successes end too, for sign-in as in the session: if
+        // someone used them up with the old password, it no longer fits now,
+        // and their sessions are ended. The lockout for wrong codes stays –
+        // the link from the mail does not replace the second factor.
+        for login in [&user.email, &user.username] {
+            let key = auth::login_key(login);
+            worker.limiter.reset(&LOGIN_ACCOUNT, &key);
+            worker.limiter.reset(&LOGIN_SUCCESS, &key);
+        }
+        worker
+            .limiter
+            .reset(&REAUTH_SUCCESS, &Key::User(user.id.clone()));
+        Ok(ended)
     })
-    .await?;
-    let (user, ended, outbox) = done.ok_or_else(invalid_token)?;
-    // Often the reason for the reset: with the new password, sign-in should
-    // work right away, with address as well as username. The
-    // limits for successes end too, for sign-in as in the session: if someone
-    // used them up with the old password, it no longer fits now, and their
-    // sessions are ended. The lockout for wrong codes stays – the link
-    // from the mail does not replace the second factor.
-    for login in [&user.email, &user.username] {
-        let key = auth::login_key(login);
-        state.limiter.reset(&LOGIN_ACCOUNT, &key);
-        state.limiter.reset(&LOGIN_SUCCESS, &key);
-    }
-    state
-        .limiter
-        .reset(&REAUTH_SUCCESS, &Key::User(user.id.clone()));
-    outbox.send(&state);
-    Ok(Json(json!({ "status": "ok", "sessions_ended": ended })))
+    .await
+    .map_err(|error| anyhow::anyhow!("password reset aborted: {error}"))??;
+    Ok(Json(json!({ "status": "ok", "sessions_ended": done })))
 }

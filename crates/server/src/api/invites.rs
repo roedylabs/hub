@@ -70,7 +70,7 @@ use crate::{
         mail_failed,
         templates::Invite,
     },
-    rate_limit::{Key, Policy, Reservation},
+    rate_limit::{Key, Policy},
     settings,
 };
 
@@ -316,8 +316,10 @@ async fn create(
     let delivery = Delivery::prepare(&state).await?;
     let system_mail = !matches!(delivery, Err(Unavailable::NoSystemMail));
     let mails = if delivery.is_ok() { emails.len() } else { 0 };
-    // One attempt per mail; if the request ends without invitations, they
-    // are returned (`Reservation`).
+    // Room for one attempt per mail, held while the invitations are created
+    // so that concurrent requests cannot both pass the limit; the worker
+    // charges every mail it sends, the reservations themselves are returned
+    // (also when the request is cancelled).
     let reserved = (0..mails)
         .map(|_| {
             state
@@ -403,6 +405,9 @@ async fn create(
                 }
             }
             row["sent"] = true.into();
+            worker
+                .limiter
+                .charge(&INVITE_MAIL, Key::User(admin.id.clone()));
             let (id, by, until) = (invite.id.clone(), admin.id.clone(), until.clone());
             let recorded = db::call(&worker.db, move |conn| {
                 Ok(invitations::mark_sent(conn, &id, &by, &until)?)
@@ -420,7 +425,7 @@ async fn create(
     })
     .await
     .map_err(|error| anyhow::anyhow!("sending aborted: {error}"))??;
-    reserved.into_iter().for_each(Reservation::count);
+    drop(reserved);
     Ok((
         StatusCode::CREATED,
         Json(json!({ "invites": rows, "system_mail": system_mail })),
