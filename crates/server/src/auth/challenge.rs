@@ -135,9 +135,38 @@ impl Claim {
         &self.entry.as_ref().expect("present until consume").0
     }
 
-    /// Ends the intermediate step (signed in or no longer valid).
-    pub fn consume(mut self) -> Challenge {
-        self.entry.take().expect("present until consume").0
+    /// Ends the intermediate step (signed in or no longer valid); the
+    /// [`Ticket`] tells later whether it was discarded meanwhile.
+    pub fn consume(mut self) -> (Challenge, Ticket) {
+        let challenge = self.entry.take().expect("present until consume").0;
+        let ticket = Ticket {
+            store: self.store.clone(),
+            user_id: challenge.user_id.clone(),
+            discards: self.discards,
+        };
+        (challenge, ticket)
+    }
+}
+
+/// What remains of a consumed intermediate step: whether the user's steps
+/// were discarded since it was taken out (locked, removed, second factor
+/// reset). The sign-in checks it in the transaction that starts the session;
+/// discarding happens on the same database thread right after the commit of
+/// such a change, so either the session exists before the change (and the
+/// change ends it) or the check sees the discard.
+pub struct Ticket {
+    store: Arc<Challenges>,
+    user_id: String,
+    discards: u64,
+}
+
+impl Ticket {
+    pub fn discarded(&self) -> bool {
+        self.store
+            .lock()
+            .discarded
+            .get(&self.user_id)
+            .is_some_and(|(n, _)| *n > self.discards)
     }
 }
 
@@ -213,9 +242,29 @@ mod tests {
         drop(claim);
         // Put back (wrong code): available again.
         let claim = store.claim(&headers).unwrap();
-        assert_eq!(claim.consume(), challenge());
+        let (taken, ticket) = claim.consume();
+        assert_eq!(taken, challenge());
+        assert!(!ticket.discarded());
         assert!(store.claim(&headers).is_none());
         assert!(store.claim(&HeaderMap::new()).is_none());
+    }
+
+    /// A step whose code was already checked: if the user's steps are
+    /// discarded before the session starts, the ticket says so – also after
+    /// an unlock, which discards nothing.
+    #[test]
+    fn ticket_sees_a_discard_during_the_check() {
+        let store = Arc::new(Challenges::default());
+        let headers = request_with(&store.start(challenge()).unwrap());
+        let claim = store.claim(&headers).unwrap();
+        store.discard_user("u1");
+        let (_, ticket) = claim.consume();
+        assert!(ticket.discarded());
+        // Another user's discard does not count.
+        let headers = request_with(&store.start(challenge()).unwrap());
+        let claim = store.claim(&headers).unwrap();
+        store.discard_user("u2");
+        assert!(!claim.consume().1.discarded());
     }
 
     #[test]

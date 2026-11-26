@@ -46,7 +46,7 @@ use crate::{
     app::AppState,
     auth::{
         AuthUser, CurrentUser,
-        challenge::{self, Challenge, Claim},
+        challenge::{self, Challenge, Claim, Ticket},
         device::Device,
         recovery::{self, Redeem},
         session::{self, Origin},
@@ -237,7 +237,14 @@ fn start_session(
     persistent: bool,
     previous: Option<&AuthUser>,
     method: &Method,
+    ticket: Option<&Ticket>,
 ) -> anyhow::Result<Started> {
+    // The intermediate step was discarded after its code was checked (the
+    // account was locked, removed or reset meanwhile, perhaps unlocked
+    // again): no session.
+    if ticket.is_some_and(Ticket::discarded) {
+        return Ok(Started::Expired);
+    }
     let tx = conn.transaction()?;
     let profile = match users::since(&tx, user_id, checked_at)? {
         Since::Unchanged(profile) => profile,
@@ -327,6 +334,7 @@ enum Started {
 
 /// [`start_session`] on the database thread; an outdated state becomes
 /// `login_expired`.
+#[allow(clippy::too_many_arguments, reason = "all parts of one sign-in")]
 async fn sign_in(
     state: &AppState,
     user_id: String,
@@ -335,6 +343,7 @@ async fn sign_in(
     persistent: bool,
     previous: Option<CurrentUser>,
     method: Method,
+    ticket: Option<Ticket>,
 ) -> Result<Option<(AuthUser, Option<HeaderValue>)>, ApiError> {
     let worker = state.clone();
     let started = db::call(&state.db, move |conn| {
@@ -349,6 +358,7 @@ async fn sign_in(
             persistent,
             previous.as_ref(),
             &method,
+            ticket.as_ref(),
         )?;
         // Right after the commit, even if the request is gone by now.
         outbox.send(&worker);
@@ -470,6 +480,7 @@ async fn login(
         remember,
         previous,
         Method::Password,
+        None,
     )
     .await?;
     if let Some((user, cookie)) = signed {
@@ -549,7 +560,7 @@ async fn complete(
     (claim, profile): (Claim, Profile),
     method: Method,
 ) -> Result<Response, ApiError> {
-    let challenge = claim.consume();
+    let (challenge, ticket) = claim.consume();
     let signed = sign_in(
         state,
         profile.id,
@@ -558,6 +569,7 @@ async fn complete(
         challenge.remember,
         previous,
         method,
+        Some(ticket),
     )
     .await?;
     // With a confirmed code there is no further step.
@@ -737,6 +749,7 @@ mod tests {
             true,
             previous,
             method,
+            None,
         )
         .unwrap();
         (started, outbox.templates())
@@ -795,6 +808,40 @@ mod tests {
         ));
         assert_eq!(count(&conn, "sessions"), 0);
         assert_eq!(count(&conn, "audit_log"), 0);
+
+        // The code was checked, then the account was locked and unlocked:
+        // the discarded step starts no session, although the state fits.
+        conn.execute("UPDATE users SET status = 'active' WHERE id = ?1", [&id])
+            .unwrap();
+        let store = std::sync::Arc::new(challenge::Challenges::default());
+        let cookie = store
+            .start(Challenge {
+                user_id: id.clone(),
+                remember: true,
+                password_changed_at: now.clone(),
+            })
+            .unwrap();
+        let pair = cookie.to_str().unwrap().split(';').next().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_str(pair).unwrap());
+        let claim = store.claim(&headers).unwrap();
+        store.discard_user(&id);
+        let (_, ticket) = claim.consume();
+        let mut outbox = Outbox::default();
+        let started = start_session(
+            &mut conn,
+            &mut outbox,
+            &id,
+            &now,
+            &origin(),
+            true,
+            None,
+            &Method::Password,
+            Some(&ticket),
+        )
+        .unwrap();
+        assert!(matches!(started, Started::Expired));
+        assert_eq!(count(&conn, "sessions"), 0);
 
         // Otherwise signed in, with the current profile.
         conn.execute(
