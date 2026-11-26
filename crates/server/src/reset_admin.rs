@@ -172,18 +172,12 @@ mod tests {
     #[test]
     fn passwords_follow_policy() {
         for _ in 0..50 {
+            // The messages never show the generated password.
             let password = generate_password().unwrap();
-            assert_eq!(
-                password.len(),
-                GROUPS * GROUP_LEN + GROUPS - 1,
-                "{password}"
-            );
+            assert_eq!(password.len(), GROUPS * GROUP_LEN + GROUPS - 1);
             assert_eq!(password.matches('-').count(), GROUPS - 1);
-            assert!(password::violations(&password).is_empty(), "{password}");
-            assert!(
-                password.bytes().all(|b| b == b'-' || ALPHABET.contains(&b)),
-                "{password}"
-            );
+            assert!(password::violations(&password).is_empty());
+            assert!(password.bytes().all(|b| b == b'-' || ALPHABET.contains(&b)));
         }
         assert_ne!(generate_password().unwrap(), generate_password().unwrap());
     }

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use axum::{Json, Router, extract::State, routing::get};
 use serde_json::json;
 
-use super::{ApiError, FieldErrors, JsonBody};
+use super::{ApiError, FieldErrors, JsonBody, invites::admin_holds};
 use crate::{
     app::AppState,
     auth::{AdminUser, AuthUser},
@@ -127,6 +127,10 @@ async fn put_org(
     let instance = state.instance.clone();
     let org = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
+        // Still an administrator with a valid session (`invites::admin_holds`).
+        if let Err(error) = admin_holds(&tx, &user)? {
+            return Ok(Err(error));
+        }
         let mut org = instance::load_org(&tx)?;
         let mut changed = Vec::new();
         for (field, slot) in org.fields_mut() {
@@ -156,9 +160,9 @@ async fn put_org(
             ));
         }
         instance.set_org(org.clone());
-        Ok(org)
+        Ok(Ok(org))
     })
-    .await?;
+    .await??;
     Ok(Json(org))
 }
 

@@ -41,7 +41,7 @@ use serde_json::{Value, json};
 
 use super::{
     ApiError, FieldErrors, JsonBody,
-    invites::{self, Actor, admin_change, invite_json},
+    invites::{self, Actor, admin_change_then, invite_json},
     mfa::mfa_disabled,
 };
 use crate::{
@@ -230,7 +230,7 @@ impl Change {
 /// Common flow of the endpoints for one user: not the own account,
 /// `admin_change`, the last-admin rule, then the row of the list (`None`
 /// after removal). Locked and removed accounts lose their pending sign-in
-/// steps.
+/// steps right after the commit, even if the request is cancelled.
 async fn one_user(
     state: &AppState,
     admin: AuthUser,
@@ -242,23 +242,30 @@ async fn one_user(
         return Err(own_account());
     }
     let target = id.clone();
-    let row = admin_change(state, admin, ip, move |tx, actor| {
-        let Some(user) = users::credentials_by_id(tx, &target)?.map(|c| c.user) else {
-            return Ok(Err(ApiError::NotFound));
-        };
-        if change.takes_away() && is_last_admin(tx, &user)? {
-            return Ok(Err(last_admin()));
-        }
-        change.apply(tx, actor, &user)?;
-        Ok(Ok(
-            users::get_listed(tx, &target)?.map(|row| user_json(&row))
-        ))
-    })
-    .await?;
-    if row.as_ref().is_none_or(|row| row["status"] != "active") {
-        state.challenges.discard_user(&id);
-    }
-    Ok(row)
+    let challenges = state.challenges.clone();
+    admin_change_then(
+        state,
+        admin,
+        ip,
+        move |tx, actor| {
+            let Some(user) = users::credentials_by_id(tx, &target)?.map(|c| c.user) else {
+                return Ok(Err(ApiError::NotFound));
+            };
+            if change.takes_away() && is_last_admin(tx, &user)? {
+                return Ok(Err(last_admin()));
+            }
+            change.apply(tx, actor, &user)?;
+            Ok(Ok(
+                users::get_listed(tx, &target)?.map(|row| user_json(&row))
+            ))
+        },
+        move |row| {
+            if row.as_ref().is_none_or(|row| row["status"] != "active") {
+                challenges.discard_user(&id);
+            }
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -324,34 +331,42 @@ async fn reset_mfa(
         return Err(own_account());
     }
     let target = id.clone();
-    let (row, outbox) = admin_change(&state, admin, ip, move |tx, actor| {
-        let Some(user) = users::credentials_by_id(tx, &target)?.map(|c| c.user) else {
-            return Ok(Err(ApiError::NotFound));
-        };
-        if is_last_admin(tx, &user)? {
-            return Ok(Err(last_admin()));
-        }
-        if !totp_devices::has_confirmed(tx, &user.id)? {
-            return Ok(Err(mfa_disabled()));
-        }
-        let devices = totp_devices::delete_all(tx, &user.id)?;
-        recovery_codes::delete_all(tx, &user.id)?;
-        let mut outbox = Outbox::default();
-        let event = Security::MfaReset {
-            by: &actor.admin.display_name,
-        };
-        notices::security(tx, &mut outbox, (&user).into(), event)?;
-        let mut details = names(&user);
-        details["devices"] = json!(devices);
-        audit_log::insert(tx, &actor.entry("users.mfa_reset", &user.id, details))?;
-        let row = users::get_listed(tx, &user.id)?.map(|row| user_json(&row));
-        Ok(Ok((row, outbox)))
-    })
+    let (challenges, sender) = (state.challenges.clone(), state.clone());
+    let (row, _) = admin_change_then(
+        &state,
+        admin,
+        ip,
+        move |tx, actor| {
+            let Some(user) = users::credentials_by_id(tx, &target)?.map(|c| c.user) else {
+                return Ok(Err(ApiError::NotFound));
+            };
+            if is_last_admin(tx, &user)? {
+                return Ok(Err(last_admin()));
+            }
+            if !totp_devices::has_confirmed(tx, &user.id)? {
+                return Ok(Err(mfa_disabled()));
+            }
+            let devices = totp_devices::delete_all(tx, &user.id)?;
+            recovery_codes::delete_all(tx, &user.id)?;
+            let mut outbox = Outbox::default();
+            let event = Security::MfaReset {
+                by: &actor.admin.display_name,
+            };
+            notices::security(tx, &mut outbox, (&user).into(), event)?;
+            let mut details = names(&user);
+            details["devices"] = json!(devices);
+            audit_log::insert(tx, &actor.entry("users.mfa_reset", &user.id, details))?;
+            let row = users::get_listed(tx, &user.id)?.map(|row| user_json(&row));
+            Ok(Ok((row, outbox)))
+        },
+        move |(_, outbox)| {
+            // Otherwise a pending sign-in step would apply again as soon as the
+            // person confirms a new app within the five minutes.
+            challenges.discard_user(&id);
+            std::mem::take(outbox).send(&sender);
+        },
+    )
     .await?;
-    // Otherwise a pending sign-in step would apply again as soon as the person
-    // confirms a new app within the five minutes.
-    state.challenges.discard_user(&id);
-    outbox.send(&state);
     Ok(Json(json!({ "user": row })))
 }
 
@@ -403,42 +418,50 @@ async fn bulk(
     let mut ids: BTreeSet<String> = body.ids.into_iter().collect();
     ids.remove(&admin.id);
     let action = body.action;
-    let (changed, gone) = admin_change(&state, admin, ip, move |tx, actor| {
-        let (mut changed, mut gone) = (Vec::new(), Vec::new());
-        for id in &ids {
-            let done = if let Some(user) = users::credentials_by_id(tx, id)?.map(|c| c.user) {
-                let change = match action {
-                    Action::Role => Change::Role(role.unwrap_or(user.role)),
-                    Action::Lock => Change::Lock,
-                    Action::Unlock => Change::Unlock,
-                    Action::Remove => Change::Remove,
-                };
-                let done = change.apply(tx, actor, &user)?;
-                if done && matches!(action, Action::Lock | Action::Remove) {
-                    gone.push(id.clone());
-                }
-                done
-            } else if let Some(invite) = invitations::get(tx, id)? {
-                match action {
-                    Action::Role => {
-                        invites::change_role(tx, actor, &invite, role.unwrap_or(invite.role))?
+    let challenges = state.challenges.clone();
+    let (changed, _) = admin_change_then(
+        &state,
+        admin,
+        ip,
+        move |tx, actor| {
+            let (mut changed, mut gone) = (Vec::new(), Vec::new());
+            for id in &ids {
+                let done = if let Some(user) = users::credentials_by_id(tx, id)?.map(|c| c.user) {
+                    let change = match action {
+                        Action::Role => Change::Role(role.unwrap_or(user.role)),
+                        Action::Lock => Change::Lock,
+                        Action::Unlock => Change::Unlock,
+                        Action::Remove => Change::Remove,
+                    };
+                    let done = change.apply(tx, actor, &user)?;
+                    if done && matches!(action, Action::Lock | Action::Remove) {
+                        gone.push(id.clone());
                     }
-                    Action::Remove => invites::revoke_invite(tx, actor, &invite)?,
-                    Action::Lock | Action::Unlock => false,
+                    done
+                } else if let Some(invite) = invitations::get(tx, id)? {
+                    match action {
+                        Action::Role => {
+                            invites::change_role(tx, actor, &invite, role.unwrap_or(invite.role))?
+                        }
+                        Action::Remove => invites::revoke_invite(tx, actor, &invite)?,
+                        Action::Lock | Action::Unlock => false,
+                    }
+                } else {
+                    false
+                };
+                if done {
+                    changed.push(id.clone());
                 }
-            } else {
-                false
-            };
-            if done {
-                changed.push(id.clone());
             }
-        }
-        Ok(Ok((changed, gone)))
-    })
+            Ok(Ok((changed, gone)))
+        },
+        move |(_, gone)| {
+            for id in gone.iter() {
+                challenges.discard_user(id);
+            }
+        },
+    )
     .await?;
-    for id in &gone {
-        state.challenges.discard_user(id);
-    }
     Ok(Json(json!({ "changed": changed })))
 }
 

@@ -271,9 +271,10 @@ mod tests {
         let Secret::Password(password) = &reset.secret else {
             panic!("no password");
         };
+        // The messages never show the output: it carries the password.
         let out = describe(&reset);
-        assert!(out.contains(&format!("New password: {password}")), "{out}");
-        assert!(out.contains("account unlocked"), "{out}");
+        assert!(out.contains(&format!("New password: {password}")));
+        assert!(out.contains("account unlocked"));
         let dir = data_dir.clone();
         let hash = db::blocking(move || {
             let conn = db::open_existing(&dir)?;

@@ -194,6 +194,20 @@ pub(super) async fn admin_change<T: Send + 'static>(
     ip: ClientIp,
     apply: impl FnOnce(&Connection, &Actor<'_>) -> anyhow::Result<Result<T, ApiError>> + Send + 'static,
 ) -> Result<T, ApiError> {
+    admin_change_then(state, admin, ip, apply, |_| {}).await
+}
+
+/// Like [`admin_change`]; `committed` runs right after the commit, still in
+/// the database job – it also runs if the request is cancelled meanwhile
+/// (such as discarding the sign-in steps of a locked account or sending its
+/// notices, which it may take out of the result).
+pub(super) async fn admin_change_then<T: Send + 'static>(
+    state: &AppState,
+    admin: AuthUser,
+    ip: ClientIp,
+    apply: impl FnOnce(&Connection, &Actor<'_>) -> anyhow::Result<Result<T, ApiError>> + Send + 'static,
+    committed: impl FnOnce(&mut T) + Send + 'static,
+) -> Result<T, ApiError> {
     db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(error) = admin_holds(&tx, &admin)? {
@@ -203,9 +217,10 @@ pub(super) async fn admin_change<T: Send + 'static>(
             admin: &admin,
             ip: ip.0,
         };
-        let result = apply(&tx, &actor)?;
-        if result.is_ok() {
+        let mut result = apply(&tx, &actor)?;
+        if let Ok(value) = &mut result {
             tx.commit()?;
+            committed(value);
         }
         Ok(result)
     })

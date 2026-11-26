@@ -149,24 +149,28 @@ async fn list_and_details_show_users_and_invitations() {
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
 
     let list = t.admin(Method::GET, "/users", None).await.json();
-    let rows: Vec<(&str, &str, bool)> = list["users"]
+    // Users carry `mfa` as a boolean; invitations have none.
+    let rows: Vec<(&str, &str, Option<bool>)> = list["users"]
         .as_array()
         .unwrap()
         .iter()
         .map(|row| {
+            let mfa = row
+                .get("mfa")
+                .map(|mfa| mfa.as_bool().expect("mfa is a boolean"));
             (
                 row["email"].as_str().unwrap(),
                 row["status"].as_str().unwrap(),
-                row["mfa"].as_bool().unwrap_or(false),
+                mfa,
             )
         })
         .collect();
     assert_eq!(
         rows,
         [
-            ("anna@example.com", "active", false),
-            ("max@example.com", "active", true),
-            ("jonas@example.com", "invited", false),
+            ("anna@example.com", "active", Some(false)),
+            ("max@example.com", "active", Some(true)),
+            ("jonas@example.com", "invited", None),
         ]
     );
     assert!(list["users"][2]["requested_at"].is_null());
@@ -231,29 +235,36 @@ async fn locking_ends_sessions_and_pending_sign_ins() {
     assert_eq!(reply.json()["user"]["status"], "locked");
     let session = t.env.as_user(&t.user, Method::GET, "/session", None).await;
     assert_eq!(session.status, StatusCode::UNAUTHORIZED);
-    let code_step = t
-        .env
-        .request(
-            Method::POST,
-            "/auth/totp",
-            Some(json!({ "code": code(&secret, 0) })),
-            &[(challenge::COOKIE, &challenge)],
-        )
-        .await;
-    assert_ne!(code_step.status, StatusCode::OK, "{}", code_step.body);
-    assert!(code_step.cookie(session::COOKIE).is_none());
     let again = t.env.login("max", PASSWORD).await;
     assert_ne!(again.status, StatusCode::OK);
 
-    // Locking twice changes nothing; unlocking lets the user in again.
+    // Locking twice changes nothing; unlocking lets the user in again – but
+    // not with the sign-in step from before the lock.
     t.admin(Method::POST, &format!("/users/{}/lock", t.user_id), None)
         .await;
     let reply = t
         .admin(Method::POST, &format!("/users/{}/unlock", t.user_id), None)
         .await;
     assert_eq!(reply.json()["user"]["status"], "active");
+    let totp = async |challenge: &str| {
+        t.env
+            .request(
+                Method::POST,
+                "/auth/totp",
+                Some(json!({ "code": code(&secret, 0) })),
+                &[(challenge::COOKIE, challenge)],
+            )
+            .await
+    };
+    let old_step = totp(&challenge).await;
+    assert_ne!(old_step.status, StatusCode::OK, "{}", old_step.body);
+    assert!(old_step.cookie(session::COOKIE).is_none());
     let reply = t.env.login("max", PASSWORD).await;
     assert_eq!(reply.json()["status"], "totp_required", "{}", reply.body);
+    let fresh = reply.cookie(challenge::COOKIE).unwrap();
+    let signed_in = totp(&fresh).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+    assert!(signed_in.cookie(session::COOKIE).is_some());
 
     let entries = audit_rows(&t.env, "users.%").await;
     assert_eq!(

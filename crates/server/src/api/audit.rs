@@ -5,7 +5,8 @@
 //!   category. A search (`q`) walks the whole period and counts towards a
 //!   per-administrator limit (so it needs `X-Requested-With`).
 //! - `POST admin/audit/export`: the same filters as CSV, all hits; is itself
-//!   recorded in the audit log, limited per administrator.
+//!   recorded in the audit log, limited per administrator and to 16 MB
+//!   (otherwise 422 `export_too_large`: narrow the time range).
 //! - `GET`/`PUT admin/audit/retention`: retention of 30, 90 or 365 days.
 //!
 //! Texts are built here (`texts`), not in the web app: the search has to
@@ -21,16 +22,17 @@ use std::time::Duration;
 use axum::{
     Json, Router,
     extract::{Query, State, rejection::QueryRejection},
-    http::{HeaderMap, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use jiff::Timestamp;
+use jiff::{RoundMode, Timestamp, TimestampRound, Unit};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use self::texts::Shown;
-use super::{ApiError, FieldErrors, JsonBody, require_requested_with};
+use super::{ApiError, FieldErrors, JsonBody, invites::admin_holds, require_requested_with};
 use crate::{
     app::AppState,
     auth::{AdminUser, AuthUser},
@@ -48,6 +50,9 @@ use crate::{
 const DEFAULT_LIMIT: usize = 100;
 /// Largest page.
 const MAX_LIMIT: usize = 500;
+/// Largest export; beyond it the administrator narrows the time range. Far
+/// more than a year of a small team's entries.
+const MAX_EXPORT_BYTES: usize = 16 * 1024 * 1024;
 /// Exports per administrator: ten, then one every six minutes. Each walks
 /// the whole retention period on the shared database connection.
 const EXPORT: Policy = Policy::rate("audit.export", 10, Duration::from_secs(60 * 60));
@@ -108,14 +113,20 @@ impl FilterQuery {
 }
 
 /// Point in time of the request in the format of the `at` column.
+///
+/// Rounded up to the millisecond like the stored times: `from` is
+/// inclusive and `to` exclusive, so an entry at `.123` is in the range from
+/// `.1235` neither way.
 fn instant(value: Option<String>) -> Result<Option<String>, ApiError> {
+    let invalid = || ApiError::BadRequest("invalid point in time".into());
     value
         .filter(|value| !value.is_empty())
         .map(|value| {
-            value
-                .parse::<Timestamp>()
-                .map(timestamp)
-                .map_err(|_| ApiError::BadRequest("invalid point in time".into()))
+            let at = value.parse::<Timestamp>().map_err(|_| invalid())?;
+            let ceil = TimestampRound::new()
+                .smallest(Unit::Millisecond)
+                .mode(RoundMode::Ceil);
+            at.round(ceil).map(timestamp).map_err(|_| invalid())
         })
         .transpose()
 }
@@ -289,35 +300,23 @@ async fn export(
     let filter = filter.map_err(bad_query)?.0.parse()?;
     state.limiter.acquire(&EXPORT, Key::User(user.id.clone()))?;
     let csv = db::call(&state.db, move |conn| {
-        let lang = settings::lang_of(conn, &user.id)?;
-        let keep = audit_log::keep_days(conn)?;
-        let mut csv = String::from("\u{feff}");
-        csv_line(&mut csv, texts::csv_head(lang));
-        let mut count = 0_u64;
-        audit_log::scan(conn, keep, &filter.range, |row| {
-            let shown = texts::render(&row, lang);
-            if filter.found(&row, &shown, lang) && filter.in_category(&row) {
-                count += 1;
-                csv_line(
-                    &mut csv,
-                    [
-                        &row.at,
-                        texts::label(row.category, lang),
-                        &shown.who,
-                        shown.act.trim_start_matches([':', ' ']),
-                        &shown.meta,
-                    ],
-                );
-            }
-        })?;
+        let tx = conn.transaction()?;
+        if let Err(error) = admin_holds(&tx, &user)? {
+            return Ok(Err(error));
+        }
+        let lang = settings::lang_of(&tx, &user.id)?;
+        let Some((csv, count)) = build_csv(&tx, &filter, lang, MAX_EXPORT_BYTES)? else {
+            return Ok(Err(export_too_large()));
+        };
         audit_log::insert(
-            conn,
+            &tx,
             &audit_entry(Category::System, "audit.export", &user, ip)
                 .details(json!({ "count": count })),
         )?;
-        Ok(csv)
+        tx.commit()?;
+        Ok(Ok(csv))
     })
-    .await?;
+    .await??;
     let name = Timestamp::now().strftime("audit-log-%Y-%m-%d.csv");
     Ok((
         [
@@ -331,6 +330,52 @@ async fn export(
         csv,
     )
         .into_response())
+}
+
+/// 422 `export_too_large`: the page asks to narrow the time range or the
+/// search.
+fn export_too_large() -> ApiError {
+    ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, "export_too_large")
+        .with("max_bytes", MAX_EXPORT_BYTES)
+}
+
+/// The hits as CSV with the number of rows, or `None` once the CSV would
+/// grow past `budget` bytes (then nothing more is kept in memory).
+fn build_csv(
+    conn: &Connection,
+    filter: &Filter,
+    lang: Language,
+    budget: usize,
+) -> anyhow::Result<Option<(String, u64)>> {
+    let keep = audit_log::keep_days(conn)?;
+    let mut csv = String::from("\u{feff}");
+    csv_line(&mut csv, texts::csv_head(lang));
+    let mut count = 0_u64;
+    let mut over = false;
+    audit_log::scan(conn, keep, &filter.range, |row| {
+        if over {
+            return;
+        }
+        let shown = texts::render(&row, lang);
+        if filter.found(&row, &shown, lang) && filter.in_category(&row) {
+            csv_line(
+                &mut csv,
+                [
+                    &row.at,
+                    texts::label(row.category, lang),
+                    &shown.who,
+                    shown.act.trim_start_matches([':', ' ']),
+                    &shown.meta,
+                ],
+            );
+            count += 1;
+            if csv.len() > budget {
+                over = true;
+                csv = String::new();
+            }
+        }
+    })?;
+    Ok((!over).then_some((csv, count)))
 }
 
 fn csv_line<const N: usize>(csv: &mut String, fields: [&str; N]) {
@@ -386,6 +431,11 @@ async fn update_retention(
     let days = body.days;
     db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
+        // Still an administrator with a valid session: a shorter period
+        // deletes entries on the next cleanup.
+        if let Err(error) = admin_holds(&tx, &user)? {
+            return Ok(Err(error));
+        }
         let previous = audit_log::keep_days(&tx)?;
         if previous != days {
             audit_log::set_keep_days(&tx, days)?;
@@ -396,9 +446,9 @@ async fn update_retention(
             )?;
             tx.commit()?;
         }
-        Ok(())
+        Ok(Ok(()))
     })
-    .await?;
+    .await??;
     Ok(Json(json!({ "days": days })))
 }
 
@@ -447,6 +497,38 @@ mod tests {
         assert_eq!(
             filter.range.from.as_deref(),
             Some("2026-11-05T09:00:00.000Z")
+        );
+        // Sub-millisecond bounds are rounded up, so `.123` is before `.1235`
+        // at both ends.
+        let range = FilterQuery {
+            from: Some("2026-11-05T09:00:00.1235Z".into()),
+            to: Some("2026-11-05T09:00:00.1230001Z".into()),
+            ..FilterQuery::default()
+        }
+        .parse()
+        .unwrap()
+        .range;
+        assert_eq!(range.from.as_deref(), Some("2026-11-05T09:00:00.124Z"));
+        assert_eq!(range.to.as_deref(), Some("2026-11-05T09:00:00.124Z"));
+    }
+
+    #[test]
+    fn export_stays_within_its_budget() {
+        let conn = crate::db::repo::users::tests::conn();
+        for _ in 0..3 {
+            audit_log::insert(&conn, &Entry::new(Category::System, "setup.complete")).unwrap();
+        }
+        let filter = FilterQuery::default().parse().unwrap();
+        let (csv, count) = build_csv(&conn, &filter, Language::English, 1024)
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(csv.lines().count(), 4);
+        assert!(
+            build_csv(&conn, &filter, Language::English, 100)
+                .unwrap()
+                .is_none(),
+            "over the budget"
         );
     }
 }

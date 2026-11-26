@@ -23,7 +23,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    ApiError, FieldErrors, JsonBody, nullable,
+    ApiError, FieldErrors, JsonBody,
+    invites::admin_holds,
+    nullable,
     organization::{entry, text_error},
 };
 use crate::{
@@ -278,6 +280,10 @@ async fn put_branding(
     let instance = state.instance.clone();
     let result = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
+        // Still an administrator with a valid session (`invites::admin_holds`).
+        if let Err(error) = admin_holds(&tx, &user)? {
+            return Ok(Err(error));
+        }
         let (current, current_image) = instance::load_branding(&tx)?;
         let (next, image) = match changes.apply(&current, current_image.as_ref()) {
             Ok(next) => next,

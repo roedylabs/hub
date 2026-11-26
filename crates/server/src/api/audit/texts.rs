@@ -601,6 +601,37 @@ mod tests {
         assert_eq!(render(&fallback, Language::German).act, ": users.lock");
     }
 
+    /// The text up to the parenthesis that closes the call `part` starts in
+    /// (nested parentheses and string literals skipped).
+    fn call_arguments(part: &str) -> &str {
+        let (mut depth, mut in_string, mut escaped) = (0_usize, false, false);
+        for (at, c) in part.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if in_string => escaped = true,
+                '"' => in_string = !in_string,
+                '(' if !in_string => depth += 1,
+                ')' if !in_string && depth == 0 => return &part[..at],
+                ')' if !in_string => depth -= 1,
+                _ => {}
+            }
+        }
+        part
+    }
+
+    #[test]
+    fn call_arguments_include_nested_calls() {
+        assert_eq!(
+            call_arguments(r#"category_of(x), "new.action").actor(u)"#),
+            r#"category_of(x), "new.action""#
+        );
+        assert_eq!(call_arguments(r#""a)b", 1) + 2"#), r#""a)b", 1"#);
+        assert_eq!(
+            call_arguments("category, action) -> Self"),
+            "category, action"
+        );
+    }
+
     /// Every key the server writes (`Entry::new(…, "…")` and the actor's
     /// `entry("…")` in `src/`) has a text: the list above is complete.
     #[test]
@@ -623,12 +654,13 @@ mod tests {
                 let source = std::fs::read_to_string(&path).unwrap();
                 // Only the code before the tests.
                 let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-                // The key is the first string in the call: after the
-                // category, or right away with `actor.entry("…", …)`.
-                for (start, index) in [("Entry::new(", 1), ("entry(\"", 0), ("audit_entry(", 1)] {
+                // The key is the first string literal among the call's
+                // arguments, nested calls included (`Entry::new(category_of(x),
+                // "…")`, `actor.entry("…", …)`, `audit_entry(…, "…", …)`).
+                for start in ["Entry::new(", "entry("] {
                     for part in code.split(start).skip(1) {
-                        let call = part.split(')').next().unwrap_or_default();
-                        if let Some(key) = call.split('"').nth(index) {
+                        let arguments = call_arguments(part);
+                        if let Some(key) = arguments.split('"').nth(1) {
                             written.insert(key.to_owned());
                         }
                     }
