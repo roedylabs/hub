@@ -19,7 +19,9 @@
 //!   pixel grows with the radius or the size of the matrix) and without turbulence with
 //!   more than [`MAX_OCTAVES`] octaves.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/logo/upload.rs`).
+//! Taken over from Roedy Mail (`crates/server/src/logo/upload.rs`); markers
+//! and text are rejected without the SVG namespace too, and references are
+//! read like usvg reads them (spaces around `#id`).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -182,14 +184,28 @@ fn document(data: &[u8]) -> Result<(roxmltree::Document<'_>, Size), Rejected> {
         },
     )
     .map_err(|_| Rejected::Unreadable)?;
-    if doc
-        .descendants()
-        .any(|node| node.tag_name().name() == "text" && node.tag_name().namespace() == Some(SVG_NS))
-    {
+    if doc.descendants().any(|node| is_svg(node, "text")) {
         return Err(Rejected::SvgText);
     }
     let size = expanded(&doc)?;
     Ok((doc, size))
+}
+
+/// Whether `node` is the SVG element `name` as usvg reads it: in the SVG
+/// namespace or without one (usvg also draws a document without `xmlns`).
+fn is_svg(node: roxmltree::Node<'_, '_>, name: &str) -> bool {
+    let tag = node.tag_name();
+    tag.name() == name && matches!(tag.namespace(), None | Some(SVG_NS))
+}
+
+/// The ID a local reference (`#id`) names, read like usvg's IRI parser
+/// (svgtypes): spaces around it are allowed, the ID ends at a space and
+/// nothing may follow but spaces – otherwise usvg resolves nothing either.
+fn fragment(href: &str) -> Option<&str> {
+    let space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    let rest = href.trim_start_matches(space).strip_prefix('#')?;
+    let (id, tail) = rest.split_at(rest.find(' ').unwrap_or(rest.len()));
+    (!id.is_empty() && tail.trim_start_matches(space).is_empty()).then_some(id)
 }
 
 /// Whether a stored SVG still fits the upload limits – e.g. one
@@ -331,7 +347,7 @@ impl<'a, 'input> Walk<'a, 'input> {
             return Err(Rejected::Unreadable);
         }
         let name = node.tag_name();
-        if name.namespace() == Some(SVG_NS) && name.name() == "marker" {
+        if is_svg(node, "marker") {
             return Err(Rejected::Unsupported);
         }
         // Like usvg: `href` without prefix before `xlink:href` (SVG 2).
@@ -346,11 +362,11 @@ impl<'a, 'input> Walk<'a, 'input> {
         let data = ["d", "points"]
             .iter()
             .filter_map(|name| node.attribute(*name))
-            .chain(href.filter(|href| href.starts_with("data:")))
+            .chain(href.filter(|href| href.trim_start().starts_with("data:")))
             .map(str::len)
             .sum();
         let mut size = Size { elements: 1, data };
-        let candidates: Vec<_> = match (name.name(), href.and_then(|h| h.strip_prefix('#'))) {
+        let candidates: Vec<_> = match (name.name(), href.and_then(fragment)) {
             ("use", Some(id)) => self.first.get(id).copied().into_iter().collect(),
             ("feImage", Some(id)) => self.all.get(id).cloned().unwrap_or_default(),
             _ => Vec::new(),
@@ -649,6 +665,21 @@ mod tests {
             ),
             Err(Rejected::Unsupported)
         );
+        // Without `xmlns` usvg reads the same elements: no marker, no text.
+        let bare = |body: &str| {
+            check(
+                Format::Svg,
+                format!(r#"<svg viewBox="0 0 10 10">{body}</svg>"#).into_bytes(),
+            )
+            .map(|_| ())
+        };
+        assert_eq!(
+            bare(
+                r#"<marker id="m"><rect width="1" height="1"/></marker><path d="M0 0L5 5L9 1" marker-mid="url(#m)"/>"#
+            ),
+            Err(Rejected::Unsupported)
+        );
+        assert_eq!(bare("<text>Post</text>"), Err(Rejected::SvgText));
 
         // `levels` levels with ten `use` each on `leaf` (ID `<prefix>0`).
         let chain = |prefix: &str, leaf: &str, levels: usize| {
@@ -662,9 +693,14 @@ mod tests {
             }
             body + &format!(r##"</defs><use href="#{prefix}{levels}"/>"##)
         };
-        // Six levels: a million copies of a path.
+        // Six levels: a million copies of a path – also with references in
+        // spaces, which usvg resolves too.
         let path = r#"<path id="l0" d="M0 0L1 1L2 0Z"/>"#;
         assert_eq!(reject(&chain("l", path, 6)), Err(Rejected::TooLarge));
+        let spaced = chain("l", path, 6).replace(r##"href="#"##, r##"href=" #"##);
+        let spaced = spaced.replace(r#""/>"#, r#" "/>"#);
+        assert!(spaced.contains(r##"href=" #l5 ""##), "{spaced:.200}");
+        assert_eq!(reject(&spaced), Err(Rejected::TooLarge));
         // A nested SVG with a thousand copies, a thousand times outside.
         let inner = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">{}</svg>"#,
@@ -775,5 +811,24 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn fragments_like_usvg() {
+        for (href, id) in [
+            ("#a", Some("a")),
+            (" #a ", Some("a")),
+            // Only a space ends the ID, as in svgtypes (roxmltree turns tabs
+            // and line breaks in attribute values into spaces anyway).
+            ("\t#a\n", Some("a\n")),
+            ("#a\tb", Some("a\tb")),
+            ("#a b", None),
+            ("# a", None),
+            ("#", None),
+            ("a", None),
+            ("data:image/png;base64,", None),
+        ] {
+            assert_eq!(fragment(href), id, "{href:?}");
+        }
     }
 }
