@@ -213,6 +213,18 @@ impl Env {
         }
     }
 
+    /// `GET` of a file outside `/api` (branding, web app) without sign-in:
+    /// status, headers and body.
+    pub async fn file(&self, path: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let app: Router =
+            router(self.state.clone()).layer(MockConnectInfo(SocketAddr::from((CLIENT, 4711))));
+        let response = app.oneshot(request).await.unwrap();
+        let (status, headers) = (response.status(), response.headers().clone());
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes.to_vec())
+    }
+
     /// A modifying request without `X-Requested-With`, as a foreign form
     /// would send it.
     pub async fn without_csrf(

@@ -84,7 +84,7 @@ pub fn discard(conn: &Connection, user_id: &str) -> rusqlite::Result<usize> {
     )
 }
 
-/// Deletes expired links (the cleanup job that follows with the administration).
+/// Deletes expired links (job `session_cleanup`).
 pub fn delete_expired(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM password_resets WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",

@@ -2,13 +2,20 @@
 //! configuration comes from the `ROEDY_*` environment variables
 //! (docs/ops.md › Configuration).
 //!
-//! Taken over from Roedy Mail (`crates/server/src/cli.rs`) without
-//! `reset-admin`, which follows with the users.
+//! Taken over from Roedy Mail (`crates/server/src/cli.rs`), `reset-admin`
+//! with an optional reset link instead of a password.
 
 use anyhow::bail;
 use clap::{Parser, Subcommand};
 
-use crate::{app, config::Config, db, healthcheck, logging, setup_token};
+use crate::{
+    app,
+    auth::{password::Hasher, session::Token},
+    config::Config,
+    db, healthcheck, logging,
+    reset_admin::{self, Reset, Secret},
+    setup_token,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,6 +40,18 @@ pub enum Command {
     Healthcheck,
     /// Apply pending database migrations
     Migrate,
+    /// Restore an administrator's access: new password (or reset link),
+    /// authenticator apps removed, signed out, unlocked
+    ResetAdmin {
+        /// Email address or username; required when there are several
+        /// administrators
+        #[arg(long, value_name = "EMAIL|USERNAME")]
+        user: Option<String>,
+        /// Print a password reset link (valid for an hour) instead of a new
+        /// password; needs ROEDY_PUBLIC_URL
+        #[arg(long)]
+        link: bool,
+    },
     /// Show the setup token for the initial setup
     SetupToken,
 }
@@ -50,6 +69,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Migrate => {
             let version = migrate(config).await?;
             println!("Database schema: version {version}");
+            Ok(())
+        }
+        Command::ResetAdmin { user, link } => {
+            let reset = reset_admin(config, user, link).await?;
+            print!("{}", describe(&reset));
             Ok(())
         }
         Command::SetupToken => match setup_token(config).await? {
@@ -70,6 +94,68 @@ async fn migrate(config: Config) -> anyhow::Result<i64> {
         Ok(db::migrations::current_version(&conn)?)
     })
     .await
+}
+
+/// `reset-admin`: selects the administrator, then resets in one
+/// transaction. With `link` the output is a link to the hub's address
+/// instead of the password.
+async fn reset_admin(config: Config, user: Option<String>, link: bool) -> anyhow::Result<Reset> {
+    // Before any change: without the address there is no link.
+    let public_url = if link {
+        Some(config.require_public_url()?)
+    } else {
+        None
+    };
+    let data_dir = config.data_dir.clone();
+    let admin =
+        db::blocking(move || reset_admin::select(&db::open_existing(&data_dir)?, user.as_deref()))
+            .await?;
+    let password = reset_admin::generate_password()?;
+    let hash = Hasher::default().hash(&password).await?;
+    let secret = if link {
+        Secret::Link(Token::generate()?)
+    } else {
+        Secret::Password(password)
+    };
+    let mut reset = db::blocking(move || {
+        let mut conn = db::open_existing(&config.data_dir)?;
+        reset_admin::reset(&mut conn, &admin, secret, &hash)
+    })
+    .await?;
+    if let (Secret::Link(token), Some(url)) = (&reset.secret, public_url) {
+        reset.link = Some(format!(
+            "{}/login/reset/{}",
+            url.origin().ascii_serialization(),
+            token.as_str()
+        ));
+    }
+    Ok(reset)
+}
+
+/// The output of `reset-admin`.
+fn describe(reset: &Reset) -> String {
+    let mut out = format!(
+        "Access of {} ({}) reset.\n",
+        reset.display_name, reset.email
+    );
+    match (&reset.secret, &reset.link) {
+        (Secret::Password(password), _) => out.push_str(&format!("New password: {password}\n")),
+        (Secret::Link(_), Some(link)) => {
+            out.push_str(&format!("Set a new password within an hour: {link}\n"))
+        }
+        (Secret::Link(_), None) => {}
+    }
+    out.push_str(&format!(
+        "Authenticator apps removed: {}, sessions ended: {}{}.\n",
+        reset.devices,
+        reset.sessions,
+        if reset.unlocked {
+            ", account unlocked"
+        } else {
+            ""
+        }
+    ));
+    out
 }
 
 /// `setup-token`: the token while no administrator exists. Needs the
@@ -101,11 +187,22 @@ mod tests {
 
     #[test]
     fn parses_all_subcommands() {
-        for name in ["serve", "healthcheck", "migrate", "setup-token"] {
+        for name in [
+            "serve",
+            "healthcheck",
+            "migrate",
+            "reset-admin",
+            "setup-token",
+        ] {
             Cli::try_parse_from(["roedy-hub", name]).unwrap();
         }
+        let cli =
+            Cli::try_parse_from(["roedy-hub", "reset-admin", "--user", "max", "--link"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::ResetAdmin { user: Some(u), link: true } if u == "max"
+        ));
         assert!(Cli::try_parse_from(["roedy-hub"]).is_err());
-        assert!(Cli::try_parse_from(["roedy-hub", "reset-admin"]).is_err());
     }
 
     fn config(data_dir: &std::path::Path) -> Config {
@@ -135,5 +232,84 @@ mod tests {
         let first = setup_token(config(&data_dir)).await.unwrap().unwrap();
         let again = setup_token(config(&data_dir)).await.unwrap();
         assert_eq!(again.as_deref(), Some(first.as_str()));
+    }
+
+    /// `reset-admin` against a real data directory: the administrator gets
+    /// back in with the printed password, or with the link.
+    #[tokio::test]
+    async fn reset_admin_prints_a_password_or_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let err = reset_admin(config(&data_dir), None, false)
+            .await
+            .map(drop)
+            .unwrap_err();
+        assert!(err.to_string().contains("ROEDY_DATA_DIR"), "{err}");
+        migrate(config(&data_dir)).await.unwrap();
+        let err = reset_admin(config(&data_dir), None, false)
+            .await
+            .map(drop)
+            .unwrap_err();
+        assert!(err.to_string().contains("setup-token"), "{err}");
+
+        let dir = data_dir.clone();
+        db::blocking(move || {
+            let conn = db::open_existing(&dir)?;
+            let id = crate::db::repo::users::tests::add(
+                &conn,
+                "max",
+                "max@example.com",
+                crate::db::repo::users::Role::Admin,
+            );
+            conn.execute("UPDATE users SET status = 'locked' WHERE id = ?1", [id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let reset = reset_admin(config(&data_dir), None, false).await.unwrap();
+        let Secret::Password(password) = &reset.secret else {
+            panic!("no password");
+        };
+        // The messages never show the output: it carries the password.
+        let out = describe(&reset);
+        assert!(out.contains(&format!("New password: {password}")));
+        assert!(out.contains("account unlocked"));
+        let dir = data_dir.clone();
+        let hash = db::blocking(move || {
+            let conn = db::open_existing(&dir)?;
+            Ok(crate::db::repo::users::find_for_login(&conn, "max")?
+                .unwrap()
+                .password_hash)
+        })
+        .await
+        .unwrap();
+        assert!(
+            Hasher::default()
+                .verify(password, Some(&hash))
+                .await
+                .unwrap()
+        );
+
+        // A link needs the public address.
+        assert!(
+            reset_admin(config(&data_dir), Some("max".into()), true)
+                .await
+                .is_err()
+        );
+        let with_url = Config {
+            public_url: Some("https://hub.example.com/".parse().unwrap()),
+            ..config(&data_dir)
+        };
+        let reset = reset_admin(with_url, Some("max".into()), true)
+            .await
+            .unwrap();
+        let out = describe(&reset);
+        assert!(
+            out.contains("Set a new password within an hour: https://hub.example.com/login/reset/"),
+            "{out}"
+        );
+        assert!(!out.contains("New password"), "{out}");
+        assert!(!out.contains("account unlocked"), "{out}");
     }
 }

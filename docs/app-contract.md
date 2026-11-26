@@ -356,8 +356,9 @@ Only the endpoints listed here are part of the contract; other paths under
 }
 ```
 
-`hub.name` is the organization's name from the hub's branding; `hub.admin` is
-`"/admin"` for administrators, else `null`.
+`hub.name` is the organization's name from the hub's administration
+(`"Roedy Hub"` while none is set); `hub.admin` is `"/admin"` for
+administrators, else `null`.
 
 ### `GET /api/v1/apps`
 

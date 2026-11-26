@@ -35,8 +35,8 @@ const INDEX: &str = "index.html";
 /// SvelteKit's `appDir` (apps/web/vite.config.ts).
 const APP_DIR: &str = "_hub";
 const IMMUTABLE_DIR: &str = "_hub/immutable/";
-const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
-const CACHE_REVALIDATE: &str = "no-cache";
+pub(super) const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+pub(super) const CACHE_REVALIDATE: &str = "no-cache";
 
 #[cfg(feature = "embed-web")]
 #[derive(rust_embed::RustEmbed)]
@@ -99,7 +99,7 @@ struct Asset {
 }
 
 /// Strong ETag from the SHA-256 of the content.
-fn etag_of(sha256: &[u8]) -> String {
+pub(crate) fn etag_of(sha256: &[u8]) -> String {
     use std::fmt::Write as _;
 
     sha256.iter().fold(String::from("\""), |mut tag, byte| {
@@ -239,7 +239,7 @@ fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-fn plain(status: StatusCode) -> Response {
+pub(super) fn plain(status: StatusCode) -> Response {
     (
         status,
         [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
@@ -297,7 +297,7 @@ pub async fn serve(
 
 /// File with ETag and `Cache-Control`: 304 if the browser already has this
 /// version.
-fn cached(
+pub(super) fn cached(
     request: &HeaderMap,
     etag: &str,
     cache: &'static str,

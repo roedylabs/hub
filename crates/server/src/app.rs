@@ -9,7 +9,8 @@
 //!   until pairing exists.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/app.rs`) without the mail
-//! specific state and jobs; the graceful shutdown covers both listeners.
+//! specific state and jobs (the hub's are in `jobs`); the graceful shutdown
+//! covers both listeners.
 
 use std::{
     future::{Future, IntoFuture as _},
@@ -36,12 +37,22 @@ use crate::{
     config::{Config, TrustProxy},
     crypto::SecretKey,
     db::{self, Db},
+    instance::Instance,
+    jobs,
     locks::KeyedLocks,
     logging::{self, SETUP_TARGET},
-    mailer::{self, Mailer, templates::Brand},
+    logo::IMAGE_PATH,
+    mailer::{
+        self, Mailer,
+        templates::{Accent, Brand, MAIL_LOGO_PATH, Plate},
+    },
     rate_limit::RateLimiter,
     setup_token,
     web::{
+        branding::{
+            self, APP_ICON_PATH, MANIFEST_PATH, MASKABLE_ICON_PATH, SMALL_ICON_PATH,
+            TOUCH_ICON_PATH,
+        },
         security_headers,
         static_files::{self, WebAssets},
     },
@@ -75,6 +86,8 @@ pub struct AppState {
     /// Requests with the same password reset link run one after another,
     /// until the link is used up (`api::password`).
     pub reset_locks: Arc<KeyedLocks>,
+    /// Organization and branding (`instance`).
+    pub instance: Arc<Instance>,
     pub background: Background,
 }
 
@@ -150,21 +163,34 @@ impl AppState {
             mailer: Arc::new(Mailer::new(mailer::http_client()?)),
             email_locks: Arc::new(KeyedLocks::default()),
             reset_locks: Arc::new(KeyedLocks::default()),
+            instance: Arc::new(Instance::default()),
             background: Background::default(),
         })
     }
 }
 
 impl AppState {
-    /// Issuer of the authenticator apps (the name the app shows).
-    pub fn issuer(&self) -> &'static str {
-        "Roedy Hub"
+    /// Issuer of the authenticator apps (the name the app shows): the hub's
+    /// name from the organization.
+    pub fn issuer(&self) -> String {
+        self.instance.name()
     }
 
-    /// Branding of the mails; the default until the administration offers
-    /// branding and organization.
+    /// Branding of the mails from organization and branding, with the drawn
+    /// logos – so that a mail's `<img>` and `/branding/mail-logo.png` match.
     pub fn brand(&self) -> Brand {
-        Brand::default()
+        let org = self.instance.org();
+        let branding = self.instance.branding();
+        Brand {
+            app: org.hub_name().to_owned(),
+            accent: Accent::named(&branding.branding.color),
+            plate: Plate::named(&branding.branding.plate),
+            logos: branding.logos.clone(),
+            org: org.name,
+            support: org.email,
+            imprint: org.imprint,
+            privacy: org.privacy,
+        }
     }
 }
 
@@ -174,6 +200,15 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        // Branding files for mails, the sign-in page and installed apps
+        // (`web::branding`), without sign-in.
+        .route(MAIL_LOGO_PATH, get(branding::mail_logo))
+        .route(&format!("{IMAGE_PATH}/{{file}}"), get(branding::image))
+        .route(MANIFEST_PATH, get(branding::manifest))
+        .route(SMALL_ICON_PATH, get(branding::small_icon))
+        .route(APP_ICON_PATH, get(branding::app_icon))
+        .route(MASKABLE_ICON_PATH, get(branding::maskable_icon))
+        .route(TOUCH_ICON_PATH, get(branding::touch_icon))
         .nest(api::PREFIX, api.clone())
         // `nest` does not cover `/api/v1/` (axum 0.8); the API answers there too.
         .route_service(&format!("{}/", api::PREFIX), api.with_state(state.clone()))
@@ -238,6 +273,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let db = Db::from(conn);
 
     let state = AppState::new(db.clone(), web, &config, public_url, secrets)?;
+    let instance = state.instance.clone();
+    db::call(&db, move |conn| instance.load(conn))
+        .await
+        .context("organization and branding not loaded")?;
     let background = state.background.clone();
     let result = async {
         // Placeholder hash before the first request, so that even the first
@@ -250,7 +289,9 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             .await
             .context("placeholder password hash not created")?;
         let listeners = Listeners::bind(&config).await?;
+        let scheduler = jobs::start(&state);
         let served = run_http(listeners, state, shutdown).await;
+        scheduler.shutdown().await;
         // Before closing the database: audit entries after the last responses.
         background.finish(BACKGROUND_GRACE).await;
         served

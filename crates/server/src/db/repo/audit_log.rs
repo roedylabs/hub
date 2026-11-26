@@ -1,16 +1,41 @@
-//! Table `audit_log`: admin and security actions. Each task records its own
-//! actions, in the same transaction as the change; reading, the texts and
-//! the retention follow with Administration › Audit log.
+//! Table `audit_log`: admin and security actions, shown under
+//! Administration › Audit log (`api::audit`). Each task records its own
+//! actions, in the same transaction as the change; the texts for each key
+//! live in `api::audit::texts`.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/db/repo/audit_log.rs`)
 //! without the place (no GeoIP) and with the category `apps`.
 
 use std::net::IpAddr;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Row as SqlRow};
 use serde_json::Value;
 
-use crate::{auth::session::AuthUser, db::repo::users::Profile};
+use crate::{
+    auth::session::AuthUser,
+    db::repo::{app_settings, users::Profile},
+};
+
+/// Key of the retention setting in `app_settings`.
+const KEEP_KEY: &str = "audit_keep_days";
+/// Selectable retention periods in days.
+pub const KEEP_CHOICES: [u32; 3] = [30, 90, 365];
+/// Retention without a choice.
+pub const KEEP_DEFAULT: u32 = 90;
+
+/// Retention in days; an unknown value in the database counts as the
+/// default, so that never more is deleted than someone chose.
+pub fn keep_days(conn: &Connection) -> anyhow::Result<u32> {
+    Ok(app_settings::get::<Value>(conn, KEEP_KEY)?
+        .and_then(|days| u32::try_from(days.as_u64()?).ok())
+        .filter(|days| KEEP_CHOICES.contains(days))
+        .unwrap_or(KEEP_DEFAULT))
+}
+
+/// Sets the retention; `days` is one of the [`KEEP_CHOICES`].
+pub fn set_keep_days(conn: &Connection, days: u32) -> anyhow::Result<()> {
+    app_settings::set(conn, KEEP_KEY, &days)
+}
 
 /// Categories of the audit log (the filter of the audit log page).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,10 +62,24 @@ impl Category {
             Self::System => "system",
         }
     }
+
+    /// All categories in display order.
+    pub const ALL: [Self; 5] = [
+        Self::Login,
+        Self::Users,
+        Self::Apps,
+        Self::Settings,
+        Self::System,
+    ];
+
+    /// Name as in the table and in the filter `cat`.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == value)
+    }
 }
 
-/// An entry. `action` is a stable key (`auth.login`, `users.lock` …) that the
-/// audit log page turns into text.
+/// An entry. `action` is a stable key (`auth.login`, `users.lock` …) that
+/// `api::audit::texts` turns into text.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub category: Category,
@@ -113,6 +152,133 @@ pub fn insert(conn: &Connection, entry: &Entry) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// An entry for reading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub id: i64,
+    /// UTC like `2026-11-05T09:26:00.000Z`.
+    pub at: String,
+    pub category: Category,
+    pub action: String,
+    pub actor_name: Option<String>,
+    pub ip: Option<String>,
+    pub details: Option<Value>,
+}
+
+impl Row {
+    fn from_sql(row: &SqlRow<'_>) -> rusqlite::Result<Option<Self>> {
+        let category: String = row.get(2)?;
+        let Some(category) = Category::parse(&category) else {
+            return Ok(None);
+        };
+        let details: Option<String> = row.get(6)?;
+        Ok(Some(Self {
+            id: row.get(0)?,
+            at: row.get(1)?,
+            category,
+            action: row.get(3)?,
+            actor_name: row.get(4)?,
+            ip: row.get(5)?,
+            details: details.and_then(|text| serde_json::from_str(&text).ok()),
+        }))
+    }
+}
+
+/// Time range of a query, both in UTC in the format of [`Row::at`].
+#[derive(Debug, Default, Clone)]
+pub struct Range {
+    /// From this point in time (inclusive).
+    pub from: Option<String>,
+    /// Before this point in time.
+    pub to: Option<String>,
+}
+
+/// Columns and condition of all queries: retention in `?1`, range in `?2`, `?3`.
+const COLUMNS: &str = "id, at, category, action, actor_name, ip, details";
+const WITHIN: &str = "at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1) \
+                      AND (?2 IS NULL OR at >= ?2) AND (?3 IS NULL OR at < ?3)";
+
+/// Walks the entries of the last `keep_days` days in the range `range`,
+/// newest first, and calls `visit` for each: for search and export, which
+/// work on the finished texts in Rust (`api::audit`). Without a search,
+/// [`page`] and [`counts`] suffice, which barely occupy the shared
+/// connection.
+pub fn scan(
+    conn: &Connection,
+    keep_days: u32,
+    range: &Range,
+    mut visit: impl FnMut(Row),
+) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT {COLUMNS} FROM audit_log WHERE {WITHIN} ORDER BY id DESC"
+    ))?;
+    let mut rows = statement.query((format!("-{keep_days} days"), &range.from, &range.to))?;
+    while let Some(row) = rows.next()? {
+        if let Some(row) = Row::from_sql(row)? {
+            visit(row);
+        }
+    }
+    Ok(())
+}
+
+/// At most `limit` entries as with [`scan`], only from `category` (all when
+/// absent) and older than `before`.
+pub fn page(
+    conn: &Connection,
+    keep_days: u32,
+    range: &Range,
+    category: Option<Category>,
+    before: Option<i64>,
+    limit: usize,
+) -> rusqlite::Result<Vec<Row>> {
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT {COLUMNS} FROM audit_log WHERE {WITHIN} \
+         AND (?4 IS NULL OR category = ?4) AND (?5 IS NULL OR id < ?5) \
+         ORDER BY id DESC LIMIT ?6"
+    ))?;
+    let rows = statement.query_map(
+        (
+            format!("-{keep_days} days"),
+            &range.from,
+            &range.to,
+            category.map(Category::as_str),
+            before,
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ),
+        Row::from_sql,
+    )?;
+    rows.filter_map(Result::transpose).collect()
+}
+
+/// Entries per category as with [`scan`].
+pub fn counts(
+    conn: &Connection,
+    keep_days: u32,
+    range: &Range,
+) -> rusqlite::Result<Vec<(Category, u64)>> {
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT category, count(*) FROM audit_log WHERE {WITHIN} GROUP BY category"
+    ))?;
+    let rows = statement.query_map(
+        (format!("-{keep_days} days"), &range.from, &range.to),
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    rows.filter_map(|row| match row {
+        Ok((name, n)) => Category::parse(&name).map(|category| Ok((category, n.unsigned_abs()))),
+        Err(error) => Some(Err(error)),
+    })
+    .collect()
+}
+
+/// Deletes what is older than `days` days; returns the number of deleted
+/// entries (job `cleanup`).
+pub fn delete_old(conn: &Connection, days: u32) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM audit_log WHERE at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+        [format!("-{days} days")],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -168,5 +334,136 @@ mod tests {
         assert_eq!(first.2, "Max Example");
         assert_eq!(first.3, "198.51.100.7");
         assert_eq!(first.4, r#"{"fields":["display_name"]}"#);
+    }
+
+    #[test]
+    fn category_names_match_schema() {
+        let conn = conn();
+        for category in Category::ALL {
+            insert(&conn, &Entry::new(category, "test")).unwrap();
+            assert_eq!(Category::parse(category.as_str()), Some(category));
+        }
+        assert_eq!(Category::parse("Sign-in"), None);
+    }
+
+    /// Sets `at` of an entry to `days` days ago.
+    fn age(conn: &Connection, action: &str, days: u32) {
+        conn.execute(
+            "UPDATE audit_log SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1) \
+             WHERE action = ?2",
+            (format!("-{days} days"), action),
+        )
+        .unwrap();
+    }
+
+    fn actions(conn: &Connection, keep_days: u32, range: &Range) -> Vec<String> {
+        let mut seen = Vec::new();
+        scan(conn, keep_days, range, |row| seen.push(row.action)).unwrap();
+        seen
+    }
+
+    #[test]
+    fn scan_lists_newest_first_within_retention_and_range() {
+        let conn = conn();
+        for action in ["old", "middle", "new"] {
+            insert(&conn, &Entry::new(Category::System, action)).unwrap();
+        }
+        age(&conn, "old", 100);
+        age(&conn, "middle", 10);
+
+        assert_eq!(
+            actions(&conn, 90, &Range::default()),
+            ["new", "middle"],
+            "older than the retention no longer counts, even before the cleanup"
+        );
+        assert_eq!(
+            actions(&conn, 365, &Range::default()),
+            ["new", "middle", "old"]
+        );
+
+        let at = |days: i64| {
+            let at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(days * 24);
+            at.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+        };
+        let until_yesterday = Range {
+            from: None,
+            to: Some(at(1)),
+        };
+        assert_eq!(actions(&conn, 365, &until_yesterday), ["middle", "old"]);
+        let since_last_month = Range {
+            from: Some(at(30)),
+            to: None,
+        };
+        assert_eq!(actions(&conn, 365, &since_last_month), ["new", "middle"]);
+    }
+
+    #[test]
+    fn page_filters_by_category_and_cursor_and_counts_ignore_both() {
+        let conn = conn();
+        for (category, action) in [
+            (Category::Login, "a"),
+            (Category::Users, "b"),
+            (Category::Login, "c"),
+            (Category::Login, "d"),
+            (Category::Apps, "e"),
+        ] {
+            insert(&conn, &Entry::new(category, action)).unwrap();
+        }
+        insert(&conn, &Entry::new(Category::System, "old")).unwrap();
+        age(&conn, "old", 100);
+        let range = Range::default();
+        let names = |category, before, limit| -> Vec<String> {
+            page(&conn, 90, &range, category, before, limit)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.action)
+                .collect()
+        };
+        assert_eq!(names(None, None, 10), ["e", "d", "c", "b", "a"]);
+        assert_eq!(names(Some(Category::Login), None, 2), ["d", "c"]);
+        let c = page(&conn, 90, &range, Some(Category::Login), None, 2).unwrap()[1].id;
+        assert_eq!(names(Some(Category::Login), Some(c), 2), ["a"]);
+
+        let mut counted = counts(&conn, 90, &range).unwrap();
+        counted.sort_by_key(|(category, _)| category.as_str());
+        assert_eq!(
+            counted,
+            [
+                (Category::Apps, 1),
+                (Category::Login, 3),
+                (Category::Users, 1)
+            ],
+            "the expired row does not count"
+        );
+    }
+
+    #[test]
+    fn keep_days_default_and_unknown_values() {
+        let conn = conn();
+        assert_eq!(keep_days(&conn).unwrap(), 90);
+        set_keep_days(&conn, 365).unwrap();
+        assert_eq!(keep_days(&conn).unwrap(), 365);
+        set_keep_days(&conn, 1).unwrap();
+        assert_eq!(
+            keep_days(&conn).unwrap(),
+            90,
+            "an unknown value deletes nothing"
+        );
+        app_settings::set(&conn, KEEP_KEY, &"30").unwrap();
+        assert_eq!(keep_days(&conn).unwrap(), 90, "also another type");
+        app_settings::set(&conn, KEEP_KEY, &-30).unwrap();
+        assert_eq!(keep_days(&conn).unwrap(), 90, "also a negative value");
+    }
+
+    #[test]
+    fn delete_old_removes_only_what_is_older() {
+        let conn = conn();
+        for action in ["old", "new"] {
+            insert(&conn, &Entry::new(Category::Login, action)).unwrap();
+        }
+        age(&conn, "old", 31);
+        assert_eq!(delete_old(&conn, 90).unwrap(), 0);
+        assert_eq!(delete_old(&conn, 30).unwrap(), 1);
+        assert_eq!(actions(&conn, 365, &Range::default()), ["new"]);
     }
 }

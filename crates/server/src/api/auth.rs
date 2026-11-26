@@ -46,7 +46,7 @@ use crate::{
     app::AppState,
     auth::{
         AuthUser, CurrentUser,
-        challenge::{self, Challenge, Claim},
+        challenge::{self, Challenge, Claim, Ticket},
         device::Device,
         recovery::{self, Redeem},
         session::{self, Origin},
@@ -237,7 +237,14 @@ fn start_session(
     persistent: bool,
     previous: Option<&AuthUser>,
     method: &Method,
+    ticket: Option<&Ticket>,
 ) -> anyhow::Result<Started> {
+    // The intermediate step was discarded after its code was checked (the
+    // account was locked, removed or reset meanwhile, perhaps unlocked
+    // again) or has expired while the job waited: no session.
+    if ticket.is_some_and(Ticket::spent) {
+        return Ok(Started::Expired);
+    }
     let tx = conn.transaction()?;
     let profile = match users::since(&tx, user_id, checked_at)? {
         Since::Unchanged(profile) => profile,
@@ -327,6 +334,7 @@ enum Started {
 
 /// [`start_session`] on the database thread; an outdated state becomes
 /// `login_expired`.
+#[allow(clippy::too_many_arguments, reason = "all parts of one sign-in")]
 async fn sign_in(
     state: &AppState,
     user_id: String,
@@ -335,7 +343,8 @@ async fn sign_in(
     persistent: bool,
     previous: Option<CurrentUser>,
     method: Method,
-) -> Result<Option<(AuthUser, Option<HeaderValue>)>, ApiError> {
+    ticket: Option<Ticket>,
+) -> Result<SignedIn, ApiError> {
     let worker = state.clone();
     let started = db::call(&state.db, move |conn| {
         let previous = previous.map(|CurrentUser(user)| user);
@@ -349,21 +358,42 @@ async fn sign_in(
             persistent,
             previous.as_ref(),
             &method,
+            ticket.as_ref(),
         )?;
         // Right after the commit, even if the request is gone by now.
         outbox.send(&worker);
-        Ok(started)
+        // The intermediate step comes into being in the same job as the
+        // checks of account and second factor: a lock, removal or reset runs
+        // before it (then no step) or after it (then its discard ends the
+        // step) – never in between.
+        let code = match &started {
+            Started::Code => Some(worker.challenges.start(Challenge {
+                user_id: user_id.clone(),
+                remember: persistent,
+                password_changed_at: checked_at.clone(),
+            })?),
+            _ => None,
+        };
+        Ok((started, code))
     })
     .await?;
     match started {
-        Started::Done(user, cookie) => {
+        (Started::Done(user, cookie), _) => {
             tracing::info!(user = %user.id, "signed in");
-            Ok(Some((user, cookie)))
+            Ok(SignedIn::Done(user, cookie))
         }
-        Started::Code => Ok(None),
-        Started::Expired => Err(login_expired()),
-        Started::Locked => Err(rejected("invalid_credentials")),
+        (Started::Code, Some(cookie)) => Ok(SignedIn::Code(cookie)),
+        (Started::Code, None) | (Started::Expired, _) => Err(login_expired()),
+        (Started::Locked, _) => Err(rejected("invalid_credentials")),
     }
+}
+
+/// Result of [`sign_in`].
+enum SignedIn {
+    /// With the cookie of a new session (`None`: renewed).
+    Done(AuthUser, Option<HeaderValue>),
+    /// The second factor is due; the cookie of the intermediate step.
+    Code(HeaderValue),
 }
 
 /// 200 with `status: ok`, the user and the cookies.
@@ -470,16 +500,13 @@ async fn login(
         remember,
         previous,
         Method::Password,
+        None,
     )
     .await?;
-    if let Some((user, cookie)) = signed {
-        return Ok(signed_in(&user, cookie));
-    }
-    let cookie = state.challenges.start(Challenge {
-        user_id: profile.id,
-        remember,
-        password_changed_at,
-    })?;
+    let cookie = match signed {
+        SignedIn::Done(user, cookie) => return Ok(signed_in(&user, cookie)),
+        SignedIn::Code(cookie) => cookie,
+    };
     Ok((
         [(header::SET_COOKIE, cookie)],
         Json(json!({ "status": "totp_required" })),
@@ -549,7 +576,7 @@ async fn complete(
     (claim, profile): (Claim, Profile),
     method: Method,
 ) -> Result<Response, ApiError> {
-    let challenge = claim.consume();
+    let (challenge, ticket) = claim.consume();
     let signed = sign_in(
         state,
         profile.id,
@@ -558,10 +585,13 @@ async fn complete(
         challenge.remember,
         previous,
         method,
+        Some(ticket),
     )
     .await?;
     // With a confirmed code there is no further step.
-    let (user, cookie) = signed.ok_or_else(login_expired)?;
+    let SignedIn::Done(user, cookie) = signed else {
+        return Err(login_expired());
+    };
     Ok(signed_in(
         &user,
         cookie.into_iter().chain([challenge::clear_cookie()]),
@@ -737,6 +767,7 @@ mod tests {
             true,
             previous,
             method,
+            None,
         )
         .unwrap();
         (started, outbox.templates())
@@ -795,6 +826,40 @@ mod tests {
         ));
         assert_eq!(count(&conn, "sessions"), 0);
         assert_eq!(count(&conn, "audit_log"), 0);
+
+        // The code was checked, then the account was locked and unlocked:
+        // the discarded step starts no session, although the state fits.
+        conn.execute("UPDATE users SET status = 'active' WHERE id = ?1", [&id])
+            .unwrap();
+        let store = std::sync::Arc::new(challenge::Challenges::default());
+        let cookie = store
+            .start(Challenge {
+                user_id: id.clone(),
+                remember: true,
+                password_changed_at: now.clone(),
+            })
+            .unwrap();
+        let pair = cookie.to_str().unwrap().split(';').next().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_str(pair).unwrap());
+        let claim = store.claim(&headers).unwrap();
+        store.discard_user(&id);
+        let (_, ticket) = claim.consume();
+        let mut outbox = Outbox::default();
+        let started = start_session(
+            &mut conn,
+            &mut outbox,
+            &id,
+            &now,
+            &origin(),
+            true,
+            None,
+            &Method::Password,
+            Some(&ticket),
+        )
+        .unwrap();
+        assert!(matches!(started, Started::Expired));
+        assert_eq!(count(&conn, "sessions"), 0);
 
         // Otherwise signed in, with the current profile.
         conn.execute(

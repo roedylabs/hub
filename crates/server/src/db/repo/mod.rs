@@ -2,6 +2,7 @@
 //! `db::call` or in `spawn_blocking`.
 
 pub mod app_settings;
+pub mod assets;
 pub mod audit_log;
 pub mod email_changes;
 pub mod invitations;

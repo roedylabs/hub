@@ -100,7 +100,7 @@ async fn enroll(
     let id = db::new_id()?;
     let secret = totp::generate_secret()?;
     let sealed = state.secrets.seal(totp::SECRET_PURPOSE, &id, &secret)?;
-    let (base32, uri) = totp::enrollment(&secret, state.issuer(), &user.email)?;
+    let (base32, uri) = totp::enrollment(&secret, &state.issuer(), &user.email)?;
     let (row, user_id) = (id.clone(), user.id.clone());
     db::call(&state.db, move |conn| {
         Ok(totp_devices::insert_pending(conn, &row, &user_id, &sealed)?)
@@ -269,7 +269,6 @@ async fn remove(
         return Err(ApiError::NotFound);
     }
     let guard = verify(&state, &user, body).await?;
-    let owner = user.id.clone();
     let origin = auth::origin(&state, &headers, ip);
     let worker = state.clone();
     let result = db::call(&state.db, move |conn| {
@@ -302,18 +301,18 @@ async fn remove(
         )?;
         let overview = overview(&tx, &user.id)?;
         tx.commit()?;
+        // Without an app no pending sign-in step applies any more; otherwise
+        // one would come back to life as soon as a new app is confirmed
+        // within five minutes (like `reset-mfa`). Right after the commit, on
+        // the database thread, like the sign-in's check of its ticket.
+        if last {
+            worker.challenges.discard_user(&user.id);
+        }
         outbox.send(&worker);
-        Ok(Ok((overview, last)))
+        Ok(Ok(overview))
     })
     .await?;
-    let (overview, last) = result?;
-    // Without an app no pending sign-in step applies any more; otherwise one
-    // would come back to life as soon as a new app is confirmed within five
-    // minutes (like `reset-mfa`).
-    if last {
-        state.challenges.discard_user(&owner);
-    }
-    Ok(Json(overview))
+    Ok(Json(result?))
 }
 
 /// "Generate new codes": replaces the set; the codes exist only in this

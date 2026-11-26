@@ -234,7 +234,7 @@ pub fn confirm(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(n == 1)
 }
 
-/// Cleans up (the cleanup job that follows with the administration): confirmed links after they expire
+/// Cleans up (job `session_cleanup`): confirmed links after they expire
 /// (until then they show "Already confirmed") and reserved ones whose
 /// sending has not finished for an hour. Open changes stay until the person
 /// discards or replaces them.

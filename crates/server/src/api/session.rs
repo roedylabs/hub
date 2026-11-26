@@ -8,9 +8,6 @@ use serde_json::{Value, json};
 use super::ApiError;
 use crate::{app::AppState, auth::CurrentUser, db, settings};
 
-/// Name of the hub until the branding names an organization.
-pub const DEFAULT_NAME: &str = "Roedy Hub";
-
 pub fn routes() -> Router<AppState> {
     Router::new().route("/session", get(current))
 }
@@ -37,7 +34,7 @@ async fn current(
         },
         "session": { "id": user.session_id, "auth_time": user.auth_time },
         "hub": {
-            "name": DEFAULT_NAME,
+            "name": state.instance.name(),
             "home": "/",
             "account": "/account",
             "admin": user.is_admin().then_some("/admin"),

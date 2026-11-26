@@ -62,6 +62,20 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 ulid = { version = "3.0.0", default-features = false }
 url = { version = "2.5.8", features = ["serde"] }
 
+# Branding logo (`logo`), as in Roedy Mail: resvg renders the mail header
+# logo and the app icons, without text, system fonts and SVGZ – letters come
+# as paths from Young Serif via skrifa (ttf-parser is unmaintained,
+# RUSTSEC-2026-0192). usvg rewrites uploaded SVGs sanitized (`writer`);
+# roxmltree, imagesize and the decoders are the same versions resvg brings
+# (checking the upload like rendering).
+resvg = { version = "0.50.0", default-features = false, features = ["raster-images"] }
+usvg = { version = "0.50.0", default-features = false, features = ["writer"] }
+roxmltree = "0.21.2"
+imagesize = "0.15.0"
+zune-jpeg = "0.5.15"
+image-webp = "0.2.4"
+skrifa = { version = "0.50.0", default-features = false, features = ["std"] }
+
 [dev-dependencies]
 figment = { version = "0.10.19", features = ["env", "test"] }
 http-body-util = "0.1"

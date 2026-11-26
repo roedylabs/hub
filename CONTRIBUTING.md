@@ -19,7 +19,7 @@ ROEDY_PUBLIC_URL=http://localhost:5173 ROEDY_LOG_FORMAT=text cargo run -- serve 
 pnpm dev              # web app on http://localhost:5173, proxies /api and the health checks to the server
 ```
 
-`ROEDY_PUBLIC_URL` is required; in development it is the address of the web app. The first start prints a setup token in the server log (`cargo run -- setup-token` shows it again). The other commands are `healthcheck` and `migrate`; all settings are in [`docs/ops.md`](docs/ops.md#configuration). To try the server with the built web app instead of `pnpm dev`, run `pnpm build` and start it with `ROEDY_WEB_DIR=apps/web/build` (or build it with `--features embed-web`, as the image will).
+`ROEDY_PUBLIC_URL` is required; in development it is the address of the web app. The first start prints a setup token in the server log (`cargo run -- setup-token` shows it again). The other commands are `healthcheck`, `migrate` and `reset-admin`; all settings are in [`docs/ops.md`](docs/ops.md#configuration). To try the server with the built web app instead of `pnpm dev`, run `pnpm build` and start it with `ROEDY_WEB_DIR=apps/web/build` (or build it with `--features embed-web`, as the image will).
 
 Useful environment variables during development: `ROEDY_LOG_FORMAT=text` for readable logs, `ROEDY_LOG=debug,tower_http=debug` to log every request, `ROEDY_INTERNAL_LISTEN=` (empty) to turn the internal listener off.
 

@@ -5,19 +5,24 @@
 //! Taken over from Roedy Mail (`crates/server/src/api/mod.rs`): the same
 //! middleware order and CSRF rules, without maintenance mode.
 
+pub mod audit;
 pub mod auth;
+pub mod branding;
 pub mod email;
 pub mod error;
 pub mod health;
 pub mod invites;
 pub mod me;
 pub mod mfa;
+pub mod organization;
 pub mod password;
+pub mod public;
 pub mod session;
 pub mod sessions;
 pub mod settings;
 pub mod setup;
 pub mod system_mail;
+pub mod users;
 
 use axum::{
     Router,
@@ -48,6 +53,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(password::routes())
         .merge(email::routes())
         .merge(invites::routes())
+        .merge(users::routes())
+        .merge(audit::routes())
+        .merge(organization::routes())
+        .merge(branding::routes())
+        .merge(public::routes())
         .merge(system_mail::routes())
         .merge(session::routes())
         .merge(me::routes())

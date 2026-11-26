@@ -41,6 +41,17 @@ Roedy Mail.
 the setup token. All of them read the same variables. On `SIGTERM` or `SIGINT` the server stops accepting connections
 on both ports and gives open requests 8 seconds to finish.
 
+**Lost administrator access:** `roedy-hub reset-admin` restores an administrator's access – for example when the only
+administrator lost both password and authenticator app. It sets a new random password and prints it, removes the
+authenticator apps and recovery codes, signs out every device, discards open links from mails and unlocks the
+account; the audit log records it. With several administrators, choose one with `--user <email address or username>`.
+`--link` prints a link to set a new password (valid for an hour, needs `ROEDY_PUBLIC_URL`) instead of a password, so the
+operator never learns it; the old password stops working right away. Run it next to the server with the same
+`ROEDY_DATA_DIR`, for example in its container.
+
+**Cleanup:** the server deletes expired sessions and links from mails every hour, and audit log entries older than the
+retention chosen under Administration › Audit log (30, 90 or 365 days, default 90) once a day.
+
 ## Health
 
 | Endpoint | Response |

@@ -1,8 +1,7 @@
 //! Table `users`: hub accounts. The ID is the `sub` the apps receive.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/db/repo/users.rs`) with
-//! what sign-in and the own account need; the administration of users
-//! follows with its pages.
+//! Taken over from Roedy Mail (`crates/server/src/db/repo/users.rs`):
+//! sign-in, the own account, Administration › Users and `reset-admin`.
 
 use anyhow::Context as _;
 use rusqlite::{Connection, OptionalExtension as _};
@@ -317,9 +316,19 @@ pub fn sign_in_lang(conn: &Connection, id: &str) -> rusqlite::Result<Option<Lang
     }))
 }
 
+/// Administrators for `roedy-hub reset-admin`, oldest first.
+pub fn admins(conn: &Connection) -> rusqlite::Result<Vec<Credentials>> {
+    conn.prepare(&format!(
+        "{CREDENTIALS} WHERE role = 'admin' ORDER BY created_at, rowid"
+    ))?
+    .query_map([], credentials)?
+    .collect()
+}
+
 /// Whether `id` is an administrator and there is no other active one: then
-/// nobody in the hub can lock the account or reset its second factor, and it
-/// cannot delete itself. Locked administrators do not count.
+/// nobody in the hub can lock the account, take its role or reset its second
+/// factor, and it cannot delete itself – only the operator with `roedy-hub
+/// reset-admin`. Locked administrators do not count.
 pub fn sole_admin(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1 AND role = 'admin') \
@@ -328,6 +337,76 @@ pub fn sole_admin(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
         [id],
         |row| row.get(0),
     )
+}
+
+/// Unlocks the user (`reset-admin`, Administration › Users); `true` if
+/// they were locked.
+pub fn unlock(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE users SET status = 'active' WHERE id = ?1 AND status <> 'active'",
+        [id],
+    )?;
+    Ok(n == 1)
+}
+
+/// Locks the user; `true` if they were active. Their sessions stop being
+/// valid immediately (`sessions::authenticate`); the caller deletes them.
+pub fn lock(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE users SET status = 'locked' WHERE id = ?1 AND status = 'active'",
+        [id],
+    )?;
+    Ok(n == 1)
+}
+
+/// New role; `true` if it changed.
+pub fn set_role(conn: &Connection, id: &str, role: Role) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE users SET role = ?2 WHERE id = ?1 AND role <> ?2",
+        (id, role.as_str()),
+    )?;
+    Ok(n == 1)
+}
+
+/// Entry of the list under Administration › Users.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub profile: Profile,
+    pub active: bool,
+    /// An authenticator app is confirmed.
+    pub mfa: bool,
+    pub last_seen_at: Option<String>,
+    pub created_at: String,
+}
+
+const LISTED: &str = "SELECT u.id, u.username, u.email, u.display_name, u.role, u.status, \
+                              EXISTS (SELECT 1 FROM totp_devices t \
+                                      WHERE t.user_id = u.id AND t.confirmed_at IS NOT NULL), \
+                              u.last_seen_at, u.created_at \
+                       FROM users u";
+
+fn listed(row: &rusqlite::Row<'_>) -> rusqlite::Result<Listed> {
+    let (profile, active) = profile(row)?;
+    Ok(Listed {
+        profile,
+        active,
+        mfa: row.get(6)?,
+        last_seen_at: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+/// All users, oldest first (the page sorts on its own).
+pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Listed>> {
+    conn.prepare(&format!("{LISTED} ORDER BY u.created_at, u.rowid"))?
+        .query_map([], listed)?
+        .collect()
+}
+
+/// One entry as in [`list`].
+pub fn get_listed(conn: &Connection, id: &str) -> rusqlite::Result<Option<Listed>> {
+    conn.query_row(&format!("{LISTED} WHERE u.id = ?1"), [id], listed)
+        .optional()
 }
 
 /// Removes the user with everything attached to them (`ON DELETE CASCADE`:
@@ -601,5 +680,62 @@ pub(crate) mod tests {
             assert_eq!(Role::parse(role.as_str()), Some(role));
         }
         assert_eq!(Role::parse("root"), None);
+    }
+
+    #[test]
+    fn lock_unlock_and_role() {
+        let conn = conn();
+        let max = add(&conn, "max", "max@example.com", Role::User);
+        assert!(lock(&conn, &max).unwrap());
+        assert!(!lock(&conn, &max).unwrap(), "already locked");
+        assert!(!credentials_by_id(&conn, &max).unwrap().unwrap().active);
+        assert!(unlock(&conn, &max).unwrap());
+        assert!(!unlock(&conn, &max).unwrap(), "already active");
+        assert!(set_role(&conn, &max, Role::Admin).unwrap());
+        assert!(!set_role(&conn, &max, Role::Admin).unwrap(), "unchanged");
+        assert_eq!(
+            credentials_by_id(&conn, &max).unwrap().unwrap().user.role,
+            Role::Admin
+        );
+        assert!(!lock(&conn, "missing").unwrap());
+    }
+
+    #[test]
+    fn list_admins_and_listed_rows() {
+        let conn = conn();
+        let anna = add(&conn, "anna", "anna@example.com", Role::Admin);
+        let max = add(&conn, "max", "max@example.com", Role::User);
+        let eva = add(&conn, "eva", "eva@example.com", Role::Admin);
+        lock(&conn, &eva).unwrap();
+        conn.execute(
+            "INSERT INTO totp_devices (id, user_id, name, secret_enc, confirmed_at) \
+             VALUES ('t1', ?1, 'Phone', x'00', '2026-01-01T00:00:00.000Z'), \
+                    ('t2', ?2, NULL, x'00', NULL)",
+            (&anna, &max),
+        )
+        .unwrap();
+        let ids: Vec<String> = admins(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.user.id)
+            .collect();
+        assert_eq!(ids, [anna.clone(), eva.clone()], "locked ones too");
+
+        let rows = list(&conn).unwrap();
+        let summary: Vec<(&str, bool, bool)> = rows
+            .iter()
+            .map(|row| (row.profile.username.as_str(), row.active, row.mfa))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("anna", true, true),
+                ("max", true, false),
+                ("eva", false, false)
+            ],
+            "only confirmed apps count"
+        );
+        assert_eq!(get_listed(&conn, &max).unwrap().as_ref(), Some(&rows[1]));
+        assert_eq!(get_listed(&conn, "missing").unwrap(), None);
     }
 }

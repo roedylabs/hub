@@ -135,9 +135,53 @@ impl Claim {
         &self.entry.as_ref().expect("present until consume").0
     }
 
-    /// Ends the intermediate step (signed in or no longer valid).
-    pub fn consume(mut self) -> Challenge {
-        self.entry.take().expect("present until consume").0
+    /// Ends the intermediate step (signed in or no longer valid); the
+    /// [`Ticket`] tells later whether it was discarded meanwhile.
+    pub fn consume(mut self) -> (Challenge, Ticket) {
+        let (challenge, expires) = self.entry.take().expect("present until consume");
+        let ticket = Ticket {
+            store: self.store.clone(),
+            user_id: challenge.user_id.clone(),
+            discards: self.discards,
+            expires,
+        };
+        (challenge, ticket)
+    }
+}
+
+/// What remains of a consumed intermediate step: whether the user's steps
+/// were discarded since it was taken out (locked, removed, second factor
+/// reset). The sign-in checks it in the transaction that starts the session;
+/// discarding happens on the same database thread right after the commit of
+/// such a change, so either the session exists before the change (and the
+/// change ends it) or the check sees the discard.
+///
+/// The step's expiry stays with it: discard notes live for [`TTL`] after
+/// the discard, which is at least as long as the step was valid, so the
+/// note can only be gone once the step has expired – and an expired ticket
+/// counts as spent.
+pub struct Ticket {
+    store: Arc<Challenges>,
+    user_id: String,
+    discards: u64,
+    expires: Instant,
+}
+
+impl Ticket {
+    /// Whether the step may no longer start a session: discarded since it
+    /// was taken out, or expired.
+    pub fn spent(&self) -> bool {
+        self.spent_at(Instant::now())
+    }
+
+    fn spent_at(&self, now: Instant) -> bool {
+        now >= self.expires
+            || self
+                .store
+                .lock()
+                .discarded
+                .get(&self.user_id)
+                .is_some_and(|(n, _)| *n > self.discards)
     }
 }
 
@@ -213,9 +257,58 @@ mod tests {
         drop(claim);
         // Put back (wrong code): available again.
         let claim = store.claim(&headers).unwrap();
-        assert_eq!(claim.consume(), challenge());
+        let (taken, ticket) = claim.consume();
+        assert_eq!(taken, challenge());
+        assert!(!ticket.spent());
         assert!(store.claim(&headers).is_none());
         assert!(store.claim(&HeaderMap::new()).is_none());
+    }
+
+    /// A step whose code was already checked: if the user's steps are
+    /// discarded before the session starts, the ticket says so – also after
+    /// an unlock, which discards nothing.
+    #[test]
+    fn ticket_sees_a_discard_during_the_check() {
+        let store = Arc::new(Challenges::default());
+        let headers = request_with(&store.start(challenge()).unwrap());
+        let claim = store.claim(&headers).unwrap();
+        store.discard_user("u1");
+        let (_, ticket) = claim.consume();
+        assert!(ticket.spent());
+        // Another user's discard does not count.
+        let headers = request_with(&store.start(challenge()).unwrap());
+        let claim = store.claim(&headers).unwrap();
+        store.discard_user("u2");
+        let (_, ticket) = claim.consume();
+        assert!(!ticket.spent());
+        // Once the step has expired the ticket is spent, whether or not a
+        // discard note is still there.
+        assert!(ticket.spent_at(ticket.expires));
+        assert!(!ticket.spent_at(ticket.expires - Duration::from_secs(1)));
+    }
+
+    /// The discard note of a user can be pruned by a later discard of
+    /// another user; by then the ticket of the discarded step has expired, so
+    /// it stays spent.
+    #[test]
+    fn ticket_stays_spent_after_its_note_is_pruned() {
+        let store = Arc::new(Challenges::default());
+        let t0 = Instant::now();
+        let headers = request_with(&store.start_at(challenge(), t0).unwrap());
+        let claim = store
+            .claim_at(&headers, t0 + Duration::from_secs(1))
+            .unwrap();
+        let discarded_at = t0 + Duration::from_secs(2);
+        store.discard_user_at("u1", discarded_at);
+        let (_, ticket) = claim.consume();
+        assert!(ticket.spent_at(discarded_at));
+        // Another discard after the note's lifetime prunes the note …
+        let later = discarded_at + TTL + Duration::from_secs(1);
+        store.discard_user_at("u2", later);
+        assert!(!store.lock().discarded.contains_key("u1"));
+        // … but the step expired before that.
+        assert!(ticket.expires <= later);
+        assert!(ticket.spent_at(later));
     }
 
     #[test]
