@@ -71,20 +71,36 @@ pub struct AppState {
 
 /// Tasks that keep running after the response. On shutdown `serve` waits
 /// briefly for them ([`Self::finish`]) before the database closes.
-#[derive(Clone, Default)]
-pub struct Background(Arc<std::sync::Mutex<JoinSet<()>>>);
+#[derive(Clone)]
+pub struct Background(Arc<std::sync::Mutex<Option<JoinSet<()>>>>);
+
+impl Default for Background {
+    fn default() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(JoinSet::new()))))
+    }
+}
 
 impl Background {
+    /// Starts `task`; once [`Self::finish`] has begun, the task is dropped
+    /// (logged): nothing would wait for it before the database closes.
     pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
         let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(tasks) = tasks.as_mut() else {
+            tracing::warn!("background task dropped during shutdown");
+            return;
+        };
         // Clean up finished ones so the list does not grow.
         while tasks.try_join_next().is_some() {}
         tasks.spawn(task);
     }
 
-    /// Waits at most `within` for running tasks and aborts the rest.
+    /// Closes admission, waits at most `within` for running tasks and aborts
+    /// the rest.
     pub async fn finish(&self, within: Duration) {
-        let mut tasks = std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()));
+        let taken = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(mut tasks) = taken else {
+            return;
+        };
         let drained =
             tokio::time::timeout(within, async { while tasks.join_next().await.is_some() {} })
                 .await;
@@ -193,16 +209,17 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let db = Db::from(conn);
 
     let state = AppState::new(db.clone(), web, &config, public_url, secrets);
-    // Placeholder hash up front, so that even the first sign-in of an
-    // unknown user takes no longer than that of a known one.
-    let hasher = state.hasher.clone();
-    tokio::spawn(async move {
-        if let Err(error) = hasher.prepare().await {
-            tracing::warn!("placeholder hash not created: {error:#}");
-        }
-    });
     let background = state.background.clone();
     let result = async {
+        // Placeholder hash before the first request, so that even the first
+        // sign-in of an unknown user takes no longer than that of a known one.
+        // It fails only without a random source; then nothing else works
+        // either, so the start fails.
+        state
+            .hasher
+            .prepare()
+            .await
+            .context("placeholder password hash not created")?;
         let listeners = Listeners::bind(&config).await?;
         let served = run_http(listeners, state, shutdown).await;
         // Before closing the database: audit entries after the last responses.
@@ -447,6 +464,15 @@ pub(crate) mod tests {
         );
         tokio::time::sleep(Duration::from_secs(120)).await;
         assert_eq!(done.load(Ordering::SeqCst), 1, "the long one is aborted");
+
+        // After the start of `finish` nothing new is admitted.
+        let late = done.clone();
+        background.spawn(async move {
+            late.fetch_add(1, Ordering::SeqCst);
+        });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(done.load(Ordering::SeqCst), 1, "dropped after shutdown");
+        background.finish(Duration::from_secs(5)).await;
     }
 
     #[tokio::test]

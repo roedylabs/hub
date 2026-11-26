@@ -23,7 +23,7 @@ use super::{ApiError, FieldErrors, JsonBody};
 use crate::{
     app::AppState,
     auth::CurrentUser,
-    db,
+    db::{self, repo::sessions},
     settings::{self, Rejected, Stored},
 };
 
@@ -57,6 +57,7 @@ enum Outcome {
     Saved(Stored),
     Conflict(Stored),
     Invalid(FieldErrors),
+    SessionEnded,
 }
 
 async fn put_settings(
@@ -66,6 +67,10 @@ async fn put_settings(
 ) -> Result<Json<Value>, ApiError> {
     let outcome = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
+        // Revoked meanwhile (e.g. "Sign out all others" on another device).
+        if !sessions::is_valid(&tx, &user.id, &user.session_id)? {
+            return Ok(Outcome::SessionEnded);
+        }
         let current = settings::load(&tx, &user.id)?;
         let next = match current.settings.apply(&body.settings) {
             Ok(next) => next,
@@ -102,5 +107,6 @@ async fn put_settings(
                 .with("settings", settings))
         }
         Outcome::Invalid(errors) => Err(errors.into_error()),
+        Outcome::SessionEnded => Err(ApiError::Unauthorized),
     }
 }

@@ -10,6 +10,8 @@
 
 use std::{net::IpAddr, time::Duration};
 
+use anyhow::Context as _;
+
 use axum::{
     Json, Router,
     extract::State,
@@ -411,8 +413,9 @@ pub fn username_taken() -> ApiError {
 }
 
 /// Saves `change` with an audit entry in the caller's transaction and
-/// returns the user with the new profile; `None` if the username is taken
-/// (then nothing is changed).
+/// returns the user with the profile as stored now (with changes another
+/// request saved meanwhile); `None` if the username is taken (then nothing is
+/// changed).
 pub fn apply_profile(
     conn: &Connection,
     user: &AuthUser,
@@ -438,14 +441,14 @@ pub fn apply_profile(
             .target(&user.id)
             .details(json!({ "fields": fields })),
     )?;
-    let mut updated = user.clone();
-    if let Some(name) = name {
-        name.clone_into(&mut updated.display_name);
-    }
-    if let Some(username) = username {
-        username.clone_into(&mut updated.username);
-    }
-    Ok(Some(updated))
+    let profile = users::credentials_by_id(conn, &user.id)?
+        .context("user deleted during the profile change")?
+        .user;
+    Ok(Some(AuthUser::new(
+        profile,
+        user.session_id.clone(),
+        user.auth_time,
+    )))
 }
 
 /// Saves display name and username – only while the own session still
@@ -501,15 +504,23 @@ async fn change_password(
     }
 
     let reauth = Reauth::password(&state, &user, &body.current_password).await?;
+    // Before the code: if hashing fails (`busy`), the code is not used up.
+    let hash = state.hasher.hash(&body.new_password).await?;
+    let with_code = code.is_some();
     let guard = match code {
         Some(code) => reauth.totp(&state, &user, code).await?,
         None => reauth.guard(),
     };
-    let hash = state.hasher.hash(&body.new_password).await?;
     let changed = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
-            return Ok(Err(stale));
+            return Ok(Err(stale.into()));
+        }
+        // An app confirmed after the check: the change needs its code.
+        if !with_code && totp_devices::has_confirmed(&tx, &user.id)? {
+            let mut errors = FieldErrors::default();
+            errors.code("code", "required");
+            return Ok(Err(errors.into_error()));
         }
         let changed_at = users::set_password(&tx, &user.id, &hash)?;
         let ended = sessions::delete_for_user(&tx, &user.id, Some(&user.session_id))?;

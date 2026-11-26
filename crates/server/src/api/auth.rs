@@ -205,8 +205,10 @@ impl Method {
 /// the old password would survive the change. An account locked in the
 /// meantime gets the same answer as a wrong password ([`Started::Locked`]).
 /// A password alone signs in only without an authenticator app (otherwise
-/// [`Started::Code`]), checked in the same transaction. The session carries
-/// the current profile, not the one from the check.
+/// [`Started::Code`]), a code or recovery code only while one is still set up
+/// (otherwise [`Started::Expired`]: it was removed after the code was
+/// checked), both checked in the same transaction. The session carries the
+/// current profile, not the one from the check.
 fn start_session(
     conn: &mut Connection,
     user_id: &str,
@@ -222,8 +224,11 @@ fn start_session(
         Since::PasswordChanged => return Ok(Started::Expired),
         Since::Inactive => return Ok(Started::Locked),
     };
-    if matches!(method, Method::Password) && totp_devices::has_confirmed(&tx, user_id)? {
-        return Ok(Started::Code);
+    let mfa = totp_devices::has_confirmed(&tx, user_id)?;
+    match method {
+        Method::Password if mfa => return Ok(Started::Code),
+        Method::Totp { .. } | Method::Recovery { .. } if !mfa => return Ok(Started::Expired),
+        _ => {}
     }
     let client = origin.client();
     let renewed = match previous.filter(|previous| previous.id == user_id) {
@@ -725,6 +730,15 @@ mod tests {
             start(&mut conn, &id, &at, None, &method),
             Started::Done(..)
         ));
+        // The app was removed after the code was checked: no session.
+        totp_devices::delete(&conn, &id, "d1").unwrap();
+        for method in [method, Method::Recovery { remaining: 9 }] {
+            assert!(matches!(
+                start(&mut conn, &id, &at, None, &method),
+                Started::Expired
+            ));
+        }
+        assert_eq!(count(&conn, "sessions"), 1);
     }
 
     #[test]

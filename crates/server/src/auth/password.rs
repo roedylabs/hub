@@ -260,17 +260,25 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn cancelled_request_keeps_permit_until_hash_is_done() {
-        // Expensive enough that the hash is still running after the cancel.
-        let hasher = Arc::new(Hasher::with_params(
-            Params::new(64 * 1024, 3, 1, None).unwrap(),
-        ));
+        let hasher = Arc::new(fast());
+        let (started, running) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
         let task = tokio::spawn({
             let hasher = hasher.clone();
-            async move { hasher.hash("Summer2026!").await }
+            async move {
+                hasher
+                    .run(move || {
+                        started.send(()).unwrap();
+                        let _ = released.recv();
+                        Ok(())
+                    })
+                    .await
+            }
         });
-        while hasher.permits.available_permits() == MAX_CONCURRENT {
-            tokio::task::yield_now().await;
-        }
+        // The blocking job holds the slot.
+        tokio::task::spawn_blocking(move || running.recv().unwrap())
+            .await
+            .unwrap();
         task.abort();
         let _ = task.await;
         assert_eq!(
@@ -278,6 +286,7 @@ pub(crate) mod tests {
             MAX_CONCURRENT - 1,
             "running hash must keep its slot"
         );
+        release.send(()).unwrap();
         let _all = hasher.permits.clone().acquire_many_owned(2).await.unwrap();
     }
 
