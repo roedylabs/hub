@@ -298,7 +298,8 @@ For an action that needs proof of a recent sign-in (such as deleting data
 irreversibly), the app compares `auth_time` with the current time. If it is
 too old (the app's choice, e.g. 10 minutes), it navigates to
 `/login?reauth=1&next=…`; the hub asks for the password and the second factor
-again and returns with a new `auth_time`.
+again and returns with a new `auth_time`. The session and its `sid` stay the
+same.
 
 ### 5.3 Signing out
 

@@ -13,11 +13,18 @@ pub struct Migration {
 }
 
 /// All migrations, ascending and without gaps from 1.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "auth",
+        sql: include_str!("migrations/0002_auth.sql"),
+    },
+];
 
 /// Applies all pending migrations and returns the schema version.
 pub fn run(conn: &mut Connection) -> anyhow::Result<i64> {
@@ -126,8 +133,11 @@ mod tests {
             [
                 "app_settings",
                 "audit_log",
+                "recovery_codes",
                 "schema_migrations",
                 "sessions",
+                "totp_devices",
+                "user_settings",
                 "users"
             ]
         );

@@ -130,14 +130,14 @@ mod tests {
 
     #[test]
     fn no_token_once_an_admin_exists() {
-        use crate::db::repo::users::tests::add;
+        use crate::db::repo::users::{Role, tests::add};
 
         let mut conn = Connection::open_in_memory().unwrap();
         migrations::run(&mut conn).unwrap();
         ensure(&conn).unwrap().unwrap();
-        add(&conn, "eva", "eva@example.com", "user");
+        add(&conn, "eva", "eva@example.com", Role::User);
         assert!(ensure(&conn).unwrap().is_some(), "user without admin role");
-        add(&conn, "max", "max@example.com", "admin");
+        add(&conn, "max", "max@example.com", Role::Admin);
         assert_eq!(ensure(&conn).unwrap(), None);
     }
 
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn current_never_creates_and_ends_with_admin_or_delete() {
-        use crate::db::repo::users::tests::add;
+        use crate::db::repo::users::{Role, tests::add};
 
         let mut conn = Connection::open_in_memory().unwrap();
         migrations::run(&mut conn).unwrap();
@@ -165,7 +165,7 @@ mod tests {
 
         let token = ensure(&conn).unwrap();
         assert_eq!(current(&conn).unwrap(), token);
-        add(&conn, "max", "max@example.com", "admin");
+        add(&conn, "max", "max@example.com", Role::Admin);
         assert_eq!(current(&conn).unwrap(), None);
     }
 

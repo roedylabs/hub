@@ -2,7 +2,7 @@
 //! accessed through one connection on its own thread ([`Db`]).
 //!
 //! Taken over from Roedy Mail (`crates/server/src/db/mod.rs`) without
-//! backups, compaction and IDs, which follow with the features that need them.
+//! backups and compaction, which follow with the features that need them.
 
 pub mod migrations;
 pub mod repo;
@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, anyhow, ensure};
@@ -108,6 +108,16 @@ fn serve(mut conn: Connection, receiver: &mpsc::Receiver<Message>) {
             },
         }
     }
+}
+
+/// New ID (ULID: time-sortable, 26 characters) for rows visible to the
+/// outside, such as users and sessions.
+pub fn new_id() -> anyhow::Result<String> {
+    let random = crate::random::bytes::<16>()?;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    Ok(ulid::Ulid::from_parts(millis, u128::from_le_bytes(random)).to_string())
 }
 
 /// File name of the database in the data directory.
@@ -206,6 +216,15 @@ mod tests {
     use anyhow::bail;
 
     use super::*;
+
+    #[test]
+    fn new_ids_are_distinct_ulids() {
+        let a = new_id().unwrap();
+        let b = new_id().unwrap();
+        assert_eq!(a.len(), 26, "{a}");
+        assert_ne!(a, b);
+        assert!(a.parse::<ulid::Ulid>().is_ok(), "{a}");
+    }
 
     #[test]
     fn open_creates_private_database_in_wal_mode() {
