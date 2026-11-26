@@ -632,6 +632,65 @@ mod tests {
         );
     }
 
+    /// Action keys in `code`: every string literal that looks like a key
+    /// (`area.action`) among the arguments of `Entry::new(…)`, `entry(…)` and
+    /// `audit_entry(…)`, nested calls included, and in `let action = …;`. All
+    /// of them, not only the first: `Entry::new(category_for("auth.login"),
+    /// "new.action")` writes `new.action`.
+    fn written_keys(code: &str) -> std::collections::BTreeSet<String> {
+        let is_key = |text: &str| {
+            text.split_once('.').is_some_and(|(area, action)| {
+                !area.is_empty()
+                    && !action.is_empty()
+                    && text
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
+            })
+        };
+        let literals = |text: &str| -> Vec<String> {
+            text.split('"')
+                .skip(1)
+                .step_by(2)
+                .filter(|literal| is_key(literal))
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut keys = std::collections::BTreeSet::new();
+        for start in ["Entry::new(", "entry("] {
+            for part in code.split(start).skip(1) {
+                keys.extend(literals(call_arguments(part)));
+            }
+        }
+        // `let action = if … { "auth.email_change_request" } …`
+        for part in code.split("let action = ").skip(1) {
+            keys.extend(literals(part.split(';').next().unwrap_or_default()));
+        }
+        keys
+    }
+
+    #[test]
+    fn written_keys_are_found_wherever_they_stand() {
+        let keys = written_keys(
+            r#"Entry::new(category_for("auth.login"), "new.action").details(json!({ "a": 1 }));
+               actor.entry("users.lock", &id, details);
+               audit_entry(Category::Settings, "org.update", &user, ip);
+               fn entry(action: &'static str) -> Entry { Entry::new(Category::Login, action) }
+               let action = if first { "auth.first" } else { "auth.again" };"#,
+        );
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "auth.again",
+                "auth.first",
+                "auth.login",
+                "new.action",
+                "org.update",
+                "users.lock"
+            ]
+        );
+    }
+
     /// Every key the server writes (`Entry::new(…, "…")` and the actor's
     /// `entry("…")` in `src/`) has a text: the list above is complete.
     #[test]
@@ -654,24 +713,7 @@ mod tests {
                 let source = std::fs::read_to_string(&path).unwrap();
                 // Only the code before the tests.
                 let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-                // The key is the first string literal among the call's
-                // arguments, nested calls included (`Entry::new(category_of(x),
-                // "…")`, `actor.entry("…", …)`, `audit_entry(…, "…", …)`).
-                for start in ["Entry::new(", "entry("] {
-                    for part in code.split(start).skip(1) {
-                        let arguments = call_arguments(part);
-                        if let Some(key) = arguments.split('"').nth(1) {
-                            written.insert(key.to_owned());
-                        }
-                    }
-                }
-                // `let action = if … { "auth.email_change_request" } …`
-                for part in code.split("let action = ").skip(1) {
-                    let statement = part.split(';').next().unwrap_or_default();
-                    for key in statement.split('"').skip(1).step_by(2) {
-                        written.insert(key.to_owned());
-                    }
-                }
+                written.extend(written_keys(code));
             }
         }
         let listed: std::collections::BTreeSet<String> =
