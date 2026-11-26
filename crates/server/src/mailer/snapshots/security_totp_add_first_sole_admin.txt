@@ -9,7 +9,7 @@ Time: Today, 15:57
 Device: Safari on iPhone
 IP address: 198.51.x.x
 
-Wasn’t this you? Then someone knows your password and has set up their own app. You’re the only administrator, so no one in Roedy Hub can suspend your account. Set a new password right away with “Forgot password” – this signs out the other person’s device – and contact the server operator: they can reset your access on the server, which also removes the other person’s app.
+Wasn’t this you? Then someone knows your password and has set up their own app. You’re the only administrator, so no one in Roedy Hub can suspend your account. Set a new password right away with “Forgot password” – this signs out the other person’s device – and contact the server operator.
 
 Reset password:
 https://hub.example.com/login/forgot
