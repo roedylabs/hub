@@ -628,10 +628,12 @@ export class SetupFlow {
     this.tokErr = null;
     try {
       await api('POST', 'setup/token', { token: this.token });
+      if (this.gone) return;
       this.remaining = null;
       this.tokOk = true;
       this.go(3);
     } catch (error) {
+      if (this.gone) return;
       this.loading = false;
       await this.rejected(error, () => {
         this.tokErr = 'server';
@@ -874,6 +876,8 @@ export class SetupFlow {
     };
     try {
       await api('POST', 'setup/complete', body, this.withToken());
+      // The administrator exists and is signed in; the page that would show it has gone (its layout takes over).
+      if (this.gone) return;
       this.loading = false;
       this.view = 'done';
       // Token, password, key and recovery codes are no longer needed.
@@ -883,6 +887,7 @@ export class SetupFlow {
       this.hooks.entered?.(this.step, 'heading');
       this.doneTimer = setTimeout(() => void this.hooks.signedIn?.(), DONE_MS);
     } catch (error) {
+      if (this.gone) return;
       this.loading = false;
       if (isApiError(error, 422, 'totp_required')) {
         // The key the code confirmed is gone (another tab asked for a new one): back to step 5 with a new key.
@@ -897,8 +902,12 @@ export class SetupFlow {
     }
   }
 
-  /** Stops clocks and timers and drops the answers of running key requests (when leaving the page). */
+  /** The page has left (`dispose`): answers that arrive later change nothing and start no timer. */
+  private gone = false;
+
+  /** Stops clocks and timers and drops the answers of running requests (when leaving the page). */
   dispose(): void {
+    this.gone = true;
     this.keyReq++;
     this.locks.stop();
     clearTimeout(this.doneTimer);

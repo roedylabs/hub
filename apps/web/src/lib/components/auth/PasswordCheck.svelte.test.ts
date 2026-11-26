@@ -3,7 +3,7 @@ import { render, within } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import { describe, expect, it } from 'vitest';
 import type { PasswordRuleId } from '#lib/password.ts';
-import PasswordCheck from './PasswordCheck.svelte';
+import PasswordCheck from '#lib/components/auth/PasswordCheck.svelte';
 
 function check(password: string, failed: PasswordRuleId[] = []) {
   const props = $state({ password, confirm: '', rulesId: 'rules', tile: 48, failed });

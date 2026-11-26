@@ -44,8 +44,7 @@ session.onEnd((next) => {
 export function forgetAccount(): void {
   ui.reset();
   prefs.reset();
-  session.user = null;
-  session.current = null;
+  session.forget();
   // Other tabs of the same account ask the server and discard their state as well.
   session.announce();
 }

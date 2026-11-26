@@ -4,7 +4,7 @@ import { createRawSnippet } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DONE_LEVELS, DONE_MOB_LEVELS, doneLook } from '#lib/auth-layout.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
-import AuthResult from './AuthResult.svelte';
+import AuthResult from '#lib/components/auth/AuthResult.svelte';
 
 afterEach(() => ui.reset());
 

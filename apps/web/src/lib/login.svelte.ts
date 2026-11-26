@@ -739,6 +739,8 @@ export class LoginFlow {
   /** Step password without a route change (back in the browser, expired intermediate step). */
   private toLogin(): void {
     this.req++;
+    // A sign-in left running on another route no longer answers here (its session is signed out on arrival).
+    this.loading = false;
     this.clearCodes();
     if (this.view === 'otp' || this.view === 'backup') this.pw = '';
     this.view = 'login';
@@ -767,6 +769,7 @@ export class LoginFlow {
 
   private openNewPw(token: string): void {
     this.req++;
+    this.loading = false;
     this.token = token;
     this.view = 'newpw';
     this.clearNp();

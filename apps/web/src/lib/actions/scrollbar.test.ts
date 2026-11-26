@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/actions/scrollbar.test.ts`).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OverlayScrollbar, SCROLLBAR, type ScrollbarProfile } from './scrollbar.ts';
+import { OverlayScrollbar, SCROLLBAR, type ScrollbarProfile } from '#lib/actions/scrollbar.ts';
 
 let bars: OverlayScrollbar[] = [];
 

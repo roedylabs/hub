@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/api.test.ts`).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, KEEPALIVE_MAX, NetworkError, api, apiBlob, isApiError } from './api.ts';
+import { ApiError, KEEPALIVE_MAX, NetworkError, api, apiBlob, isApiError } from '#lib/api.ts';
 
 describe('api', () => {
   afterEach(() => {

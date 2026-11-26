@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/components/auth/MessageBox.svelte.test.ts`).
 import { render } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
-import MessageBox from './MessageBox.svelte';
+import MessageBox from '#lib/components/auth/MessageBox.svelte';
 
 describe('MessageBox', () => {
   it('hides the running lock from screen readers: the text names the wait', () => {

@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/password.test.ts`).
 import { describe, expect, it } from 'vitest';
-import { PW_RULES, meetsPolicy, strength, tooLong } from './password.ts';
+import { PW_RULES, meetsPolicy, strength, tooLong } from '#lib/password.ts';
 
 describe('password policy', () => {
   it('checks the three rules like the backend', () => {

@@ -2,7 +2,7 @@
 import { render } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import { isIconName } from '#lib/icons.ts';
-import Icon from './Icon.svelte';
+import Icon from '#lib/components/Icon.svelte';
 
 describe('Icon', () => {
   it('is decorative without a label', () => {

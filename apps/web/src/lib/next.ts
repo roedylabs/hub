@@ -31,6 +31,8 @@ export function safeNext(value: string | null | undefined, origin: string = loca
     return null;
   }
   if (url.origin !== origin) return null;
+  // Dot segments can leave two leading slashes after parsing (`/a/..//host`): another host for the browser.
+  if (url.pathname.startsWith('//')) return null;
   const path = url.pathname + url.search + url.hash;
   // Back to the sign-in would only show it again.
   if (url.pathname === '/login' || url.pathname.startsWith('/login/')) return null;

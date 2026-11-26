@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/auth-fit.test.ts`).
 import { flushSync } from 'svelte';
 import { describe, expect, it, vi } from 'vitest';
-import { AuthFit } from './auth-fit.svelte.ts';
+import { AuthFit } from '#lib/auth-fit.svelte.ts';
 
 /** Page whose content is `content` px high in a window of `height` px. */
 function page() {

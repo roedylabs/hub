@@ -121,18 +121,21 @@ export class Prefs {
   /** Counts `reset()`; responses from an earlier generation (e.g. before sign-out) expire. */
   #generation = 0;
 
-  /** Loads the settings of the signed-in account. */
-  async load(): Promise<void> {
+  /**
+   * Loads the settings of the signed-in account. `signal` ends the request early (the setup's sign-in does not wait
+   * longer than its deadline for settings it can do without).
+   */
+  async load(signal?: AbortSignal): Promise<void> {
     const generation = this.#generation;
     const guestLang = this.values.lang;
     let stored: StoredSettings;
     try {
-      stored = await api<StoredSettings>('GET', 'settings');
+      stored = await api<StoredSettings>('GET', 'settings', undefined, signal ? { signal } : {});
     } finally {
       if (generation === this.#generation) this.loaded = true;
     }
     if (generation !== this.#generation) return;
-    this.#pending = {};
+    // Changes queued behind a running save stay: `#accept` lays them over the loaded state and they still go out.
     this.#accept(stored);
     this.remote = true;
     // Never saved (new account): it keeps the language it signed in with.
@@ -208,6 +211,8 @@ export class Prefs {
       for (const key of Object.keys(patch) as (keyof Settings)[]) {
         if (!(key in this.#pending)) this.#assign(key, this.#confirmed[key]);
       }
+      // The apps and the pages without sign-in follow the rollback too.
+      if ('lang' in patch || 'mode' in patch) this.#share();
       this.error = error instanceof Error ? error : new Error(String(error));
     } finally {
       if (generation === this.#generation) this.#inflight = null;

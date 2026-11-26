@@ -9,7 +9,7 @@
 //
 // Result: <output-dir>/report.json (all findings), report.md (summary) and,
 // unless --no-shots, one screenshot per state in <output-dir>/screenshots/.
-// The exit code is 1 if axe reports a violation.
+// The exit code is 1 if any state has a finding or could not be audited.
 //
 // Taken over from Roedy Mail (scripts/a11y/audit.mjs) and trimmed to the axe
 // run over the hub's pages before and around the sign-in.
@@ -504,4 +504,5 @@ const md = [
 ];
 fs.writeFileSync(path.join(OUT, 'report.md'), md.join('\n'));
 console.log(`\n${results.length} states, ${failed.length} with findings → ${path.join(OUT, 'report.md')}`);
-process.exit(failed.some((r) => r.violations.length) ? 1 : 0);
+// Any finding fails the run: a state that could not be audited proves nothing.
+process.exit(failed.length ? 1 : 0);

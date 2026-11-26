@@ -3,7 +3,7 @@ import { fireEvent, render, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { overwriteGetLocale, type Locale } from '#lib/paraglide/runtime.js';
-import PasswordField from './PasswordField.svelte';
+import PasswordField from '#lib/components/auth/PasswordField.svelte';
 
 let lang: Locale = 'en';
 overwriteGetLocale(() => lang);

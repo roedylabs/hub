@@ -10,7 +10,7 @@ import {
   STEP_REQUEST_MS,
   type InviteField,
   type InviteInfo,
-} from './invite.svelte.ts';
+} from '#lib/invite.svelte.ts';
 
 const TOKEN = 'b'.repeat(43);
 const INFO: InviteInfo = {
@@ -91,7 +91,9 @@ describe('loading', () => {
     expect(flow.fromInitials).toBe('AB');
     expect(flow.inviteEmail).toBe('jordan.hale@example.com');
     expect(flow.roleName).toBe('User');
-    expect(flow.untilLabel).toMatch(/2 November/);
+    // The date in the browser's time zone: the fixture's local calendar day.
+    const day = new Date(INFO.expires_at).getDate();
+    expect(flow.untilLabel).toMatch(new RegExp(`\\b${day} November`));
     // Name prefilled from the invitation
     expect(flow.name).toBe('Jordan Hale');
   });

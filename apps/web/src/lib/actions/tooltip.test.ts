@@ -12,7 +12,7 @@ import {
   placeTip,
   tipValues,
   tooltip,
-} from './tooltip.ts';
+} from '#lib/actions/tooltip.ts';
 
 const VIEW = { w: 1000, h: 800 };
 const SIZE = { w: 100, h: 30 };

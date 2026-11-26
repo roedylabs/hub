@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isHubPath, isReauth, loginHref, MAX_NEXT, nextOf, safeNext } from './next.ts';
+import { isHubPath, isReauth, loginHref, MAX_NEXT, nextOf, safeNext } from '#lib/next.ts';
 
 const ORIGIN = 'https://hub.example.com';
 const at = (query: string) => new URL(`${ORIGIN}/login${query}`);
@@ -29,6 +29,10 @@ describe('`next` of the sign-in (docs/app-contract.md › Not signed in)', () =>
     '//evil.example',
     '//evil.example/path',
     '///evil.example',
+    // … also after resolving dot segments
+    '/a/..//evil.example',
+    '/a/%2e%2e//evil.example',
+    '/./a/../..//evil.example/path',
     // A backslash counts as a slash in browsers
     '/\\evil.example',
     '\\\\evil.example',
@@ -67,6 +71,7 @@ describe('`next` of the sign-in (docs/app-contract.md › Not signed in)', () =>
     expect(nextOf(at('?next=%2F%2Fevil.example'))).toBe('/');
     expect(nextOf(at('?next=%2F%5Cevil.example'))).toBe('/');
     expect(nextOf(at('?next=%2F%0D%0Aevil'))).toBe('/');
+    expect(nextOf(at('?next=%2Fa%2F..%2F%2Fevil.example'))).toBe('/');
   });
 
   it('knows a fresh sign-in only by `reauth=1`', () => {

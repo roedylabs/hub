@@ -153,7 +153,8 @@
       return;
     }
     try {
-      await prefs.load();
+      // Settings are optional here: a deadline, so that a request without an answer does not hold the done screen.
+      await prefs.load(deadline(NET_PROBE_MS));
     } catch {
       // The look chosen in the wizard stays applied.
     }

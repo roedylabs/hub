@@ -9,7 +9,7 @@ import { mockApi } from '#lib/state/fetch-mock.ts';
 import { RESET0, prefs } from '#lib/state/prefs.svelte.ts';
 import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
-import LoginPage from './LoginPage.svelte';
+import LoginPage from '#lib/components/LoginPage.svelte';
 
 const CONFIG: PublicConfig = {
   name: 'Roedy Hub',

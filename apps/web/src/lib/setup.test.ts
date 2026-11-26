@@ -30,7 +30,7 @@ import {
   type Field,
   type Focus,
   type Step,
-} from './setup.svelte.ts';
+} from '#lib/setup.svelte.ts';
 
 const TOKEN = 'ABCD-EFGH-JKLM';
 const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
@@ -991,6 +991,35 @@ describe('Step 6: recovery codes', () => {
 });
 
 describe('Step 7: completion', () => {
+  it('does nothing with answers that arrive after the page has gone', async () => {
+    vi.useFakeTimers();
+    let complete: (a: { status: number; body: unknown }) => void = () => {};
+    mockApi({ 'POST setup/complete': [() => new Promise((resolve) => (complete = resolve))] });
+    const { flow, h } = at(7);
+    const finishing = flow.finish();
+    flow.dispose();
+    complete({ status: 201, body: { user: {} } });
+    await finishing;
+    await vi.advanceTimersByTimeAsync(DONE_MS);
+    expect(flow.view).not.toBe('done');
+    expect(h.entered).not.toHaveBeenCalled();
+    expect(h.signedIn).not.toHaveBeenCalled();
+  });
+
+  it('does not enter step 3 with a token answer after the page has gone', async () => {
+    let check: (a: { status: number; body: unknown }) => void = () => {};
+    mockApi({ 'POST setup/token': [() => new Promise((resolve) => (check = resolve))] });
+    const flow = new SetupFlow(hooks());
+    flow.step = 2;
+    flow.editToken(TOKEN);
+    const checking = flow.submitToken();
+    flow.dispose();
+    check({ status: 422, body: { error: 'invalid_token', remaining: 4 } });
+    await checking;
+    expect(flow.step).toBe(2);
+    expect(flow.tokErr).toBeNull();
+  });
+
   it('summarises the steps, never the password', () => {
     storeChoice({ lang: 'en', mode: 'dark', accent: 'apricot' });
     const { flow } = at(7);

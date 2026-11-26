@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/qr.test.ts`).
 import { describe, expect, it } from 'vitest';
-import { qrSymbol } from './qr.ts';
+import { qrSymbol } from '#lib/qr.ts';
 
 describe('qrSymbol', () => {
   it('draws the modules as a path with finder patterns in the corners', () => {

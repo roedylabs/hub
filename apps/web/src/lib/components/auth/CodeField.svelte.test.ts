@@ -1,8 +1,8 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/components/auth/CodeField.svelte.test.ts`).
 import { fireEvent, render } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
-import { codeOf, type CodeFilter } from './code.ts';
-import CodeField from './CodeField.svelte';
+import { codeOf, type CodeFilter } from '#lib/components/auth/code.ts';
+import CodeField from '#lib/components/auth/CodeField.svelte';
 
 /** A field whose page keeps the plain code (`codeOf`). */
 function field(groups: number[], filter: CodeFilter, extra: Record<string, unknown> = {}) {

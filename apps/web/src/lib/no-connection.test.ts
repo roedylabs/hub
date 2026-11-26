@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/no-connection.test.ts`).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NET_CHECK_MS, NET_PROBE_MS, NET_WAIT, Reconnect, netWait } from './no-connection.svelte.ts';
+import { NET_CHECK_MS, NET_PROBE_MS, NET_WAIT, Reconnect, netWait } from '#lib/no-connection.svelte.ts';
 
 afterEach(() => {
   vi.useRealTimers();

@@ -62,8 +62,8 @@ export async function api<T>(method: Method, path: string, body?: unknown, optio
   };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const payload = body === undefined ? undefined : JSON.stringify(body);
-  // Characters instead of bytes: the large bodies (data URLs) are ASCII, the margin to 64 KiB covers the rest.
-  const keepalive = options.keepalive === true && (payload?.length ?? 0) <= KEEPALIVE_MAX;
+  // The limit is in bytes: count the encoded body (non-ASCII text takes more than one byte per character).
+  const keepalive = options.keepalive === true && new TextEncoder().encode(payload ?? '').byteLength <= KEEPALIVE_MAX;
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/${path}`, {

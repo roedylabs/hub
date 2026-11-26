@@ -18,8 +18,17 @@ export interface SharedPrefs {
 
 const THEMES: readonly string[] = ['system', 'light', 'dark'];
 
+/** The browser's `localStorage`; `undefined` where the getter throws (storage blocked by a policy). */
+function browserStorage(): Storage | undefined {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The stored preferences; unknown or broken values are left out. */
-export function readSharedPrefs(storage: Pick<Storage, 'getItem'> | undefined = globalThis.localStorage): SharedPrefs {
+export function readSharedPrefs(storage: Pick<Storage, 'getItem'> | undefined = browserStorage()): SharedPrefs {
   let raw: string | null = null;
   try {
     raw = storage?.getItem(SHARED_PREFS_KEY) ?? null;
@@ -44,7 +53,7 @@ export function readSharedPrefs(storage: Pick<Storage, 'getItem'> | undefined = 
 /** Merges `patch` into the stored preferences; `locale: null` forgets the language (it follows the browser). */
 export function writeSharedPrefs(
   patch: { theme?: SharedTheme; locale?: Locale | null },
-  storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = globalThis.localStorage,
+  storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = browserStorage(),
 ): void {
   const next: SharedPrefs = { ...readSharedPrefs(storage) };
   if (patch.theme) next.theme = patch.theme;

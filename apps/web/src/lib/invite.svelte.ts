@@ -455,10 +455,10 @@ export class InviteFlow {
         `invites/${encodeURIComponent(this.token)}/accept`,
         { name: normalizeName(this.name), password: this.pw, code: this.otp },
       );
-      this.created = true;
-      // The account exists, even if the page is elsewhere by now.
+      // The account exists, even if the page is elsewhere by now (another invitation's state stays as it is).
       this.hooks.accepted?.(req !== this.req);
       if (req !== this.req) return;
+      this.created = true;
       this.otpLoading = false;
       this.withApp = true;
       this.codes = res.recovery_codes ?? [];
@@ -490,9 +490,9 @@ export class InviteFlow {
           password: this.pw,
         },
       );
-      this.created = true;
       this.hooks.accepted?.(req !== this.req);
       if (req !== this.req) return;
+      this.created = true;
       this.skipLoading = false;
       this.withApp = false;
       this.clearPassword();
@@ -570,8 +570,10 @@ export class InviteFlow {
   // ---- Internal ----
 
   private async signIn(): Promise<void> {
+    const req = this.req;
     const ok = (await this.hooks.signedIn?.()) ?? true;
-    if (ok) return;
+    // Another invitation opened meanwhile: the failure belongs to the previous one.
+    if (ok || req !== this.req) return;
     // The account exists, but the session did not arrive (cookie rejected): back to the codes with the ticked box;
     // "Activate account" tries again. Without an app there are no codes: the sign-in follows.
     this.hooks.error?.(m.error_cookie());

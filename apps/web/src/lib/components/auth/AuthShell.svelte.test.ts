@@ -4,7 +4,7 @@ import { createRawSnippet, flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
-import AuthShell from './AuthShell.svelte';
+import AuthShell from '#lib/components/auth/AuthShell.svelte';
 
 afterEach(() => {
   vi.restoreAllMocks();

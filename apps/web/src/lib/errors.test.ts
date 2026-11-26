@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/errors.test.ts`).
 import { describe, expect, it } from 'vitest';
 import { ApiError, NetworkError } from '#lib/api.ts';
-import { ERRS, errorCodeOf, failText, gatewayErrorIn, gatewayErrorOf, isOffline, loadFailText } from './errors.ts';
+import { ERRS, errorCodeOf, failText, gatewayErrorIn, gatewayErrorOf, isOffline, loadFailText } from '#lib/errors.ts';
 
 describe('errorCodeOf', () => {
   it('maps HTTP statuses to the error pages', () => {

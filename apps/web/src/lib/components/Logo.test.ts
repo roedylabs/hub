@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/components/Logo.test.ts`).
 import { render } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
-import Logo from './Logo.svelte';
+import Logo from '#lib/components/Logo.svelte';
 
 describe('Logo', () => {
   it('shows the hub’s mark by default: four tiles in the ink colour, the first one in full', () => {

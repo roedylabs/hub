@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/components/Tooltip.test.ts`).
 import { render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
-import Tooltip from './Tooltip.svelte';
+import Tooltip from '#lib/components/Tooltip.svelte';
 
 describe('Tooltip', () => {
   it('measures itself and reports the position', () => {

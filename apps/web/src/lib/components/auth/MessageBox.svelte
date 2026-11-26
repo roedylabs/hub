@@ -62,7 +62,15 @@
 </script>
 
 {#if variant === 'line'}
-  <div class="note {tone} {cls}" {id} {role} aria-hidden={hidden ? 'true' : undefined} style:margin-top={top}>
+  <div
+    class="note {tone} {cls}"
+    {id}
+    {role}
+    aria-hidden={hidden ? 'true' : undefined}
+    style:margin-top={top}
+    style:--sage={tone === 'ok' ? ACCENTS.sage.base : undefined}
+    style:--sage-ink={tone === 'ok' ? ACCENTS.sage.ink : undefined}
+  >
     <span class="note-icon" aria-hidden="true"><Icon name={icon} /></span><span>{text}</span>
   </div>
 {:else}

@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/caps-lock.test.ts`).
 import { describe, expect, it } from 'vitest';
-import { CAPS_OFF, capsAfter, type CapsKeyEvent, type CapsState } from './caps-lock.ts';
+import { CAPS_OFF, capsAfter, type CapsKeyEvent, type CapsState } from '#lib/caps-lock.ts';
 
 /** A key event; `mod` is what `getModifierState('CapsLock')` reports. */
 function ev(type: 'keydown' | 'keyup', key: string, mod: boolean, repeat = false): CapsKeyEvent {

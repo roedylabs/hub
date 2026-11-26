@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/wait.test.ts`).
 import { describe, expect, it } from 'vitest';
-import { clockText, waitText } from './wait.ts';
+import { clockText, waitText } from '#lib/wait.ts';
 
 describe('waitText', () => {
   it('names seconds below one minute, otherwise minutes rounded up', () => {

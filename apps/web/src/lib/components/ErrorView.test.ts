@@ -3,7 +3,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BRAND0, session } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
-import ErrorView from './ErrorView.svelte';
+import ErrorView from '#lib/components/ErrorView.svelte';
 
 const nav = vi.hoisted(() => ({ assign: vi.fn(), reload: vi.fn() }));
 

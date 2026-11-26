@@ -10,7 +10,7 @@ import {
   checkFailValues,
   emailConfirmValues,
   type EmailConfirmContext,
-} from './email-confirm.svelte.ts';
+} from '#lib/email-confirm.svelte.ts';
 
 const CONFIG: PublicConfig = {
   name: 'Roedy Hub',

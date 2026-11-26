@@ -101,6 +101,7 @@ describe('root layout', () => {
     '\\\\evil.example',
     'javascript:alert(1)',
     '/%0A/evil.example',
+    '/a/..//evil.example',
   ])('never follows `next=%s` to another site', async (next) => {
     renderAt(`/login?next=${encodeURIComponent(next)}`, true);
     await vi.waitFor(() => expect(nav.goto.mock.calls.length + nav.replace.mock.calls.length).toBe(1));

@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/actions/radiogroup.test.ts`).
 import { fireEvent } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { radiogroup, type RadioGroupOptions } from './radiogroup.ts';
+import { radiogroup, type RadioGroupOptions } from '#lib/actions/radiogroup.ts';
 
 let open: { destroy: () => void }[] = [];
 

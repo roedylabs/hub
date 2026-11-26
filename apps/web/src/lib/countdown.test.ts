@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/countdown.test.ts`).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Countdown } from './countdown.svelte.ts';
+import { Countdown } from '#lib/countdown.svelte.ts';
 
 afterEach(() => {
   vi.useRealTimers();

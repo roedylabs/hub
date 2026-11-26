@@ -1,7 +1,7 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/login.test.ts`).
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
-import { DONE_MS, LoginFlow, formatOtp, formatRecovery, type Field } from './login.svelte.ts';
+import { DONE_MS, LoginFlow, formatOtp, formatRecovery, type Field } from '#lib/login.svelte.ts';
 
 const USER = { id: '01J', username: 'max', email: 'max@example.net', display_name: 'Max Example', role: 'user' };
 const TOKEN = 'a'.repeat(64);
@@ -54,6 +54,31 @@ describe('helpers', () => {
 });
 
 describe('step password', () => {
+  it('can sign in again after leaving a running sign-in for a reset link and coming back', async () => {
+    let answer: (a: { status: number; body: unknown }) => void = () => {};
+    mockApi({
+      'POST auth/login': [
+        () => new Promise((resolve) => (answer = resolve)),
+        { status: 422, body: { error: 'invalid_credentials' } },
+      ],
+      'POST auth/logout': [{ status: 204 }],
+    });
+    const { flow, h } = filled();
+    const first = flow.submit();
+    expect(flow.loading).toBe(true);
+    flow.route({ kind: 'newpw', token: 'tok' });
+    flow.route({ kind: 'login' });
+    expect(flow.loading).toBe(false);
+    // The late success of the left sign-in is signed out, not applied.
+    answer({ status: 200, body: { status: 'ok', user: USER } });
+    await first;
+    expect(h.signOut).toHaveBeenCalledOnce();
+    expect(flow.done).toBe(false);
+    flow.editPw('Safe-enough1');
+    await flow.submit();
+    expect(flow.authErr).toBe(true);
+  });
+
   it('requires identifier and password before asking', async () => {
     const h = hooks();
     const { calls } = mockApi({});

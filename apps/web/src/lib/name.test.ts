@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/name.test.ts`).
 import { describe, expect, it } from 'vitest';
-import { MAX_NAME, initials, limitName, limitNameEdit, nameError, nameLength, normalizeName } from './name.ts';
+import { MAX_NAME, initials, limitName, limitNameEdit, nameError, nameLength, normalizeName } from '#lib/name.ts';
 
 describe('normalizeName', () => {
   it('collapses control characters and repeated spaces into one', () => {

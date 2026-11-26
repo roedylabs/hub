@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isGuestPath, needsUser, pageTitle, redirectFor } from './routes.ts';
+import { isGuestPath, needsUser, pageTitle, redirectFor } from '#lib/routes.ts';
 
 describe('routes', () => {
   it('knows the guest pages and those that need a user', () => {

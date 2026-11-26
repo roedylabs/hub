@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { accentText } from '#lib/color.ts';
 import { RESET0, type Settings } from '#lib/state/prefs.svelte.ts';
 import { BRAND0 } from '#lib/state/session.svelte.ts';
-import { accentOf, applyTheme, isDarkMode, themeOf } from './theme.ts';
+import { accentOf, applyTheme, isDarkMode, themeOf } from '#lib/theme.ts';
 
 const values = (patch: Partial<Settings> = {}): Settings => ({ ...structuredClone(RESET0), ...patch });
 

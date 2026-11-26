@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/auth-swipe.test.ts`).
 import { describe, expect, it } from 'vitest';
-import { releaseVelocity, swipeGoes, swipeOffset, swipeProgress } from './auth-swipe.ts';
+import { releaseVelocity, swipeGoes, swipeOffset, swipeProgress } from '#lib/auth-swipe.ts';
 
 describe('swipe back of the guest pages', () => {
   it('goes back from 30 % of the width or a flick', () => {

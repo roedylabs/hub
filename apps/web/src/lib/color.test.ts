@@ -17,7 +17,7 @@ import {
   terminalAccent,
   type AccentText,
   type HexColor,
-} from './color.ts';
+} from '#lib/color.ts';
 
 /** Every colour of the RGB cube in steps of `step` per channel, plus 255. */
 function* cube(step: number): Generator<HexColor> {

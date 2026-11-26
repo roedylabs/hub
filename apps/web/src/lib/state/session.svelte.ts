@@ -160,6 +160,13 @@ export class Session {
     this.#settle(info);
   }
 
+  /** Signed out in this tab: a `session` request that is still running must not bring the account back. */
+  forget(): void {
+    this.#meSeq++;
+    this.user = null;
+    this.current = null;
+  }
+
   /**
    * Callback when the server reports no account or a different one instead of the signed-in account: the session
    * ended without signing out in this tab (expiry, sign-out in another tab, ended by the administration) or another

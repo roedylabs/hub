@@ -12,7 +12,7 @@ import {
   sharedLevel,
   stepLook,
   twoCol,
-} from './auth-layout.ts';
+} from '#lib/auth-layout.ts';
 
 const look = (w: number, two: boolean, level = 0) => stepLook(w, two, level, DESK_LEVELS, MOB_LEVELS);
 
