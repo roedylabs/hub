@@ -198,7 +198,7 @@ async fn confirm(
             first,
             at: (&origin).into(),
         };
-        notices::security(&tx, &mut outbox, (&user).into(), event)?;
+        notices::security_for(&tx, &mut outbox, &user.id, event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.totp_add")
@@ -288,7 +288,7 @@ async fn remove(
             last,
             at: (&origin).into(),
         };
-        notices::security(&tx, &mut outbox, (&user).into(), event)?;
+        notices::security_for(&tx, &mut outbox, &user.id, event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.totp_remove")
@@ -344,7 +344,7 @@ async fn regenerate(
         let event = Security::RecoveryCodesRenewed {
             at: (&origin).into(),
         };
-        notices::security(&tx, &mut outbox, (&user).into(), event)?;
+        notices::security_for(&tx, &mut outbox, &user.id, event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.recovery_codes")

@@ -160,7 +160,8 @@ const INVITED_BY: &str = "invited_by = coalesce((SELECT id FROM users WHERE id =
                                                  AND role = 'admin' AND status = 'active'), \
                                                 invited_by)";
 
-/// Records a successful send: new expiry, and the sender counts as the
+/// Records a successful send: new expiry (the later one, if two sends
+/// overlap), and the sender counts as the
 /// inviter – only if they are still an active administrator (sending takes
 /// time; if they were locked, removed or lost the role meanwhile, the
 /// previous one stays). `false` if the invitation is gone by now.
@@ -172,7 +173,7 @@ pub fn mark_sent(
 ) -> rusqlite::Result<bool> {
     let n = conn.execute(
         &format!(
-            "UPDATE invitations SET mail_sent_at = {NOW}, expires_at = ?3, {INVITED_BY} \
+            "UPDATE invitations SET mail_sent_at = {NOW}, expires_at = max(expires_at, ?3), {INVITED_BY} \
              WHERE id = ?1"
         ),
         (id, by, expires_at),
@@ -283,6 +284,9 @@ mod tests {
         let sent = get(&conn, "i1").unwrap().unwrap();
         assert!(!sent.expired);
         assert_eq!(sent.expires_at, until);
+        // An overlapping send with an earlier expiry keeps the later one.
+        assert!(mark_sent(&conn, "i1", &lukas, "2001-01-01T00:00:00.000Z").unwrap());
+        assert_eq!(get(&conn, "i1").unwrap().unwrap().expires_at, until);
         assert!(sent.mail_sent_at.is_some());
         assert_eq!(sent.invited_by.as_deref(), Some(lukas.as_str()));
         assert!(set_totp(&conn, "i1", b"secret").unwrap());

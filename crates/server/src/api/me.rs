@@ -182,6 +182,14 @@ pub struct Guard {
 }
 
 impl Guard {
+    /// The state of a check at `password_changed_at`, for tests.
+    #[cfg(test)]
+    pub(crate) fn at(password_changed_at: &str) -> Self {
+        Self {
+            password_changed_at: password_changed_at.to_owned(),
+        }
+    }
+
     /// Whether the session still exists, the account is active and the
     /// password is unchanged since the check. Otherwise the change does not
     /// apply: [`Stale`].
@@ -337,21 +345,33 @@ async fn me(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
 ) -> Result<Json<Value>, ApiError> {
-    let id = user.id.clone();
     let admin = user.is_admin();
-    let (changed_at, mfa, open, system_mail, sole_admin) = db::call(&state.db, move |conn| {
-        let changed_at = users::credentials_by_id(conn, &id)?
-            .map(|c| c.password_changed_at)
-            .unwrap_or_default();
-        let mfa = totp_devices::has_confirmed(conn, &id)?;
-        let open = email_changes::open(conn, &id)?;
-        let system_mail = admin
-            .then(|| system_mail::is_configured(conn))
-            .transpose()?;
-        let sole_admin = admin && users::sole_admin(conn, &id)?;
-        Ok((changed_at, mfa, open, system_mail, sole_admin))
+    // Profile and pending change from one snapshot: a confirmation between
+    // the session check and this read shows the new address, not the old
+    // one without a pending change.
+    let snapshot = db::call(&state.db, move |conn| {
+        let tx = conn.transaction()?;
+        let Some(credentials) = users::credentials_by_id(&tx, &user.id)? else {
+            return Ok(None);
+        };
+        let id = &user.id;
+        let mfa = totp_devices::has_confirmed(&tx, id)?;
+        let open = email_changes::open(&tx, id)?;
+        let system_mail = admin.then(|| system_mail::is_configured(&tx)).transpose()?;
+        let sole_admin = admin && users::sole_admin(&tx, id)?;
+        let now = AuthUser::new(credentials.user, user.session_id, user.auth_time);
+        Ok(Some((
+            now,
+            credentials.password_changed_at,
+            mfa,
+            open,
+            system_mail,
+            sole_admin,
+        )))
     })
     .await?;
+    let (user, changed_at, mfa, open, system_mail, sole_admin) =
+        snapshot.ok_or(ApiError::Unauthorized)?;
     let mut body = user_json(&user);
     body["mfa_enabled"] = mfa.into();
     body["password_changed_at"] = changed_at.into();
@@ -631,7 +651,7 @@ async fn change_password(
             device,
             reset: false,
         };
-        notices::security(&tx, &mut outbox, (&user).into(), event)?;
+        notices::security_for(&tx, &mut outbox, &user.id, event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.password_change")

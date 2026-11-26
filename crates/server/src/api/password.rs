@@ -169,6 +169,7 @@ struct ResetBody {
 /// "Set password" with the link from the mail. An unknown, expired or
 /// already used link is 422 `invalid_token` (only unknown ones count towards
 /// the limit per IP); the policy checks the password only with a valid link.
+/// Requests with the same link run one after another.
 async fn reset(
     State(state): State<AppState>,
     ip: ClientIp,
@@ -182,6 +183,11 @@ async fn reset(
         return Err(invalid_token());
     };
     let hash = token.hash();
+    // One request per link at a time: a valid link costs at most one
+    // password hash, also when the same link is sent many times at once –
+    // after the first one it is used up before the next one hashes.
+    let key: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    let _lock = state.reset_locks.lock(&key).await;
     match db::call(&state.db, move |conn| {
         Ok(password_resets::lookup(conn, &hash)?)
     })

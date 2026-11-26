@@ -34,7 +34,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    ApiError, JsonBody, auth,
+    ApiError, FieldErrors, JsonBody, auth,
     me::{Guard, ProfileChange, Reauth, apply_profile, username_taken},
     password::LINK_IP,
 };
@@ -51,7 +51,7 @@ use crate::{
             self,
             audit_log::{self, Category, Entry},
             email_changes::{self, Link, Open, State as LinkState},
-            sessions, users,
+            sessions, totp_devices, users,
         },
     },
     locks::KeyedLock,
@@ -105,7 +105,11 @@ async fn delivery(state: &AppState) -> Result<Delivery, ApiError> {
 /// still valid session and the open change with this ID (resend).
 #[derive(Debug, Clone)]
 enum Holder {
-    Reauth(Guard),
+    /// `with_code`: the check included a code from an authenticator app.
+    Reauth {
+        guard: Guard,
+        with_code: bool,
+    },
     Session(String),
 }
 
@@ -154,10 +158,17 @@ impl Request {
     /// address would get a link the current one knows nothing about.
     fn holds(&self, conn: &Connection) -> rusqlite::Result<Result<(), ApiError>> {
         let user = &self.user;
-        if let Holder::Reauth(guard) = &self.holder
-            && let Err(stale) = guard.check(conn, user)?
-        {
-            return Ok(Err(stale.into()));
+        if let Holder::Reauth { guard, with_code } = &self.holder {
+            if let Err(stale) = guard.check(conn, user)? {
+                return Ok(Err(stale.into()));
+            }
+            // An app confirmed after a check without a code: the change
+            // needs its code (as `change_password`).
+            if !with_code && totp_devices::has_confirmed(conn, &user.id)? {
+                let mut errors = FieldErrors::default();
+                errors.code("code", "required");
+                return Ok(Err(errors.into_error()));
+            }
         }
         if !sessions::is_valid(conn, &user.id, &user.session_id)? {
             return Ok(Err(ApiError::Unauthorized));
@@ -331,6 +342,7 @@ pub(super) async fn request(
         .limiter
         .reserve(&EMAIL_SEND, Key::User(user.id.clone()))?;
     let reauth = Reauth::password(state, user, credentials.password).await?;
+    let with_code = credentials.code.is_some();
     let guard = match credentials.code {
         Some(code) => reauth.totp(state, user, code).await?,
         None => reauth.guard(),
@@ -347,7 +359,7 @@ pub(super) async fn request(
         user: user.clone(),
         new_email: new_email.to_owned(),
         origin,
-        holder: Holder::Reauth(guard),
+        holder: Holder::Reauth { guard, with_code },
         first: true,
         profile,
     };
@@ -506,9 +518,12 @@ async fn find_link(
         Ok(Some((link, confirmed)))
     })
     .await?;
-    match found {
-        Some(_) => drop(attempt),
-        None => attempt.count(),
+    // Links that exist but no longer work (expired, replaced by the address
+    // being taken) count like unknown ones, so that a stale token cannot be
+    // queried without limit; valid and confirmed ones do not.
+    match &found {
+        Some((link, _)) if link.state != LinkState::Invalid => drop(attempt),
+        _ => attempt.count(),
     }
     Ok(found)
 }
@@ -625,6 +640,30 @@ mod tests {
         conn.execute("UPDATE users SET status = 'locked' WHERE id = ?1", [&id])
             .unwrap();
         assert_eq!(code(req.holds(&conn).unwrap()), "unauthorized");
+    }
+
+    /// An authenticator app confirmed after a check without a code: the
+    /// request no longer holds (the code is required); with a code it does.
+    #[test]
+    fn a_new_app_needs_its_code() {
+        let (conn, id, mut req) = resend_request();
+        let changed_at = users::credentials_by_id(&conn, &id)
+            .unwrap()
+            .unwrap()
+            .password_changed_at;
+        req.holder = Holder::Reauth {
+            guard: Guard::at(&changed_at),
+            with_code: false,
+        };
+        assert_eq!(code(req.holds(&conn).unwrap()), "ok");
+        crate::db::repo::totp_devices::insert_pending(&conn, "d1", &id, b"secret").unwrap();
+        crate::db::repo::totp_devices::confirm(&conn, "d1", "Phone", 0).unwrap();
+        assert_eq!(code(req.holds(&conn).unwrap()), "invalid");
+        req.holder = Holder::Reauth {
+            guard: Guard::at(&changed_at),
+            with_code: true,
+        };
+        assert_eq!(code(req.holds(&conn).unwrap()), "ok");
     }
 
     /// If another path discards the change after `resend` has read it, no

@@ -199,6 +199,21 @@ pub fn security(
     Ok(())
 }
 
+/// Like [`security`] to the user `user_id` with the address and name as of
+/// now, in the event's transaction: a confirmed email change during the
+/// request already applies.
+pub fn security_for(
+    conn: &Connection,
+    outbox: &mut Outbox,
+    user_id: &str,
+    event: Security<'_>,
+) -> anyhow::Result<()> {
+    let Some(profile) = users::credentials_by_id(conn, user_id)?.map(|c| c.user) else {
+        return Ok(());
+    };
+    security(conn, outbox, (&profile).into(), event)
+}
+
 /// Content of a mail for an event.
 #[derive(Debug, Clone)]
 enum Notice {

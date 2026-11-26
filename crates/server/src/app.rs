@@ -72,6 +72,9 @@ pub struct AppState {
     pub mailer: Arc<Mailer>,
     /// Email address changes run one after another per user (`api::email`).
     pub email_locks: Arc<KeyedLocks>,
+    /// Requests with the same password reset link run one after another
+    /// (`api::password`).
+    pub reset_locks: Arc<KeyedLocks>,
     pub background: Background,
 }
 
@@ -135,6 +138,7 @@ impl AppState {
             secrets: Arc::new(secrets),
             mailer: Arc::new(Mailer::new(mailer::http_client()?)),
             email_locks: Arc::new(KeyedLocks::default()),
+            reset_locks: Arc::new(KeyedLocks::default()),
             background: Background::default(),
         })
     }

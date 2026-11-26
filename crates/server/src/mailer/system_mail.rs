@@ -140,7 +140,8 @@ pub struct SystemMail {
 }
 
 /// What makes up a check (including the identity that `Mailer::test` checks
-/// too): a result only applies as long as server, sign-in, user (only with
+/// too, and the copy in "Sent", which needs that mailbox): a result only
+/// applies as long as server, sign-in, user (only with
 /// password), identity and the encrypted secret are the same.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
@@ -149,6 +150,7 @@ pub struct Credentials {
     user: Option<String>,
     identity_id: Option<String>,
     secret_enc: Option<String>,
+    keep_sent: bool,
 }
 
 /// Empty account (without server and secret) with the defaults: sign-in with
@@ -255,6 +257,7 @@ impl SystemMail {
             user: (self.auth == Auth::Password).then(|| self.user.clone()),
             identity_id: self.identity_id.clone(),
             secret_enc: self.secret_enc().map(str::to_owned),
+            keep_sent: self.keep_sent,
         }
     }
 
@@ -361,10 +364,11 @@ impl Outcome {
 }
 
 /// Errors that affect the account as a whole: sign-in, reachability,
-/// session, identity, mailboxes.
+/// session, identity, mailboxes – every error while opening the session
+/// (also an unexpected status or an unreadable session document).
 fn is_connection_error(error: &MailError) -> bool {
     match error {
-        MailError::Locked(_) => true,
+        MailError::Locked(_) | MailError::Session(_) => true,
         MailError::Jmap(error) => matches!(
             error,
             jmap::Error::Unreachable
@@ -638,9 +642,13 @@ mod tests {
             "2026-11-05T12:02:01.000Z"
         );
 
-        // Another identity: the result does not apply to the account.
+        // Another identity or another copy setting: the result does not
+        // apply to the account.
         let mut other = load(&conn).unwrap().unwrap();
         other.identity_id = Some("i2".into());
+        assert_ne!(other.credentials(), credentials);
+        let mut other = load(&conn).unwrap().unwrap();
+        other.keep_sent = !other.keep_sent;
         assert_ne!(other.credentials(), credentials);
 
         // New secret: the old result no longer applies to the account.
@@ -670,6 +678,16 @@ mod tests {
             Outcome::of_send(&Err(MailError::Jmap(jmap::Error::NoMailbox("sent")))),
             Some(Outcome::Err("no_mailbox", Some("sent")))
         );
+        // Every error while opening the session, also unexpected ones.
+        for (error, reason) in [
+            (jmap::Error::Status(503), "http_status"),
+            (jmap::Error::InvalidResponse, "invalid_response"),
+        ] {
+            assert_eq!(
+                Outcome::of_send(&Err(MailError::Session(error))),
+                Some(Outcome::Err(reason, None))
+            );
+        }
         for error in [
             jmap::Error::NotCreated {
                 kind: "invalidRecipients".into(),

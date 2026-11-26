@@ -122,33 +122,47 @@ pub enum MailError {
     /// Too many rejected sign-ins at this server; until the lock expires
     /// (remaining time) the hub does not ask it again.
     Locked(Duration),
+    /// The session could not be opened (sign-in, reachability, session
+    /// document, identity, mailboxes): no mail can go out over this account.
+    Session(jmap::Error),
+    /// Error with an open session, e.g. a rejected recipient.
     Jmap(jmap::Error),
 }
 
 impl MailError {
+    /// The JMAP error, wherever it occurred.
+    pub fn jmap(&self) -> Option<&jmap::Error> {
+        match self {
+            Self::Locked(_) => None,
+            Self::Session(error) | Self::Jmap(error) => Some(error),
+        }
+    }
+
     /// Stable key for log and diagnosis.
     pub fn reason(&self) -> &'static str {
-        match self {
-            Self::Locked(_) => "auth_locked",
-            Self::Jmap(error) => error.reason(),
+        match self.jmap() {
+            None => "auth_locked",
+            Some(error) => error.reason(),
         }
     }
 
     /// Role of the missing mailbox for `no_mailbox` (`drafts`, `sent`);
     /// the page names it in the text.
     pub fn mailbox_role(&self) -> Option<&'static str> {
-        match self {
-            Self::Jmap(jmap::Error::NoMailbox(role)) => Some(role),
+        match self.jmap() {
+            Some(jmap::Error::NoMailbox(role)) => Some(role),
             _ => None,
         }
     }
 }
 
+/// Only the stable reason: texts of the mail server (descriptions of
+/// rejections) may quote the rejected mail with its links.
 impl fmt::Display for MailError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Locked(_) => f.write_str("too many rejected sign-ins, sending locked"),
-            Self::Jmap(error) => error.fmt(f),
+            Self::Session(error) | Self::Jmap(error) => f.write_str(error.reason()),
         }
     }
 }
@@ -258,11 +272,12 @@ impl Mailer {
                 %server,
                 "system mail sent but not filed as configured (draft stays)"
             ),
+            // Only the reason: the server's description may quote the mail.
             Err(error) => tracing::warn!(
                 template = mail.template,
                 %server,
                 reason = error.reason(),
-                detail = %error,
+                role = error.mailbox_role(),
                 "System mail not sent"
             ),
         }
@@ -283,7 +298,7 @@ impl Mailer {
             Err(error) => tracing::info!(
                 %server,
                 reason = error.reason(),
-                detail = %error,
+                role = error.mailbox_role(),
                 "Sending account not usable"
             ),
         }
@@ -307,14 +322,37 @@ impl Mailer {
                 html: &mail.html,
                 sent_at: &sent_at,
             };
-            session
+            let sent = session
                 .client
                 .send(
                     &session.outbox,
                     &message,
                     account.keep_sent && !mail.has_token(),
                 )
-                .await
+                .await?;
+            // A link that unlocks something must not stay in the sending
+            // account: if the server kept the draft, delete it again (once
+            // more); the mail itself went out and counts as sent.
+            if !sent.filed && mail.has_token() {
+                match session
+                    .client
+                    .destroy(&session.outbox, &sent.email_id)
+                    .await
+                {
+                    Ok(()) => {
+                        return Ok(jmap::Sent {
+                            filed: true,
+                            ..sent
+                        });
+                    }
+                    Err(error) => tracing::error!(
+                        template = mail.template,
+                        reason = error.reason(),
+                        "draft with a link not deleted from the sending account"
+                    ),
+                }
+            }
+            Ok(sent)
         })
         .await
     }
@@ -340,15 +378,15 @@ impl Mailer {
             account.identity_id.clone(),
         );
         let cached = state.session.take();
-        let result = async {
+        let result: Result<(T, Session), MailError> = async {
             // Only after a success and only for the same account.
             let session = match cached {
                 Some(session) if session.key == key && session.opened.elapsed() < SESSION_TTL => {
                     session
                 }
-                _ => self.open(account, key).await?,
+                _ => self.open(account, key).await.map_err(MailError::Session)?,
             };
-            let value = work(&session).await?;
+            let value = work(&session).await.map_err(MailError::Jmap)?;
             Ok((value, session))
         }
         .await;
@@ -361,14 +399,14 @@ impl Mailer {
                 Ok(value)
             }
             Err(error) => {
-                if error == jmap::Error::AuthFailed {
+                if error.jmap() == Some(&jmap::Error::AuthFailed) {
                     state
                         .failures
                         .entry(origin)
                         .or_default()
                         .failed(Instant::now());
                 }
-                Err(MailError::Jmap(error))
+                Err(error)
             }
         }
     }
@@ -476,9 +514,15 @@ mod tests {
         let shown = format!("{mail:?}");
         assert!(shown.contains("reset") && !shown.contains("Zm4pT1"));
         assert_eq!(MailError::Locked(LOCK).reason(), "auth_locked");
+        // Only the reason, never the server's description.
+        let rejected = MailError::Jmap(jmap::Error::NotCreated {
+            kind: "forbiddenToSend".into(),
+            description: Some("https://hub.example.com/login/reset/Zm4pT1".into()),
+        });
+        assert_eq!(rejected.to_string(), "not_created");
         assert_eq!(
-            MailError::Jmap(jmap::Error::AuthFailed).to_string(),
-            "sign-in to the mail server rejected"
+            MailError::Session(jmap::Error::AuthFailed).to_string(),
+            "auth_failed"
         );
     }
 }

@@ -28,9 +28,10 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 /// compared ignoring case.
 ///
 /// An open change does not take its address the other way round: inviting
-/// it stays possible, and the invitation makes the link invalid (the
-/// confirmation checks `taken` again). Otherwise a user could keep an
-/// address from being invited by resending a link they cannot confirm.
+/// it stays possible, and the invitation ends the link for good
+/// ([`discard_to`]; the confirmation also checks `taken` again). Otherwise a
+/// user could keep an address from being invited by resending a link they
+/// cannot confirm.
 pub fn taken(conn: &Connection, email: &str, user_id: &str) -> rusqlite::Result<bool> {
     Ok(users::email_taken(conn, email, user_id, false)? || invitations::exists_for(conn, email)?)
 }
@@ -128,6 +129,16 @@ pub fn discard(conn: &Connection, user_id: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM email_changes WHERE user_id = ?1 AND confirmed_at IS NULL",
         [user_id],
+    )
+}
+
+/// Discards all unconfirmed links to `email` (ignoring case), of any user:
+/// an invitation to the address ends them, also after it is revoked.
+/// Returns the count.
+pub fn discard_to(conn: &Connection, email: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM email_changes WHERE new_email = ?1 AND confirmed_at IS NULL",
+        [email.trim()],
     )
 }
 
@@ -248,6 +259,21 @@ mod tests {
 
     fn state(conn: &Connection, hash: u8) -> Option<State> {
         lookup(conn, &[hash; 32]).unwrap().map(|link| link.state)
+    }
+
+    /// An invitation ends open changes to its address, whoever made them.
+    #[test]
+    fn links_to_an_invited_address_end() {
+        let conn = conn();
+        let max = add(&conn, "max", "max@example.com", Role::User);
+        let eva = add(&conn, "eva", "eva@example.com", Role::User);
+        let first = reserve(&conn, &max, "New@example.com", &[1; 32]).unwrap();
+        release(&conn, &first).unwrap();
+        let other = reserve(&conn, &eva, "other@example.com", &[2; 32]).unwrap();
+        release(&conn, &other).unwrap();
+        assert_eq!(discard_to(&conn, " new@EXAMPLE.com ").unwrap(), 1);
+        assert_eq!(state(&conn, 1), None);
+        assert_eq!(state(&conn, 2), Some(State::Valid));
     }
 
     #[test]

@@ -463,11 +463,23 @@ async fn invitations_are_sent_and_accepted() {
         reply.json()["fields"],
         json!({ "emails.1": { "code": "taken" } })
     );
+    // An open change of another account to the address ends with the
+    // invitation, also after a later revocation.
+    let change = env
+        .as_user(
+            &user,
+            Method::PATCH,
+            "/auth/me",
+            Some(json!({ "email": "jonas@example.com", "password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(change.json()["status"], "email_sent", "{}", change.body);
     let reply = create(
         &admin,
         json!({ "emails": ["jonas@example.com"], "role": "user", "name": "Jonas Example" }),
     )
     .await;
+    assert_eq!(env.count("email_changes").await, 0);
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
     assert_eq!(reply.json()["system_mail"], true);
     assert_eq!(reply.json()["invites"][0]["sent"], true);
@@ -475,6 +487,12 @@ async fn invitations_are_sent_and_accepted() {
         .as_str()
         .unwrap()
         .to_owned();
+    mail(
+        &fake,
+        "jonas@example.com",
+        "Confirm your new email address for Roedy Hub",
+    )
+    .await;
     let sent = mail(&fake, "jonas@example.com", "Invitation to Roedy Hub").await;
     let token = token_after(&sent, "/invite/");
 

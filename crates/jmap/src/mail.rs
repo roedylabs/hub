@@ -254,6 +254,22 @@ impl Client {
         Ok(Sent { email_id, filed })
     }
 
+    /// Deletes a mail of the account (a draft that stayed after sending);
+    /// `Ok` only if the server confirms it.
+    pub async fn destroy(&self, outbox: &Outbox, email_id: &str) -> Result<(), Error> {
+        let mut request = Request::new(USING);
+        let call = request.call(
+            "Email/set",
+            json!({ "accountId": outbox.account_id, "destroy": [email_id] }),
+        );
+        let response = self.call(&request).await?;
+        let set = response.get::<SetResponse>(&call, "Email/set")?;
+        if set.failed() {
+            return Err(Error::Method("notDestroyed".into()));
+        }
+        Ok(())
+    }
+
     /// Deletes an unsent draft; errors have no consequences.
     async fn discard(&self, outbox: &Outbox, email_id: &str) {
         let mut request = Request::new(USING);

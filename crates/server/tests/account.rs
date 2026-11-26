@@ -58,6 +58,9 @@ async fn profile_changes_name_and_username() {
     let reply = patch(json!({ "email": "new@example.com" })).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.json()["status"], "reauth_required");
+    let me = env.as_user(&token, Method::GET, "/auth/me", None).await;
+    assert_eq!(me.json()["email"], "max@example.com");
+    assert_eq!(me.json()["email_change"], Value::Null);
     // Nothing changed: no audit entry.
     let reply = patch(json!({ "display_name": "Max Miller" })).await;
     assert_eq!(reply.status, StatusCode::OK);

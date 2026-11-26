@@ -485,10 +485,11 @@ pub(super) fn rejection(error: &MailError) -> ApiError {
         MailError::Locked(left) => {
             rejection(StatusCode::TOO_MANY_REQUESTS).with("retry_after", retry_secs(*left))
         }
-        MailError::Jmap(jmap::Error::AuthFailed | jmap::Error::Forbidden) => {
+        MailError::Session(jmap::Error::AuthFailed | jmap::Error::Forbidden)
+        | MailError::Jmap(jmap::Error::AuthFailed | jmap::Error::Forbidden) => {
             rejection(StatusCode::UNPROCESSABLE_ENTITY)
         }
-        MailError::Jmap(_) => rejection(StatusCode::BAD_GATEWAY),
+        MailError::Session(_) | MailError::Jmap(_) => rejection(StatusCode::BAD_GATEWAY),
     }
 }
 

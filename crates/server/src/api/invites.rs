@@ -9,7 +9,7 @@
 //!   (`system_mail: false`, "Copy link" then passes them on). An address is
 //!   taken if it belongs to a user (any status) or an open invitation
 //!   (`emails.<i>`: `taken`). An open email address change to it does not
-//!   count; the invitation makes its link invalid.
+//!   count; the invitation ends its link for good.
 //! - `POST invites/:id/resend`: the same link; on success a new expiry
 //!   (7 days) and `mail_sent_at`, otherwise 502 `mail_failed` without change.
 //! - `GET invites/:id/link` ("Copy link"), `DELETE invites/:id` (revoke).
@@ -58,6 +58,7 @@ use crate::{
         self,
         repo::{
             audit_log::{self, Category, Entry},
+            email_changes,
             invitations::{self, Found, Invitation, NewInvitation, TOKEN_PURPOSE, TOTP_PURPOSE},
             known_devices, sessions, totp_devices,
             users::{self, NewUser, Role},
@@ -301,7 +302,10 @@ fn validate(body: CreateBody) -> Result<Form, FieldErrors> {
     }
 }
 
-/// "Send invitation", or without a system mail "Create invitation".
+/// "Send invitation", or without a system mail "Create invitation". Per
+/// address `sent` says whether the mail went out; `recorded: false` if it
+/// went out but storing that failed (the list then shows "Not sent", a
+/// resend would be a second mail).
 async fn create(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
@@ -322,7 +326,7 @@ async fn create(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Tokens and encryption before the transaction.
+    // Tokens, encryption and the mail's language before the transaction.
     let mut planned = Vec::with_capacity(emails.len());
     for (i, email) in emails {
         let id = db::new_id()?;
@@ -332,78 +336,91 @@ async fn create(
             .seal(TOKEN_PURPOSE, &id, token.as_str().as_bytes())?;
         planned.push((i, email, id, token, sealed));
     }
-    let created = admin_change(&state, admin.clone(), ip, move |tx, actor| {
-        let mut taken = FieldErrors::default();
-        for (i, email, ..) in &planned {
-            if users::email_taken(tx, email, "", false)? || invitations::exists_for(tx, email)? {
-                taken.code(&format!("emails.{i}"), "taken");
-            }
-        }
-        if !taken.is_empty() {
-            return Ok(Err(taken.into_error()));
-        }
-        let mut created = Vec::with_capacity(planned.len());
-        for (_, email, id, token, sealed) in planned {
-            let invite = invitations::insert(
-                tx,
-                &NewInvitation {
-                    id: &id,
-                    email: &email,
-                    name: name.as_deref(),
-                    role,
-                    token_hash: &token.hash(),
-                    token_enc: &sealed,
-                    invited_by: &actor.admin.id,
-                },
-            )?;
-            let details = json!({ "email": invite.email, "role": role.as_str() });
-            audit_log::insert(tx, &actor.entry("users.invite", &invite.id, details))?;
-            created.push((invite, token));
-        }
-        Ok(Ok(created))
-    })
-    .await?;
-    reserved.into_iter().for_each(Reservation::count);
-
-    // Sending in a separate task that also runs to completion when the
-    // client aborts – otherwise a sent invitation would show up as "Not
-    // sent" in the list.
     let format = invite_format(&state, &admin).await?;
+
+    // Creating and sending in one separate task that also runs to completion
+    // when the client aborts – otherwise invitations could be stored without
+    // their mails, or a sent one could show up as "Not sent".
     let worker = state.clone();
     let rows = tokio::spawn(async move {
+        let created = admin_change(&worker, admin.clone(), ip, move |tx, actor| {
+            let mut taken = FieldErrors::default();
+            for (i, email, ..) in &planned {
+                if users::email_taken(tx, email, "", false)? || invitations::exists_for(tx, email)?
+                {
+                    taken.code(&format!("emails.{i}"), "taken");
+                }
+            }
+            if !taken.is_empty() {
+                return Ok(Err(taken.into_error()));
+            }
+            let mut created = Vec::with_capacity(planned.len());
+            for (_, email, id, token, sealed) in planned {
+                let invite = invitations::insert(
+                    tx,
+                    &NewInvitation {
+                        id: &id,
+                        email: &email,
+                        name: name.as_deref(),
+                        role,
+                        token_hash: &token.hash(),
+                        token_enc: &sealed,
+                        invited_by: &actor.admin.id,
+                    },
+                )?;
+                // Open changes of other accounts to this address end for
+                // good, also if the invitation is revoked later.
+                email_changes::discard_to(tx, &invite.email)?;
+                let details = json!({ "email": invite.email, "role": role.as_str() });
+                audit_log::insert(tx, &actor.entry("users.invite", &invite.id, details))?;
+                created.push((invite, token));
+            }
+            Ok(Ok(created))
+        })
+        .await?;
         let mut rows = Vec::with_capacity(created.len());
         for (invite, token) in &created {
-            let sent = match &delivery {
-                Ok(delivery) => {
-                    let until = &invite.expires_at;
-                    let sent = async {
-                        if !send_mail(&worker, delivery, invite, token, &admin, &format, until)
-                            .await?
-                        {
-                            return Ok(false);
-                        }
-                        let (id, by, until) = (invite.id.clone(), admin.id.clone(), until.clone());
-                        db::call(&worker.db, move |conn| {
-                            Ok(invitations::mark_sent(conn, &id, &by, &until)?)
-                        })
-                        .await
-                    };
-                    sent.await.unwrap_or_else(|error: anyhow::Error| {
-                        tracing::warn!("invitation not sent: {error:#}");
-                        false
-                    })
-                }
+            let mut row = json!({ "id": invite.id, "email": invite.email, "sent": false });
+            let delivery = match &delivery {
+                Ok(delivery) => delivery,
                 Err(why) => {
                     tracing::info!(?why, "invitation only created, no mail");
-                    false
+                    rows.push(row);
+                    continue;
                 }
             };
-            rows.push(json!({ "id": invite.id, "email": invite.email, "sent": sent }));
+            let until = &invite.expires_at;
+            match send_mail(&worker, delivery, invite, token, &admin, &format, until).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    rows.push(row);
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!("invitation not sent: {error:#}");
+                    rows.push(row);
+                    continue;
+                }
+            }
+            row["sent"] = true.into();
+            let (id, by, until) = (invite.id.clone(), admin.id.clone(), until.clone());
+            let recorded = db::call(&worker.db, move |conn| {
+                Ok(invitations::mark_sent(conn, &id, &by, &until)?)
+            })
+            .await;
+            if let Err(error) = &recorded {
+                tracing::warn!("invitation sent, but not recorded: {error:#}");
+            }
+            if !matches!(recorded, Ok(true)) {
+                row["recorded"] = false.into();
+            }
+            rows.push(row);
         }
-        rows
+        Ok::<_, ApiError>(rows)
     })
     .await
-    .map_err(|error| anyhow::anyhow!("sending aborted: {error}"))?;
+    .map_err(|error| anyhow::anyhow!("sending aborted: {error}"))??;
+    reserved.into_iter().for_each(Reservation::count);
     Ok((
         StatusCode::CREATED,
         Json(json!({ "invites": rows, "system_mail": system_mail })),
