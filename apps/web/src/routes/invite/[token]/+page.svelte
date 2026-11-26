@@ -39,43 +39,40 @@
 
   const targets = new InviteTargets();
   let netBox: HTMLDivElement | undefined = $state();
+  /**
+   * Accounts created on this page (`accept`) and how many of them the last finished load covers. A load brings the
+   * session as it is when it starts, so it covers exactly the accounts created before that; whichever invitation is
+   * shown by then does not matter.
+   */
+  let created = 0;
+  let covered = 0;
   /** Settings and account are loading (after "Welcome", on leaving or on another invitation). */
   let loading = false;
-  /** The account of the invitation shown is loaded: leaving needs no second load. */
-  let adopted = false;
-  /** Counts the invitations opened in this page: a load finished for an earlier one adopts nothing for this one. */
-  let opened = 0;
+  /** An account came while a load ran: another load follows once that one has ended, whatever its outcome. */
+  let queued = false;
   /** The page has gone: the account still loads, but no navigation follows. */
   let leaving = false;
-  /** An adoption came while another load ran: it follows once that load has ended, whatever its outcome. */
-  let queued = false;
 
-  /** Loads settings and account of the new session; the flags only describe the load in progress. */
+  /** Loads settings and account of the newest session. */
   async function loadAccount(): Promise<boolean> {
-    const run = opened;
-    let done = false;
+    const upTo = created;
     loading = true;
     try {
-      done = await loadSignedIn();
-      if (done && run === opened) adopted = true;
+      const done = await loadSignedIn();
+      if (done) covered = Math.max(covered, upTo);
       return done;
     } finally {
       loading = false;
-      // A queued account was created after this load started: load again, even if another invitation is open by
-      // now – unless this load brought the session of the invitation still shown.
       if (queued) {
         queued = false;
-        if (!(done && run === opened)) void loadAccount();
+        adopt();
       }
     }
   }
 
-  /**
-   * The created account, unless it is loaded already. While another load runs (e.g. of an earlier invitation on this
-   * page), it waits for that one: a load that started before this account existed does not bring its session.
-   */
+  /** Loads the newest created account unless a finished load covers it; while a load runs, after that one. */
   function adopt() {
-    if (!flow.accepted || adopted) return;
+    if (created <= covered) return;
     if (loading) queued = true;
     else void loadAccount();
   }
@@ -113,9 +110,10 @@
     unlocked: () => focus('otp', false),
     // A previous session of this browser has ended.
     accepted: (left) => {
+      created++;
       if (session.authed) forgetAccount();
       // Page left in the meantime: the new session applies anyway.
-      if (left) void loadSignedIn();
+      if (left) adopt();
     },
     signedIn: async () => {
       if (!(await loadAccount())) return false;
@@ -152,8 +150,6 @@
     untrack(() => {
       // Another invitation in the same page: the account just created still applies before the flow starts anew.
       adopt();
-      opened++;
-      adopted = false;
       void flow.open(value);
     });
   });

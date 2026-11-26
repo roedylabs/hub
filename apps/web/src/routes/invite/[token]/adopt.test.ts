@@ -113,4 +113,40 @@ describe('Invitation page: the accounts of several invitations', () => {
     expect(calls.filter((c) => c.path === 'session')).toHaveLength(2);
     view.unmount();
   });
+
+  it('loads an account accepted while the previous one’s load still runs', async () => {
+    let first: (a: { status: number; body: unknown }) => void = () => {};
+    let second: (a: { status: number; body: unknown }) => void = () => {};
+    const settings = { body: { version: 1, settings: {} } };
+    const { calls } = mockApi({
+      ...invitation('a', 'a@example.com'),
+      ...invitation('b', 'b@example.com'),
+      ...invitation('c', 'c@example.com'),
+      'GET settings': [settings, settings, settings],
+      'GET session': [
+        () => new Promise((resolve) => (first = resolve)),
+        () => new Promise((resolve) => (second = resolve)),
+        { body: sessionOf({ id: 'c', email: 'c@example.com', name: 'Jonas Schulz' }) },
+      ],
+    });
+    session.config = { name: 'Roedy Hub', branding: BRAND0, org: {} as never, setup_required: false };
+    page.params = { token: 'a' };
+    const view = render(Page);
+    await acceptWithoutApp();
+    page.params = { token: 'b' };
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === 'session')).toHaveLength(1));
+    await acceptWithoutApp();
+    page.params = { token: 'c' };
+    await screen.findByRole('button', { name: 'Accept invitation' });
+
+    // A's load fails: B's load starts. C is accepted while it runs, then the page goes.
+    first({ status: 500, body: { error: 'internal' } });
+    await vi.waitFor(() => expect(calls.filter((c) => c.path === 'session')).toHaveLength(2));
+    await acceptWithoutApp();
+    view.unmount();
+
+    // B's load brings B's account, but C came after it started: C's load follows.
+    second({ status: 200, body: sessionOf({ id: 'b', email: 'b@example.com', name: 'Jonas Schulz' }) });
+    await vi.waitFor(() => expect(session.user?.email).toBe('c@example.com'));
+  });
 });
