@@ -167,6 +167,10 @@ pub fn sanitize_icon(svg: &str) -> Result<String, &'static str> {
             upload::Rejected::Dimensions => "dimensions",
             upload::Rejected::Unsupported | upload::Rejected::Unreadable => "unreadable",
         })?;
+    // A raster image the check recognized by its content is no icon.
+    if image.format != Format::Svg {
+        return Err("unreadable");
+    }
     if !has_square_view_box(svg) {
         return Err("not_square");
     }
@@ -387,6 +391,10 @@ mod tests {
         ] {
             assert_eq!(sanitize_icon(svg), Err(code), "{svg}");
         }
+        // WebP is plain ASCII at the start; the content decides, not the
+        // declaration, so it must not pass as an SVG.
+        let webp = "RIFF\u{24}\0\0\0WEBPVP8 \u{18}\0\0\0\u{30}\u{1}\0\u{9d}\u{1}*\u{1}\0\u{1}\0";
+        assert!(sanitize_icon(webp).is_err());
         assert!(has_square_view_box(r#"<svg viewBox="0,0,24,24"/>"#));
         assert!(has_square_view_box(r#"<svg viewBox=" -12 -12  24 24 "/>"#));
         assert!(!has_square_view_box(r#"<svg viewBox="0 0 24"/>"#));
