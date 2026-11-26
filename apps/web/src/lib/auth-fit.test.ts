@@ -1,0 +1,251 @@
+// Taken over from Roedy Mail (`apps/web/src/lib/auth-fit.test.ts`).
+import { flushSync } from 'svelte';
+import { describe, expect, it, vi } from 'vitest';
+import { AuthFit } from '#lib/auth-fit.svelte.ts';
+
+/** Page whose content is `content` px high in a window of `height` px. */
+function page() {
+  const root = {
+    content: 500,
+    height: 800,
+    get scrollHeight() {
+      return Math.max(this.content, this.height);
+    },
+    get clientHeight() {
+      return this.height;
+    },
+  };
+  const fit = new AuthFit({
+    root: () => root as unknown as HTMLElement,
+    card: () => undefined,
+    levels: () => 7,
+    columns: true,
+  });
+  return { root, fit };
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe('AuthFit', () => {
+  it('refits after gradual resizing of 1 px steps', async () => {
+    const { root, fit } = page();
+    fit.relayout(1280, 800);
+    await settle();
+    expect(fit.level).toBe(0);
+    // The window gets lower 1 px at a time until the content no longer fits.
+    for (let h = 799; h >= 480; h--) {
+      root.height = h;
+      fit.resize(1280, h);
+      flushSync();
+      await settle();
+    }
+    expect(fit.h).toBe(480);
+    expect(fit.level).toBe(6);
+  });
+
+  it('finds the same level for a size however the window got there', async () => {
+    const { root, fit } = page();
+    // Loaded in a low window: the content does not fit, the densest level.
+    root.height = 480;
+    fit.relayout(1280, 480);
+    await settle();
+    expect(fit.level).toBe(6);
+    // The window grows until the content fits again: level 0, as on a fresh load at that size.
+    root.height = 520;
+    fit.resize(1280, 520);
+    await settle();
+    expect(fit.level).toBe(0);
+  });
+
+  it('takes the current page size on a relayout without one', async () => {
+    const { root, fit } = page();
+    root.height = 480;
+    fit.relayout(1280, 480);
+    await settle();
+    expect(fit.level).toBe(6);
+    // The page grew, but no resize was observed yet (hidden page): a change of language refits on the real size.
+    root.height = 800;
+    fit.relayout();
+    await settle();
+    expect([fit.h, fit.level]).toEqual([800, 0]);
+  });
+
+  it('ignores a small resize that crosses no threshold, but keeps the size', async () => {
+    const { fit } = page();
+    fit.relayout(1280, 800);
+    await settle();
+    fit.resize(1283, 802);
+    expect([fit.w, fit.h, fit.level]).toEqual([1283, 802, 0]);
+  });
+
+  it('switches to mobile across 520 px even by a few pixels', async () => {
+    const { fit } = page();
+    fit.relayout(522, 800);
+    await settle();
+    expect(fit.mobile).toBe(false);
+    fit.resize(519, 800);
+    expect(fit.mobile).toBe(true);
+  });
+
+  it('keeps its level while held and refits once released if the size changed meanwhile', async () => {
+    const { root, fit } = page();
+    fit.relayout(1280, 800);
+    await settle();
+    fit.hold(true);
+    root.height = 480;
+    fit.resize(1280, 480);
+    fit.relayout();
+    await settle();
+    expect([fit.h, fit.level]).toEqual([800, 0]);
+    fit.hold(false);
+    await settle();
+    expect(fit.h).toBe(480);
+    expect(fit.level).toBeGreaterThan(0);
+  });
+
+  it('refits when a web font finishes loading after fonts.ready', async () => {
+    const { root, fit } = page();
+    const fonts = Object.assign(new EventTarget(), { ready: Promise.resolve() });
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const had = Object.getOwnPropertyDescriptor(document, 'fonts');
+    Object.defineProperty(document, 'fonts', { value: fonts, configurable: true });
+    try {
+      // Fallback fonts: the content is too high, the card takes a denser level.
+      root.content = 900;
+      const stop = fit.observe(root as unknown as HTMLElement);
+      await settle();
+      expect(fit.level).toBeGreaterThan(0);
+      // The web font arrives later and the content fits again.
+      root.content = 500;
+      fonts.dispatchEvent(new Event('loadingdone'));
+      await settle();
+      expect(fit.level).toBe(0);
+      stop();
+      root.content = 900;
+      fonts.dispatchEvent(new Event('loadingdone'));
+      await settle();
+      expect(fit.level).toBe(0);
+    } finally {
+      if (had) Object.defineProperty(document, 'fonts', had);
+      else delete (document as { fonts?: unknown }).fonts;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not refit on release without a change', async () => {
+    const { fit } = page();
+    fit.relayout(1280, 800);
+    await settle();
+    fit.hold(true);
+    fit.resize(1280, 800);
+    fit.hold(false);
+    expect([fit.w, fit.h, fit.level]).toEqual([1280, 800, 0]);
+  });
+
+  it('fits both languages to the same level, whichever is chosen', async () => {
+    // German is 120 px higher than English and each level saves 60 px: German needs level 4, English level 2.
+    const fitIn = async (chosen: 'en' | 'de') => {
+      let lang: 'en' | 'de' = chosen;
+      const root = {
+        height: 600,
+        get clientHeight() {
+          return this.height;
+        },
+        get scrollHeight() {
+          return Math.max(this.height, (lang === 'de' ? 820 : 700) - fit.level * 60);
+        },
+      };
+      const shown: ('en' | 'de')[] = [];
+      const fit: AuthFit = new AuthFit({
+        root: () => root as unknown as HTMLElement,
+        card: () => undefined,
+        levels: () => 7,
+        columns: true,
+        lang: {
+          other: () => (chosen === 'de' ? 'en' : 'de'),
+          set: (l) => {
+            lang = l ?? chosen;
+            shown.push(lang);
+          },
+        },
+      });
+      fit.relayout(1280, 600);
+      await settle();
+      return { level: fit.level, lang, shown };
+    };
+    expect(await fitIn('en')).toEqual({ level: 4, lang: 'en', shown: ['de', 'en', 'en'] });
+    expect(await fitIn('de')).toEqual({ level: 4, lang: 'de', shown: ['en', 'de', 'de'] });
+  });
+
+  it('starts at the level the steps share and only goes denser from there', async () => {
+    const { root, fit } = page();
+    const shared = new AuthFit({
+      root: () => root as unknown as HTMLElement,
+      card: () => undefined,
+      levels: () => 7,
+      columns: true,
+      start: () => 3,
+    });
+    void fit;
+    shared.relayout(1280, 800);
+    await settle();
+    expect(shared.level).toBe(3);
+    // Content that overflows even there (an error message): denser on its own.
+    root.content = 900;
+    shared.relayout(1280, 800);
+    await settle();
+    expect(shared.level).toBe(6);
+  });
+
+  it('keeps the level on mobile while the on-screen keyboard is open and refits once it closes', async () => {
+    // Mobile: the panel scrolls; its content is 600 px at level 0 and 100 px less per level.
+    const root = { clientWidth: 393, clientHeight: 800 };
+    const card = {
+      get scrollHeight() {
+        return Math.max(600 - fit.level * 100, this.clientHeight);
+      },
+      clientHeight: 620,
+    };
+    let typing = false;
+    const fit = new AuthFit({
+      root: () => root as unknown as HTMLElement,
+      card: () => card as unknown as HTMLElement,
+      levels: () => 5,
+      columns: true,
+      keyboard: () => typing,
+    });
+    fit.relayout(393, 800);
+    await settle();
+    expect(fit.level).toBe(0);
+    // A field gets the focus, the keyboard takes 380 px: the level stays, the panel scrolls.
+    typing = true;
+    root.clientHeight = 420;
+    card.clientHeight = 240;
+    fit.resize(393, 420);
+    await settle();
+    expect([fit.h, fit.level]).toEqual([420, 0]);
+    // Content changes meanwhile (typing): its relayout waits for the keyboard.
+    fit.relayout();
+    await settle();
+    expect(fit.level).toBe(0);
+    // The keyboard closes (the field keeps the focus): the waiting relayout runs on the full height.
+    root.clientHeight = 800;
+    card.clientHeight = 620;
+    fit.resize(393, 800);
+    await settle();
+    expect([fit.h, fit.level]).toEqual([800, 0]);
+    // Without a focused field a lower page refits as always.
+    typing = false;
+    root.clientHeight = 420;
+    card.clientHeight = 240;
+    fit.resize(393, 420);
+    await settle();
+    expect(fit.level).toBe(4);
+  });
+});

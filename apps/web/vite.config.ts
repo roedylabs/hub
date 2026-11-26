@@ -4,7 +4,7 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { svelteTesting } from '@testing-library/svelte/vite';
 import { defineConfig } from 'vitest/config';
 
-// Backend for `pnpm dev` (cargo run -- serve); /api and the health checks go there.
+// Backend for `pnpm dev` (cargo run -- serve); /api, the branding files and the health checks go there.
 const backend = process.env.ROEDY_DEV_BACKEND || 'http://127.0.0.1:8080';
 
 export default defineConfig({
@@ -25,6 +25,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': backend,
+      '/branding': backend,
+      '/manifest.webmanifest': backend,
       '/healthz': backend,
       '/readyz': backend,
     },
