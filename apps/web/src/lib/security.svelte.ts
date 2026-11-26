@@ -14,7 +14,9 @@
  * Request sequencing: only the latest load writes state; a load that started
  * before a change confirmed by the server (app added or removed, devices
  * signed out, password changed) is discarded and loads again; late answers to
- * a closed prompt or a left page change nothing.
+ * a closed prompt or a left page change nothing. New recovery codes still show
+ * after their form was closed, unless a later set (by the server's stamp)
+ * replaced them; a load without apps drops the codes shown.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/security.svelte.ts`; check
  * responses in `#lib/reauth.ts`, time spans in `#lib/ago.ts`) without the
@@ -118,6 +120,16 @@ export function securityDate(t: number, timeZone?: string): string {
   return new Intl.DateTimeFormat(intlLocale(), { dateStyle: 'medium', ...(timeZone ? { timeZone } : {}) }).format(t);
 }
 
+/**
+ * The set of recovery codes `next` was generated before the set `shown`. The server generates sets one after another
+ * (one write transaction each) and stamps them in ms (`created_at` of the oldest code of the set), so a later stamp is
+ * the newer set; without a set or a valid stamp nothing counts as older.
+ */
+function olderSet(next: RecoverySummary | null, shown: RecoverySummary | null): boolean {
+  if (!next || !shown) return false;
+  return Date.parse(next.created_at) < Date.parse(shown.created_at);
+}
+
 export interface SecurityHooks {
   /**
    * The server asks for a fresh sign-in (`reauth_required`): the page sends the user to
@@ -214,6 +226,8 @@ export class SecurityPage {
       }
       this.devices = mfa.devices;
       this.recovery = mfa.recovery;
+      // Multi-factor switched off in the meantime (another tab): the codes shown no longer work.
+      if (!this.mfa) this.#mfaOff();
       this.sessions = list.sessions;
       this.changedAt = me.password_changed_at ?? null;
       this.status = 'ready';
@@ -474,12 +488,7 @@ export class SecurityPage {
       this.#applyMfa(res);
       if (seq === this.#enrollSeq) this.cancelTotp();
       const last = res.devices.length === 0;
-      if (last) {
-        // With the last app the codes are dropped; changing the password no longer needs a code.
-        this.codes = null;
-        this.cancelRegen();
-        this.pwOtp = '';
-      }
+      if (last) this.#mfaOff();
       ui.toasts.show(last ? m.security_mfa_off() : m.security_app_removed({ name: target.name }));
     } catch (error) {
       if (seq !== this.#enrollSeq) return;
@@ -557,6 +566,13 @@ export class SecurityPage {
     try {
       const res = await api<MfaOverview>('POST', 'auth/recovery-codes', { password: this.rcPw, code: this.rcCode });
       if (this.#disposed) return;
+      // A later set replaced this one in the meantime (an earlier regeneration answering last, another tab): its
+      // codes no longer work, and the overview shown is newer.
+      if (olderSet(res.recovery, this.recovery)) {
+        this.#changes++;
+        if (seq === this.#rcSeq) this.cancelRegen();
+        return;
+      }
       this.#applyMfa(res);
       if (seq === this.#rcSeq) this.cancelRegen();
       // The old codes no longer work: show the new ones even if the form was closed in the meantime.
@@ -667,6 +683,13 @@ export class SecurityPage {
     this.#changes++;
     this.devices = res.devices;
     this.recovery = res.recovery;
+  }
+
+  /** Multi-factor is off: the codes are dropped; changing the password no longer needs a code. */
+  #mfaOff(): void {
+    this.codes = null;
+    this.cancelRegen();
+    this.pwOtp = '';
   }
 
   #showCodes(codes: string[]): void {

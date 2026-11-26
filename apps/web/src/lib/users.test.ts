@@ -60,6 +60,8 @@ function held() {
 }
 
 beforeEach(() => {
+  // Dates in words use the host's time zone: pinned, so "26 October" holds everywhere.
+  vi.stubEnv('TZ', 'UTC');
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   signIn('admin');
@@ -67,6 +69,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   session.config = null;
   session.user = null;
@@ -595,6 +598,54 @@ describe('Selection', () => {
     expect(listed(p, 'u1')?.status).toBe('active');
   });
 
+  it('keeps only what the server changed and names it, even if the reload fails', async () => {
+    const { p, v } = await loaded();
+    const { calls } = mockApi({
+      'POST users/bulk': [{ body: { changed: ['u1'] } }, { body: { changed: ['i2'] } }],
+      'GET users': always({ status: 500, body: { error: 'internal' } }),
+    });
+    const show = vi.spyOn(ui.toasts, 'show');
+    p.selected = ['u1', 'u2'];
+    v().uBulkLock();
+    ui.confirmOk();
+    await vi.waitFor(() => expect(ui.toast).toMatchObject({ error: true }));
+    expect(loads(calls)).toBe(1);
+    // The server skipped Luke Walker: his row is back before the (failing) reload.
+    expect(show).toHaveBeenCalledWith('Anna Baker suspended');
+    expect([listed(p, 'u1')?.status, listed(p, 'u2')?.status]).toEqual(['locked', 'active']);
+    // A skipped removal comes back with its selection.
+    p.selected = ['u2', 'i2'];
+    v().uBulkRemove();
+    ui.confirmOk();
+    await vi.waitFor(() => expect(loads(calls)).toBe(2));
+    expect(show).toHaveBeenLastCalledWith('paul.long@example.com removed');
+    expect(listed(p, 'i2')).toBeUndefined();
+    expect(listed(p, 'u2')?.status).toBe('active');
+    expect(p.selected).toEqual(['u2']);
+    show.mockRestore();
+  });
+
+  it('refreshes the open details only if a bulk status change changed that account', async () => {
+    const details = { body: { user: { ...USERS[2], sessions: [], recovery_codes: null } } };
+    const { p, v, calls } = await loaded({
+      'POST users/bulk': [{ body: { changed: ['u1'] } }, { body: { changed: ['u2'] } }],
+      'GET users/u2': always(details, 3),
+    });
+    const detailLoads = () => sent(calls).filter((c) => c === 'GET users/u2').length;
+    p.toggleOpen('u2');
+    await vi.waitFor(() => expect(p.details?.status).toBe('ready'));
+    p.selected = ['u1', 'u2'];
+    v().uBulkLock();
+    ui.confirmOk();
+    await vi.waitFor(() => expect(loads(calls)).toBe(2));
+    await tick();
+    expect(detailLoads()).toBe(1);
+    p.selected = ['u2'];
+    v().uBulkLock();
+    ui.confirmOk();
+    await vi.waitFor(() => expect(detailLoads()).toBe(2));
+  });
+
   it('asks before revoking a single invitation and reports it as removed', async () => {
     const { p, v } = await loaded({ 'POST users/bulk': [{ body: { changed: ['i2'] } }] });
     p.toggleSelect('i2');
@@ -754,6 +805,43 @@ describe('Inviting', () => {
     expect(v().uNoMail).toBe(true);
     v().invRes.close();
     expect(v().invRes.show).toBe(false);
+  });
+
+  it('shows unsent invitations with "Copy link" even if the reload fails', async () => {
+    const { p, v } = await loaded();
+    mockApi({
+      'POST invites': [
+        { status: 201, body: { invites: [{ id: 'n1', email: 'tim@example.com', sent: false }], system_mail: true } },
+      ],
+      'GET users': [{ status: 500, body: { error: 'internal' } }, { body: { users: USERS } }],
+    });
+    p.openInvite();
+    p.inviteInput('tim@example.com');
+    await p.sendInvites();
+    expect(v().invRes).toMatchObject({ show: true, title: 'Invitation couldn’t be sent' });
+    expect(v().invRes.rows.map((r) => [r.id, r.email])).toEqual([['n1', 'tim@example.com']]);
+    // A list loaded since no longer has it (revoked in the meantime): the result ends.
+    await p.load();
+    expect(v().invRes.show).toBe(false);
+  });
+
+  it('keeps `system_mail` of an invitation over an older mail state arriving later', async () => {
+    const mail = held();
+    const { p, v, server } = await loaded({
+      'GET admin/system-mail': [mail.reply],
+      'POST invites': [
+        { status: 201, body: { invites: [{ id: 'n1', email: 'tim@example.com', sent: false }], system_mail: false } },
+      ],
+    });
+    server.users = [...USERS, invite('n1', 'tim@example.com', { mail_sent_at: null })];
+    p.openInvite();
+    p.inviteInput('tim@example.com');
+    await p.sendInvites();
+    expect(p.hasMail).toBe(false);
+    mail.release({ body: { status: 'ok' } });
+    await tick();
+    expect(p.hasMail).toBe(false);
+    expect(row(v(), 'tim@example.com').canResend).toBe(false);
   });
 
   it('names several failed invitations', async () => {
@@ -980,6 +1068,45 @@ describe('Actions per row', () => {
     await vi.waitFor(() => expect(loads(calls)).toBe(2));
   });
 
+  it('returns to the confirmed role, not a pending one, when overlapping role changes fail', async () => {
+    const first = held();
+    const second = held();
+    const { p } = await loaded();
+    mockApi({
+      'PATCH users/u2': [first.reply, second.reply],
+      'GET users': always({ status: 500, body: { error: 'internal' } }),
+    });
+    p.setRole(listed(p, 'u2') as ListedUser, 'admin');
+    p.setRole(listed(p, 'u2') as ListedUser, 'user');
+    expect(listed(p, 'u2')?.role).toBe('user');
+    first.release({ status: 500, body: { error: 'internal' } });
+    await vi.waitFor(() => expect(ui.toast).toMatchObject({ error: true }));
+    // The newer change is still on its way.
+    expect(listed(p, 'u2')?.role).toBe('user');
+    second.release({ status: 500, body: { error: 'internal' } });
+    await tick();
+    await tick();
+    expect(listed(p, 'u2')?.role).toBe('user');
+  });
+
+  it('takes a settled role change as the baseline of a later one', async () => {
+    const first = held();
+    const second = held();
+    const { p } = await loaded();
+    const { calls } = mockApi({
+      'PATCH users/u2': [first.reply, second.reply],
+      'GET users': always({ status: 500, body: { error: 'internal' } }),
+    });
+    p.setRole(listed(p, 'u2') as ListedUser, 'admin');
+    p.setRole(listed(p, 'u2') as ListedUser, 'user');
+    first.release({ body: { user: null } });
+    // Settled: its reload (failing here) follows.
+    await vi.waitFor(() => expect(loads(calls)).toBe(1));
+    second.release({ status: 500, body: { error: 'internal' } });
+    await vi.waitFor(() => expect(loads(calls)).toBe(2));
+    expect(listed(p, 'u2')?.role).toBe('admin');
+  });
+
   it('names the last administrator (`last_admin`)', async () => {
     const { p } = await loaded({ 'PATCH users/u1': [{ status: 409, body: { error: 'last_admin' } }] });
     p.setRole(listed(p, 'u1') as ListedUser, 'user');
@@ -1098,6 +1225,22 @@ describe('Actions per row', () => {
     await p.resend(listed(p, 'i2') as ListedUser);
     expect(ui.toast?.text).toBe('Invitation resent');
     expect(row(v(), 'paul.long@example.com')).toMatchObject({ hasSendNote: false, sendErr: false });
+  });
+
+  it('points to "Extend" instead of "Copy link" when resending an expired invitation fails', async () => {
+    const old = invite('i3', 'eve.ross@example.com', { expires_at: before(5), expired: true });
+    const { p, v } = await loaded({ 'POST invites/i3/resend': [{ status: 502, body: { error: 'mail_failed' } }] }, [
+      ...USERS,
+      old,
+    ]);
+    await p.resend(listed(p, 'i3') as ListedUser);
+    expect(row(v(), 'eve.ross@example.com')).toMatchObject({
+      hasSendNote: true,
+      canCopy: false,
+      canExtend: true,
+      sendNote:
+        'The invitation couldn’t be resent, and its link no longer works. Extend it and share the link yourself, or try again later.',
+    });
   });
 
   it('names the wait time of a rate-limited "Resend" and a gone invitation', async () => {

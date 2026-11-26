@@ -1,13 +1,14 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/audit.test.ts`) with the hub's category, times and errors.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import auditTexts from '../../../../crates/server/src/api/audit/texts.rs?raw';
-import { dayLabel, exportName, type AuditTime } from '#lib/audit-time.ts';
+import { dayLabel, exportName, untilNextDay, type AuditTime } from '#lib/audit-time.ts';
 import {
   AUDIT_SEARCH_DELAY,
   auditGroups,
   auditPath,
   AuditPage,
   auditValues,
+  csvRows,
   type AuditCounts,
   type AuditEntry,
 } from '#lib/audit.svelte.ts';
@@ -42,11 +43,20 @@ function data(entries: AuditEntry[] = [FIRST], next: number | null = null, count
   return { body: { entries, counts, next } };
 }
 
+/** The export as the server writes it: BOM, header, one line per entry, CRLF, every field quoted. */
+function csv(n: number) {
+  const line = (fields: string[]) => `${fields.map((f) => `"${f.replaceAll('"', '""')}"`).join(';')}\r\n`;
+  const rows = Array.from({ length: n }, (_, i) => line([FIRST.at, 'Sign-in', `Alex "${i}"`, 'signed in', '']));
+  return { raw: `\u{feff}${line(['Time', 'Area', 'Who', 'What', 'Details'])}${rows.join('')}` };
+}
+
+type Answer = { status?: number; body?: unknown; raw?: string };
+
 /** Response that only arrives on `release()`. */
-function later(answer: { status?: number; body?: unknown }) {
+function later(answer: Answer) {
   let release = () => {};
   const reply = () =>
-    new Promise<{ status?: number; body?: unknown }>((resolve) => {
+    new Promise<Answer>((resolve) => {
       release = () => resolve(answer);
     });
   return { reply, release: () => release() };
@@ -75,6 +85,35 @@ describe('exportName', () => {
     const late = Date.parse('2026-11-05T23:30:00Z');
     expect(exportName(late, 'Europe/Berlin')).toBe('audit-log-2026-11-06.csv');
     expect(exportName(late, 'UTC')).toBe('audit-log-2026-11-05.csv');
+  });
+});
+
+describe('untilNextDay', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it('counts to midnight in the time zone', () => {
+    expect(untilNextDay(at('2026-11-05T22:59:30.250Z'), 'Europe/Berlin')).toBe(29_750);
+    expect(untilNextDay(at('2026-11-05T22:59:30Z'), 'UTC')).toBe(3_630_000);
+  });
+
+  it('allows for a change to or from summer time before midnight', () => {
+    // 29 March 2026: 02:00 becomes 03:00 in Berlin, the day has 23 hours.
+    expect(untilNextDay(at('2026-03-28T23:30:00Z'), 'Europe/Berlin')).toBe(22.5 * 3_600_000);
+    // 25 October 2026: 03:00 becomes 02:00, the day has 25 hours.
+    expect(untilNextDay(at('2026-10-24T22:30:00Z'), 'Europe/Berlin')).toBe(24.5 * 3_600_000);
+  });
+
+  it('waits at least a second', () => {
+    expect(untilNextDay(at('2026-11-05T22:59:59.900Z'), 'Europe/Berlin')).toBe(1000);
+  });
+});
+
+describe('csvRows', () => {
+  it('counts the lines after the header, also with line breaks and quotation marks in a field', () => {
+    expect(csvRows(csv(3).raw)).toBe(3);
+    expect(csvRows('"Time";"Who"\r\n"a";"two\r\nlines ""quoted"""\r\n')).toBe(1);
+    expect(csvRows('\u{feff}"Time";"Who"\r\n')).toBe(0);
+    expect(csvRows('')).toBe(0);
   });
 });
 
@@ -433,7 +472,7 @@ describe('more entries', () => {
     p.setFilter('system');
     // The container is `aria-busy`, the button only shows its own loading.
     expect(auditValues(p, TIME)).toMatchObject({ aBusyAttr: true, aMore: { show: true, busy: false } });
-    auditValues(p, TIME).aMore.onClick();
+    void auditValues(p, TIME).aMore.onClick();
     answer.release();
     await vi.waitFor(() => expect(p.loading).toBe(false));
     expect(api.calls.map((c) => c.path)).toEqual(['admin/audit', 'admin/audit?cat=system']);
@@ -574,7 +613,7 @@ describe('export', () => {
         data([FIRST]),
         data([entry(13, FIRST.at), FIRST], null, { ...COUNTS, all: 9, system: 3 }),
       ],
-      'POST admin/audit/export?cat=users': [{ body: 'csv' }],
+      'POST admin/audit/export?cat=users': [csv(2)],
     });
     const p = new AuditPage();
     p.setFilter('users');
@@ -591,7 +630,7 @@ describe('export', () => {
   it('uses the singular', async () => {
     mockApi({
       'GET admin/audit?cat=settings': [data(), data()],
-      'POST admin/audit/export?cat=settings': [{ body: 'csv' }],
+      'POST admin/audit/export?cat=settings': [csv(1)],
     });
     const p = new AuditPage();
     p.setFilter('settings');
@@ -605,7 +644,7 @@ describe('export', () => {
     const api = mockApi({
       'GET admin/audit': [data()],
       'GET admin/audit?q=ma': [data([FIRST], null, { ...COUNTS, all: 1 }), data()],
-      'POST admin/audit/export?q=ma': [{ body: 'csv' }],
+      'POST admin/audit/export?q=ma': [csv(1)],
     });
     const p = new AuditPage();
     await p.load();
@@ -626,7 +665,7 @@ describe('export', () => {
       'GET admin/audit': [data()],
       'GET admin/audit?cat=users': [users.reply],
       'GET admin/audit?cat=apps': [apps.reply, data()],
-      'POST admin/audit/export?cat=apps': [{ body: 'csv' }],
+      'POST admin/audit/export?cat=apps': [csv(1)],
     });
     const p = new AuditPage();
     await p.load();
@@ -645,6 +684,19 @@ describe('export', () => {
       'POST admin/audit/export?cat=apps',
     ]);
     expect(ui.toast?.text).toBe('1 entry exported');
+  });
+
+  it('counts the entries in the file, not those of the list before', async () => {
+    // An entry written between list and export is in the file.
+    mockApi({
+      'GET admin/audit?cat=settings': [data(), data()],
+      'POST admin/audit/export?cat=settings': [csv(2)],
+    });
+    const p = new AuditPage();
+    p.setFilter('settings');
+    await vi.waitFor(() => expect(p.counts).not.toBeNull());
+    await p.exportCsv('UTC');
+    expect(ui.toast?.text).toBe('2 entries exported');
   });
 
   it('exports nothing if the list cannot be loaded', async () => {
@@ -696,7 +748,7 @@ describe('export', () => {
     vi.mocked(downloadBlob).mockReturnValueOnce(false);
     const api = mockApi({
       'GET admin/audit': [data(), data([entry(13, FIRST.at), FIRST])],
-      'POST admin/audit/export': [{ body: 'csv' }],
+      'POST admin/audit/export': [csv(1)],
     });
     const p = new AuditPage();
     await p.load();
@@ -707,7 +759,7 @@ describe('export', () => {
   });
 
   it('does not start twice', async () => {
-    const answer = later({ body: 'csv' });
+    const answer = later(csv(1));
     const api = mockApi({
       'GET admin/audit': [data(), data()],
       'POST admin/audit/export': [answer.reply],
@@ -776,6 +828,26 @@ describe('retention', () => {
     old.release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(p.entries.map((e) => e.id)).toEqual([2]);
+  });
+
+  it('leaves a failed save alone after leaving the page: no rollback, no toast, no reload of the account', async () => {
+    const refresh = vi.spyOn(session, 'refreshUser').mockResolvedValue(undefined);
+    const answer = later({ status: 401, body: { error: 'unauthorized' } });
+    mockApi({
+      'GET admin/audit/retention': [{ body: { days: 90 } }],
+      'PUT admin/audit/retention': [answer.reply],
+    });
+    const p = new AuditPage();
+    await p.loadKeep();
+    const saving = p.setKeep(30);
+    await vi.waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+    p.dispose();
+    answer.release();
+    await saving;
+    expect(p.keep).toBe(30);
+    expect(ui.toast).toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+    refresh.mockRestore();
   });
 
   it('reverts the choice on a failure', async () => {

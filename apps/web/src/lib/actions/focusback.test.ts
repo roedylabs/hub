@@ -30,6 +30,17 @@ describe('focusback', () => {
     expect(document.activeElement).toBe($('edit'));
   });
 
+  it('counts a focus that was already in the box when the action attached', async () => {
+    document.body.innerHTML = `<div><button class="edit">Edit</button><div id="box"><button id="a">A</button></div></div>`;
+    const box = document.getElementById('box') as HTMLElement;
+    (document.getElementById('a') as HTMLElement).focus();
+    const action = focusback(box, 'button.edit');
+    box.remove();
+    action.destroy();
+    await tick();
+    expect(document.activeElement).toBe(document.querySelector('button.edit'));
+  });
+
   it('leaves the focus alone if it was not in the box', async () => {
     const { box, action, $ } = setup();
     $('a').focus();

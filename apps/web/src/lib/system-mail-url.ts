@@ -7,6 +7,7 @@
  * Adapted from Roedy Mail (`apps/web/src/lib/url.ts`), where the servers come
  * from a registry.
  */
+import { trimWs } from '#lib/trim.ts';
 
 /** Control characters like Rust `char::is_control` (category Cc). */
 const CONTROL = /\p{Cc}/u;
@@ -21,7 +22,8 @@ const DNS_LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
  * Returns the origin or the error.
  */
 export function mailUrlOf(value: string): { origin: string } | { error: 'required' | 'invalid' } {
-  const raw = value.trim();
+  // Trimmed like the backend (Rust `str::trim`: also U+0085); whitespace inside stays an error.
+  const raw = trimWs(value);
   if (!raw) return { error: 'required' };
   let url: URL;
   try {
@@ -44,7 +46,7 @@ export function mailUrlOf(value: string): { origin: string } | { error: 'require
 /** The server's address as the backend stores it (origin), otherwise the trimmed input. */
 export function normUrl(value: string): string {
   const parsed = mailUrlOf(value);
-  return 'origin' in parsed ? parsed.origin : value.trim();
+  return 'origin' in parsed ? parsed.origin : trimWs(value);
 }
 
 /** Host with port of a valid address, otherwise empty. */

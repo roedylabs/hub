@@ -65,6 +65,37 @@ export function dayLabel(t: number, time: AuditTime): string {
   return dtf(time, { weekday: 'long', day: 'numeric', month: 'long', ...year }).format(t);
 }
 
+/** Wall clock of `t` in the time zone, as milliseconds since 1970 as if it were UTC. */
+function wallClock(t: number, tz: string): number {
+  const parts = dtf(
+    { tz, lang: 'en' },
+    {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      hourCycle: 'h23',
+    },
+  ).formatToParts(t);
+  const n = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value);
+  const ms = ((t % 1000) + 1000) % 1000;
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) + ms;
+}
+
+/**
+ * Milliseconds until the next day begins in the time zone, so that "Today" and "Yesterday" move on at midnight. A
+ * change to or from summer time before then is taken into account; at least one second, the caller checks again.
+ */
+export function untilNextDay(now: number, tz: string): number {
+  const midnight = (Math.floor(wallClock(now, tz) / DAY) + 1) * DAY;
+  let next = now + midnight - wallClock(now, tz);
+  // The offset at midnight may differ from the one now (summer time).
+  next += midnight - wallClock(next, tz);
+  return Math.max(1000, next - now);
+}
+
 /** Date in the time zone as `YYYY-MM-DD`. */
 export function isoDate(t: number, tz: string): string {
   const parts = dtf({ tz, lang: 'en' }, { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(t);

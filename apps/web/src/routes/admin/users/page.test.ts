@@ -130,12 +130,20 @@ describe('Users page', () => {
     await view.findByText('Alice Brown');
     await fireEvent.click(view.getByRole('button', { name: 'Invite' }));
     const field = view.getByLabelText('Email addresses');
+    await vi.waitFor(() => expect(field).toHaveFocus());
     await fireEvent.input(field, { target: { value: 'alice@example.com' } });
     await fireEvent.keyDown(field, { key: 'Enter' });
     expect(view.getByRole('alert')).toHaveTextContent('alice@example.com already belongs to an account.');
     expect(view.getByRole('button', { name: /Send invitation/ })).toHaveAttribute('aria-disabled', 'true');
     await fireEvent.keyDown(field, { key: 'Escape' });
     expect(view.queryByText('Invite people')).toBeNull();
+    // The focused field is gone: focus returns to "Invite", also after "Cancel".
+    const invite = view.getByRole('button', { name: 'Invite' });
+    await vi.waitFor(() => expect(invite).toHaveFocus());
+    await fireEvent.click(invite);
+    await vi.waitFor(() => expect(view.getByLabelText('Email addresses')).toHaveFocus());
+    await fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'Invite' })).toHaveFocus());
   });
 
   it('shows the notice with "Set up email" and "Create invitation" without system mail', async () => {

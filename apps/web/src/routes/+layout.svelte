@@ -87,14 +87,35 @@
     return session.watchTabs();
   });
 
-  /** Path of the page the app came from (`null` at the start): "Back" then goes back in the history. */
+  /**
+   * Path of the page before the current history entry as far as the app saw it (`null` at the start or unknown):
+   * after browser Back or a jump of several entries the page left is not the one before.
+   */
   let cameFrom: string | null = null;
 
   // In the SPA `from.url` is `null` at the start, unlike in SvelteKit's type.
-  afterNavigate(({ from }) => {
+  afterNavigate((navigation) => {
+    const { from } = navigation;
     if (from) ui.navigated = true;
-    cameFrom = from?.url?.pathname ?? null;
+    const unknown = navigation.type === 'popstate' && navigation.delta !== 1;
+    cameFrom = unknown ? null : (from?.url?.pathname ?? null);
   });
+
+  /** Navigation API (where the browser has it): the history entries of the app and the current one. */
+  interface NavigationLike {
+    currentEntry?: { index: number } | null;
+    entries?: () => { url: string | null }[];
+  }
+
+  /** Path of the history entry before the current one, `null` if unknown or not in the app. */
+  function predecessor(): string | null {
+    const nav = (globalThis as { navigation?: NavigationLike }).navigation;
+    if (!nav?.currentEntry || typeof nav.entries !== 'function') return cameFrom;
+    const url = nav.entries()[nav.currentEntry.index - 1]?.url;
+    if (!url) return null;
+    const prev = new URL(url);
+    return prev.origin === location.origin ? prev.pathname : null;
+  }
 
   const path = $derived(page.url.pathname);
   const ready = $derived(session.status === 'ready');
@@ -182,9 +203,9 @@
     void (to === path ? goto(to, { replace: true }) : goto(to));
   }
 
-  /** Back to `to`: through the history when the app came from there, so that it does not grow with every "Back". */
+  /** Back to `to`: through the history when the entry before is `to`, so that it does not grow with every "Back". */
   function back(to: string): void {
-    if (cameFrom === to && ui.canGoBack()) {
+    if (predecessor() === to && ui.canGoBack()) {
       ui.closeMenu();
       history.back();
     } else go(to);
@@ -328,29 +349,23 @@
 
 {#if session.status === 'error' && !gatewayError && !page.error}
   <ErrorView code={session.failure ?? '500'} retry={start} />
-{:else if shell && !ui.isMobile}
-  <div class="app">
-    <Header
-      {...header}
-      {accountPop}
-      goHome={() => go(HOME)}
-      openAdmin={() => go(resolve(FIRST_PAGE.admin))}
-      openSettingsBtn={() => go(resolve(FIRST_PAGE.account))}
-      toggleAccount={() => ui.toggleMenu('account')}
-    />
-    <div class="body">
-      {#if !forbidden}<SettingsNav {...settingsNav} />{/if}
-      <main class="card no-scrollbar" class:wide={forbidden} bind:this={scroller} {@attach scrollbar}>
-        {#if forbidden}{@render content()}{:else}<div class="panel">{@render content()}</div>{/if}
-      </main>
-    </div>
-    {#if pageDialog}{@render pageDialog.content(false)}{/if}
-    {@render overlays()}
-  </div>
 {:else if shell}
-  <div class="app mobile">
-    <div class="m-page">
-      {#if panelList}
+  <!-- One tree for desktop and mobile: the page in `main` stays mounted across the breakpoint (unsaved inputs stay). -->
+  <div class="app" class:mobile={ui.isMobile}>
+    {#if !ui.isMobile}
+      <Header
+        {...header}
+        {accountPop}
+        goHome={() => go(HOME)}
+        openAdmin={() => go(resolve(FIRST_PAGE.admin))}
+        openSettingsBtn={() => go(resolve(FIRST_PAGE.account))}
+        toggleAccount={() => ui.toggleMenu('account')}
+      />
+    {/if}
+    <div class={ui.isMobile ? 'm-page' : 'body'}>
+      {#if !ui.isMobile}
+        {#if !forbidden}<SettingsNav {...settingsNav} />{/if}
+      {:else if panelList}
         <!-- The area's list: brand (home) and avatar (account menu with sign-out and, for administrators, administration). -->
         <Header {...header} goHome={() => go(HOME)} openAccountSheet={() => ui.toggleMenu('account')} />
       {:else}
@@ -361,26 +376,38 @@
           </button>
         </header>
       {/if}
-      <main class="m-panel no-scrollbar" bind:this={scroller}>
-        {#if panelList}<SettingsNav {...settingsNav} />{:else}{@render content()}{/if}
+      <main
+        class={['no-scrollbar', ui.isMobile ? 'm-panel' : 'card', !ui.isMobile && forbidden && 'wide']}
+        bind:this={scroller}
+        {@attach !ui.isMobile && scrollbar}
+      >
+        {#if panelList}<SettingsNav {...settingsNav} />{:else}<div
+            class={['content', !ui.isMobile && !forbidden && 'panel']}
+          >
+            {@render content()}
+          </div>{/if}
       </main>
     </div>
-    {#if sheet === 'account'}
-      <Sheet label={session.userName} onclose={() => ui.closeMenu()}>
-        <AccountMenu {...account} />
-      </Sheet>
-    {:else if sheet === 'pick' && ui.pick}
-      {@const pick = ui.pick()}
-      <Sheet label={pick.title} onclose={() => ui.closeMenu()}>
-        <PickerList {pick} closeSheet={() => ui.closeMenu()} />
-      </Sheet>
-    {/if}
-    {#if pageDialog?.bare}
-      {@render pageDialog.content(true)}
-    {:else if pageDialog}
-      <Sheet label={pageDialog.title} onclose={pageDialog.close}>
+    {#if !ui.isMobile}
+      {#if pageDialog}{@render pageDialog.content(false)}{/if}
+    {:else}
+      {#if sheet === 'account'}
+        <Sheet label={session.userName} onclose={() => ui.closeMenu()}>
+          <AccountMenu {...account} />
+        </Sheet>
+      {:else if sheet === 'pick' && ui.pick}
+        {@const pick = ui.pick()}
+        <Sheet label={pick.title} onclose={() => ui.closeMenu()}>
+          <PickerList {pick} closeSheet={() => ui.closeMenu()} />
+        </Sheet>
+      {/if}
+      {#if pageDialog?.bare}
         {@render pageDialog.content(true)}
-      </Sheet>
+      {:else if pageDialog}
+        <Sheet label={pageDialog.title} onclose={pageDialog.close}>
+          {@render pageDialog.content(true)}
+        </Sheet>
+      {/if}
     {/if}
     {@render overlays()}
   </div>
@@ -451,6 +478,11 @@
     margin-left: 16px;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Holds the page in every layout; without `.panel` (mobile, "Access denied") it takes no box of its own. */
+  .content:not(.panel) {
+    display: contents;
   }
 
   .panel {

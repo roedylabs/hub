@@ -128,10 +128,16 @@ export class ProfilePage {
   #disposed = false;
   /** Counts the writes of `me` and the starts of `load`: a read applies only if nothing happened since it started. */
   #version = 0;
+  /**
+   * `run` of this page's open "Delete account" confirmation; it closes when the account changes. (`ui.confirm` holds
+   * a proxy of the request, the function stays the same.)
+   */
+  #asking: (() => void) | null = null;
 
   /** Leaving the page (`onDestroy`). */
   dispose(): void {
     this.#disposed = true;
+    this.#closeAsk();
   }
 
   /**
@@ -164,6 +170,8 @@ export class ProfilePage {
   follow(id: string | undefined): void {
     const me = this.me;
     if (!me || !id || id === me.id) return;
+    // The confirmation names the previous account: confirming must not delete the new one.
+    this.#closeAsk();
     this.discardDrafts();
     this.cancelAuth();
     this.pendErr = null;
@@ -292,17 +300,20 @@ export class ProfilePage {
       return;
     }
     this.saving = true;
+    const named = body.display_name !== undefined || body.username !== undefined;
     try {
       const res = await api<ProfileResponse>('PATCH', 'auth/me', body);
+      // Header and account menu follow a saved name also after the page was left.
+      if (named) this.#syncSession();
+      // Left in the meantime: no toast, no prompt for the address.
+      if (this.#disposed) return;
       this.#applyUser(res.user);
       this.discardDrafts();
-      if (body.display_name !== undefined || body.username !== undefined) {
-        ui.toasts.show(m.profile_saved());
-        this.#syncSession();
-      }
+      if (named) ui.toasts.show(m.profile_saved());
       if (res.status === 'reauth_required' && body.email) this.#openAuth(body.email);
     } catch (error) {
-      this.#saveFailed(error);
+      // Left in the meantime: no message and no redirect to a fresh sign-in.
+      if (!this.#disposed) this.#saveFailed(error);
     } finally {
       this.saving = false;
     }
@@ -368,8 +379,9 @@ export class ProfilePage {
   /** "Send confirmation link": the server checks password and code, then both mails go out. */
   async sendLink(): Promise<void> {
     const ea = this.ea;
-    // During "Resend link" both would replace the link: one after the other.
-    if (!ea || this.sending || this.resending || !this.eaReady) return;
+    // During "Resend link" both would replace the link: one after the other. During "Discard change" its DELETE
+    // would remove the new change (the server discards whatever change is open).
+    if (!ea || this.sending || this.resending || this.checking || !this.eaReady) return;
     const mfa = this.mfa;
     if (mfa && this.eaOtp.length !== CODE_LENGTH) {
       this.eaErr = m.reauth_code_short();
@@ -379,11 +391,12 @@ export class ProfilePage {
     try {
       const body = { email: ea.email, password: this.eaPw, ...(mfa ? { code: this.eaOtp } : {}) };
       const res = await api<ProfileResponse>('PATCH', 'auth/me', body);
-      this.cancelAuth();
+      // A prompt opened for another address in the meantime stays with its inputs.
+      if (this.ea === ea) this.cancelAuth();
       this.pendErr = null;
       if (res.status === 'email_sent') {
         this.#applyUser(res.user, res.email_change ?? null);
-        ui.toasts.show(m.profile_link_sent());
+        if (!this.#disposed) ui.toasts.show(m.profile_link_sent());
       } else {
         // The address already applies in the meantime (confirmed elsewhere): no link, reload the account.
         this.#applyUser(res.user);
@@ -438,14 +451,14 @@ export class ProfilePage {
       const open = await api<EmailChange>('POST', 'auth/me/email/resend', undefined, {
         signal: AbortSignal.timeout(RESEND_TIMEOUT_MS),
       });
-      // A newer link (or another account) in the meantime: its state and notice stay.
+      // Left, or a newer link (or another account) in the meantime: its state and notice stay.
       const me = this.me;
-      if (!me || !this.#unchanged(before)) return;
+      if (this.#disposed || !me || !this.#unchanged(before)) return;
       this.#write({ ...me, email_change: open });
       ui.toasts.show(m.profile_link_resent());
     } catch (error) {
-      // A newer link (or another account) in the meantime: the message would not apply to it.
-      if (!this.#unchanged(before)) return;
+      // Left, or a newer link (or another account) in the meantime: the message would not apply to it.
+      if (this.#disposed || !this.#unchanged(before)) return;
       if (isApiError(error, 502, 'mail_failed')) {
         this.pendErr =
           error.body.previous_link_valid === true ? m.profile_resend_failed_valid() : m.profile_resend_failed();
@@ -518,10 +531,18 @@ export class ProfilePage {
 
   // ---- Delete account ----
 
-  /** "Delete account": asks with the confirmation word; locked for the only administrator. */
+  /**
+   * "Delete account": asks with the confirmation word; locked for the only administrator. The confirmation applies
+   * only to the account it names: it closes when another tab signs in a different account (`follow`).
+   */
   deleteAccount(): void {
     const me = this.me;
     if (!me || me.sole_admin || this.deleting) return;
+    const run = (): void => {
+      if (this.#asking === run) this.#asking = null;
+      void this.#delete(me.id);
+    };
+    this.#asking = run;
     ui.ask({
       title: m.profile_delete_title(),
       text: m.profile_delete_text({ email: me.email }),
@@ -529,14 +550,29 @@ export class ProfilePage {
       ok: m.profile_delete(),
       danger: true,
       word: m.profile_delete_word(),
-      run: () => void this.#delete(),
+      run,
     });
   }
 
-  async #delete(): Promise<void> {
-    if (this.deleting) return;
+  /**
+   * Deletes the account `id` named by the confirmation. `DELETE auth/me` deletes the account of the session cookie,
+   * which another tab may already have replaced before this tab noticed: `auth/me` is read first and nothing is
+   * deleted if it names a different account.
+   */
+  async #delete(id: string): Promise<void> {
+    if (this.deleting || this.me?.id !== id || session.user?.id !== id) return;
     this.deleting = true;
     try {
+      const now = await api<ProfileMe>('GET', 'auth/me', undefined, {
+        signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+      });
+      if (now.id !== id) {
+        this.deleting = false;
+        // The session's account reloads, the layout then shows the other account.
+        ui.toasts.error(m.profile_delete_switched());
+        this.#syncSession();
+        return;
+      }
       await api('DELETE', 'auth/me', { confirm: DELETE_CONFIRM });
     } catch (error) {
       this.deleting = false;
@@ -558,6 +594,12 @@ export class ProfilePage {
   }
 
   // ---- internal ----
+
+  /** Closes this page's "Delete account" confirmation if it is still open. */
+  #closeAsk(): void {
+    if (this.#asking && ui.confirm?.run === this.#asking) ui.confirmCancel();
+    this.#asking = null;
+  }
 
   /** Writes `me` unless the page is gone; older reads that are still running no longer apply. */
   #write(me: ProfileMe): void {
@@ -674,6 +716,8 @@ export class ProfilePage {
    * the account reloads, the layout then shows the sign-in.
    */
   #unexpected(error: unknown): void {
+    // Left in the meantime: the message and a fresh sign-in would land on another page.
+    if (this.#disposed) return;
     if (needsReauth(error)) {
       // eslint-disable-next-line svelte/no-navigation-without-resolve -- `/login` with the fixed `next` of this page
       void goto(loginHref(PROFILE_PATH, true));
@@ -868,7 +912,7 @@ export function profileValues(p: ProfilePage, isMobile = false): ProfileValues {
     eaMsg: p.eaErr ?? '',
     hasEaMsg: !!p.eaErr,
     eaDis: !p.eaReady,
-    eaBusy: p.sending || p.resending,
+    eaBusy: p.sending || p.resending || p.checking,
     eaGo: () => void p.sendLink(),
     eaCancel: () => p.cancelAuth(),
     nameDirty: p.dirty,

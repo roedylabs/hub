@@ -9,7 +9,7 @@
   a device.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { tooltip } from '#lib/actions/tooltip.ts';
   import Icon from '#lib/components/Icon.svelte';
@@ -21,13 +21,31 @@
   import { MAX_APP_NAME, SecurityPage, securityValues, type PwFieldValues } from '#lib/security.svelte.ts';
   import { pageOf } from '#lib/settings-nav.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
+  import { session } from '#lib/state/session.svelte.ts';
   import { ui } from '#lib/state/ui.svelte.ts';
 
   const HERE = '/account/security';
 
   // A fresh sign-in asked for by the server: back here afterwards.
   // eslint-disable-next-line svelte/no-navigation-without-resolve -- `/login` with a fixed `next`
-  const p = new SecurityPage({ reauth: () => void goto(loginHref(HERE, true)) });
+  const newPage = () => new SecurityPage({ reauth: () => void goto(loginHref(HERE, true)) });
+  let p = $state.raw(newPage());
+  /** Account whose data the page shows. */
+  let account: string | undefined;
+  // Another tab signed in a different account: late answers for the previous one change nothing, its lists, codes,
+  // enrolment and inputs go, the new account's data loads.
+  $effect(() => {
+    const id = session.user?.id;
+    untrack(() => {
+      if (!id || id === account) return;
+      const switched = account !== undefined;
+      account = id;
+      if (!switched) return;
+      p.dispose();
+      p = newPage();
+      void p.load();
+    });
+  });
   let root: HTMLElement | undefined = $state();
   const ctx = { scrollTo: (section: string) => scrollToSection(root, section, prefs.motion) };
   /** Clock for "Last active … ago" and "Last changed …" while the page is open. */
@@ -36,6 +54,16 @@
   const isMobile = $derived(ui.isMobile);
   const info = $derived(pageOf(HERE));
   type FieldEvent = Event & { currentTarget: HTMLInputElement };
+
+  /**
+   * New codes appear (after adding the first app or generating): the closed prompt took the focus with it, so the
+   * list of codes gets it, read with its hint; on mobile without scrolling. Focus elsewhere stays.
+   */
+  function focusCodes(node: HTMLElement): void {
+    const active = document.activeElement;
+    // Only when they appear, not again when the window turns into a phone.
+    if (!active || active === document.body) node.focus({ preventScroll: untrack(() => isMobile) });
+  }
 
   onMount(() => {
     void p.load();
@@ -203,11 +231,11 @@
 {#snippet codesShown()}
   <div class="codes">
     <div class="codes-hint">
-      <span class="hint-icon"><Icon name="ti-alert-circle" /></span><span class="hint-text">
+      <span class="hint-icon"><Icon name="ti-alert-circle" /></span><span id="rc-hint" class="hint-text">
         {m.security_rc_hint()}
       </span>
     </div>
-    <ol aria-label={m.security_rc_title()}>
+    <ol tabindex="-1" aria-label={m.security_rc_title()} aria-describedby="rc-hint" {@attach focusCodes}>
       {#each v.rcCodes as c (c.n)}
         <li><span class="n">{c.n}</span>{c.code}</li>
       {/each}
@@ -1421,6 +1449,8 @@
     margin: 14px 0 0;
     padding: 10px 16px;
     list-style: none;
+    /* Focus target after new codes (`focusCodes`), not a control. */
+    outline: none;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 2px 20px;

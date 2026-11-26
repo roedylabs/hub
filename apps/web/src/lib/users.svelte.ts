@@ -21,7 +21,8 @@
  * Domain errors: `invalid` with `fields` (`emails.<i>`, `name`, `emails`
  * `too_many`), `rate_limited` with `retry_after` (inviting: the form locks with
  * the wait time), `mail_failed` on "Resend" (note in the row with "Copy
- * link"; `POST invites` reports unsent mails per address instead), `last_admin`,
+ * link", for an expired invitation with "Extend"; `POST invites` reports
+ * unsent mails per address instead), `last_admin`,
  * `mfa_disabled`, `not_found` (gone in the meantime: toast and reload; for
  * removing it counts as done).
  *
@@ -125,10 +126,13 @@ interface InviteForm {
 
 /** Result after "Send invitation" if not all mails went out. */
 interface InviteResult {
-  ids: string[];
+  /** Unsent invitations as `POST invites` returned them: shown even before the list has them. */
+  invites: { id: string; email: string }[];
   n: number;
   /** No system mail: invitations only created. */
   off: boolean;
+  /** A list loaded since: an invitation missing from it was revoked or accepted. */
+  listed: boolean;
 }
 
 /** Roles (order = sorting "Role"). */
@@ -137,14 +141,22 @@ const STATUS_ORDER: Record<UserStatus, number> = { active: 0, invited: 1, locked
 const FILTERS: readonly UsersFilter[] = ['all', 'active', 'invited', 'locked'];
 /** Fields that actions of the list change. */
 type RowPatch = Partial<Pick<ListedUser, 'role' | 'status' | 'mfa'>>;
+const patchKeys = (patch: RowPatch) => Object.keys(patch) as (keyof RowPatch)[];
 
 /** Local change the server does not know yet (call on its way). */
 interface Overlay {
   ids: readonly string[];
   /** Changed fields; without: rows removed. */
   patch?: RowPatch;
-  /** The rows without this change (as the server still knows them). */
-  undo: (rows: ListedUser[]) => ListedUser[];
+  /**
+   * Last confirmed values of the changed fields per row (patches only). A
+   * change on its way is no baseline: a later change of the same field takes
+   * over the earlier one's, and a settled change confirms its values for the
+   * later ones.
+   */
+  base?: Partial<Record<string, RowPatch>>;
+  /** These of its rows without this change (as the server still knows them). */
+  undo: (rows: ListedUser[], ids: readonly string[]) => ListedUser[];
   /** A newer list from the server: the base for `undo`. */
   rebase?: (users: ListedUser[]) => void;
 }
@@ -152,7 +164,8 @@ interface Overlay {
 /** Lifting a local change: revert it or, if the server knows it, settle it. */
 interface Change {
   revert: () => void;
-  settle: () => void;
+  /** Settle; with `confirmed` only these rows, the others return (what `users/bulk` skipped). */
+  settle: (confirmed?: readonly string[]) => void;
 }
 
 /** Separators between addresses in the field (comma, semicolon, whitespace). */
@@ -167,6 +180,11 @@ const statusLabel = (s: UserStatus) =>
 /** Shown name: name, otherwise the address. */
 export const displayName = (u: Pick<ListedUser, 'name' | 'email'>) => u.name || u.email;
 const people = (n: number) => (n === 1 ? m.users_people_one() : m.users_people_many({ n }));
+/** Who changed for a toast: the name of a single changed row, otherwise the number. */
+function whoOf(list: readonly ListedUser[], changed: readonly string[]): string {
+  const one = changed.length === 1 ? list.find((u) => u.id === changed[0]) : undefined;
+  return one ? displayName(one) : people(changed.length);
+}
 
 /** Point in time of the row: for invitations the last sending, for users the last activity. */
 function atOf(u: ListedUser): number {
@@ -245,6 +263,8 @@ export class UsersPage {
   #seq = 0;
   #detailSeq = 0;
   #formId = 0;
+  /** Counts mail states from `POST invites`: a `GET admin/system-mail` sent before writes nothing. */
+  #mailRev = 0;
   #disposed = false;
   /** Counts opening and closing rows by the admin (`#restorer`). */
   #openRev = 0;
@@ -327,9 +347,10 @@ export class UsersPage {
 
   /** Whether invitations go out by mail: `GET admin/system-mail` (`status` `none` = no server). */
   async #loadMail(): Promise<void> {
+    const rev = this.#mailRev;
     try {
       const res = await api<{ status: string }>('GET', 'admin/system-mail');
-      if (!this.#disposed) this.hasMail = res.status !== 'none';
+      if (!this.#disposed && rev === this.#mailRev) this.hasMail = res.status !== 'none';
     } catch {
       // Unknown: offer sending; "Resend" then reports `mail_failed`, `POST invites` its `system_mail`.
     }
@@ -343,6 +364,8 @@ export class UsersPage {
       if (seq !== this.#seq || this.#disposed) return;
       this.rows = this.#overlaid(users);
       this.status = 'ready';
+      // Loads before the invitation write nothing any more (`#seq`): this list knows its invitations.
+      if (this.result && !this.result.listed) this.result = { ...this.result, listed: true };
       const ids = this.rows.map((u) => u.id);
       this.selected = this.selected.filter((id) => ids.includes(id));
       if (this.open && !ids.includes(this.open)) this.#close();
@@ -379,10 +402,25 @@ export class UsersPage {
       this.#overlays = this.#overlays.filter((x) => x !== o);
     };
     return {
-      settle: lift,
+      settle: (confirmed = o.ids) => {
+        lift();
+        // The server has these values now: the baseline of later changes of the same fields.
+        const { patch } = o;
+        if (patch) {
+          for (const x of this.#overlays) {
+            for (const id of confirmed) {
+              const b = x.base?.[id];
+              if (b)
+                for (const key of patchKeys(patch)) if (Object.hasOwn(b, key)) Object.assign(b, { [key]: patch[key] });
+            }
+          }
+        }
+        const skipped = o.ids.filter((id) => !confirmed.includes(id));
+        if (skipped.length && !this.#disposed) this.rows = o.undo(this.rows, skipped);
+      },
       revert: () => {
         lift();
-        if (!this.#disposed) this.rows = o.undo(this.rows);
+        if (!this.#disposed) this.rows = o.undo(this.rows, o.ids);
       },
     };
   }
@@ -597,11 +635,12 @@ export class UsersPage {
       });
       if (this.#disposed) return;
       // `recorded: false`: sent, but the list still shows "Not sent" – no result notice for it.
-      const unsent = res.invites.filter((i) => !i.sent).map((i) => i.id);
+      const unsent = res.invites.filter((i) => !i.sent).map(({ id, email }) => ({ id, email }));
       if (current()) this.invite = null;
       this.filter = 'all';
+      this.#mailRev++;
       this.hasMail = res.system_mail;
-      this.result = unsent.length ? { ids: unsent, n: list.length, off: !res.system_mail } : null;
+      this.result = unsent.length ? { invites: unsent, n: list.length, off: !res.system_mail, listed: false } : null;
       if (!unsent.length) {
         ui.toasts.show(list.length === 1 ? m.users_invite_sent() : m.users_invite_sent_many({ n: list.length }));
       }
@@ -673,21 +712,32 @@ export class UsersPage {
    * are reverted – then only exactly these fields of these rows.
    */
   #patch(ids: readonly string[], patch: RowPatch): Change {
-    const before = this.rows
-      .filter((u) => ids.includes(u.id))
-      .map((u) => ({ id: u.id, role: u.role, status: u.status, mfa: u.mfa }));
+    const keys = patchKeys(patch);
+    const base: Partial<Record<string, RowPatch>> = {};
+    for (const u of this.rows) {
+      if (!ids.includes(u.id)) continue;
+      const b: RowPatch = {};
+      for (const key of keys) {
+        // A change of this field on its way shows an unconfirmed value: its baseline is the confirmed one.
+        const pending = this.#overlays.map((o) => o.base?.[u.id]).find((x) => x && Object.hasOwn(x, key));
+        Object.assign(b, { [key]: pending ? pending[key] : u[key] });
+      }
+      base[u.id] = b;
+    }
     this.rows = this.rows.map((u) => (ids.includes(u.id) ? { ...u, ...patch } : u));
-    const undo = (rows: ListedUser[]) =>
+    // Back to the newest change still on its way, otherwise to the confirmed value (`revert` lifts this one first).
+    const undo = (rows: ListedUser[], only: readonly string[]) =>
       rows.map((u) => {
-        const prev = before.find((b) => b.id === u.id);
-        if (!prev) return u;
-        const back: Partial<ListedUser> = {};
-        for (const key of Object.keys(patch) as (keyof RowPatch)[]) {
-          (back as Record<string, unknown>)[key] = prev[key];
+        const b = only.includes(u.id) ? base[u.id] : undefined;
+        if (!b) return u;
+        const back: RowPatch = {};
+        for (const key of patchKeys(b)) {
+          const newer = this.#overlays.findLast((o) => o.ids.includes(u.id) && o.patch && Object.hasOwn(o.patch, key));
+          Object.assign(back, { [key]: newer?.patch ? newer.patch[key] : b[key] });
         }
         return { ...u, ...back };
       });
-    return this.#change({ ids, patch, undo });
+    return this.#change({ ids, patch, base, undo });
   }
 
   /** Remove rows (remove, revoke) until the response; `revert` if the server rejects. */
@@ -697,9 +747,9 @@ export class UsersPage {
     this.rows = rows.filter((u) => !ids.includes(u.id));
     this.selected = this.selected.filter((id) => !ids.includes(id));
     if (this.open && ids.includes(this.open)) this.#close();
-    const undo = (now: ListedUser[]) => {
+    const undo = (now: ListedUser[], only: readonly string[]) => {
       const known = now.map((u) => u.id);
-      return [...now, ...rows.filter((u) => ids.includes(u.id) && !known.includes(u.id))];
+      return [...now, ...rows.filter((u) => only.includes(u.id) && !known.includes(u.id))];
     };
     const rebase = (users: ListedUser[]) => {
       rows = users;
@@ -717,6 +767,7 @@ export class UsersPage {
     done: (res: T) => string | null,
     fail: (error: unknown) => string = () => m.error_act(),
     restore?: () => void,
+    confirmed?: (res: T) => readonly string[],
   ): Promise<void> {
     let res: T;
     try {
@@ -727,7 +778,10 @@ export class UsersPage {
       this.#failed(error, fail(error));
       return;
     }
-    change.settle();
+    const ids = confirmed?.(res);
+    change.settle(ids);
+    // Rows the server skipped are back: their selection and expanded row too.
+    if (ids && restore && !this.#disposed) restore();
     const text = done(res);
     if (text) ui.toasts.show(text);
     if (!this.#disposed) void this.load();
@@ -779,19 +833,26 @@ export class UsersPage {
       icon: 'ti-lock',
       ok: m.users_lock(),
       danger: true,
-      run: () => void this.#setStatus([u], 'locked', m.users_locked({ who: name }), false),
+      run: () => void this.#setStatus([u], 'locked', false),
     });
   }
 
   unlock(u: ListedUser): void {
-    void this.#setStatus([u], 'active', m.users_unlocked({ who: displayName(u) }), false);
+    void this.#setStatus([u], 'active', false);
   }
 
-  /** Lock or unlock; the selection via `users/bulk`, a single row via its resource. */
-  async #setStatus(list: readonly ListedUser[], status: 'active' | 'locked', text: string, bulk: boolean) {
+  /**
+   * Lock or unlock; the selection via `users/bulk`, a single row via its resource. The toast names the changed
+   * ones; the expanded row's details load again if it changed (locking ends its sessions).
+   */
+  async #setStatus(list: readonly ListedUser[], status: 'active' | 'locked', bulk: boolean) {
     const ids = list.map((u) => u.id);
     const change = this.#patch(ids, { status });
     const action = status === 'locked' ? 'lock' : 'unlock';
+    const text = (changed: readonly string[]) => {
+      const who = whoOf(list, changed);
+      return status === 'locked' ? m.users_locked({ who }) : m.users_unlocked({ who });
+    };
     const many = ids.length > 1;
     const failMsg =
       status === 'locked'
@@ -802,14 +863,15 @@ export class UsersPage {
           ? m.users_unlock_failed_many()
           : m.users_unlock_failed();
     if (bulk) {
-      await this.#sendBulk(change, { action, ids }, () => text, failMsg);
+      const changed = await this.#sendBulk(change, { action, ids }, text, failMsg);
+      if (this.open && changed.includes(this.open)) this.#refreshDetails(this.open);
       return;
     }
     const [one] = ids;
     await this.#send(
       change,
       () => api('POST', `users/${one}/${action}`),
-      () => text,
+      () => text(ids),
       () => failMsg,
     );
     if (one) this.#refreshDetails(one);
@@ -929,28 +991,31 @@ export class UsersPage {
   // Bulk actions of the selection
 
   /**
-   * `users/bulk`: what does not fit (the last administrator, a locked account for "lock" …) stays unchanged;
-   * the toast names the changed ones, without any "Nothing was changed".
+   * `users/bulk`: what does not fit (the last administrator, a locked account for "lock" …) stays unchanged
+   * and its rows return before the reload; the toast names the changed ones, without any "Nothing was changed".
+   * Returns the changed ids (none on an error).
    */
   async #sendBulk(
     change: Change,
     body: { action: 'role' | 'lock' | 'unlock' | 'remove'; ids: string[]; role?: Role },
-    text: (n: number) => string,
+    text: (changed: readonly string[]) => string,
     fail: string,
     restore?: () => void,
-  ): Promise<void> {
+  ): Promise<readonly string[]> {
+    let changed: readonly string[] = [];
     await this.#send(
       change,
       () => api<{ changed: string[] }>('POST', 'users/bulk', body),
       (res) => {
-        const n = res.changed.length;
-        if (n > 0) return text(n);
+        if (res.changed.length > 0) return text(res.changed);
         ui.toasts.error(m.users_bulk_none());
         return null;
       },
       () => fail,
       restore,
+      (res) => (changed = res.changed),
     );
+    return changed;
   }
 
   /** Role for the selection; only rows with another role change. */
@@ -964,7 +1029,7 @@ export class UsersPage {
     void this.#sendBulk(
       change,
       { action: 'role', ids, role },
-      (n) => (n === 1 ? m.users_role_changed() : m.users_role_changed_for({ who: people(n) })),
+      ({ length: n }) => (n === 1 ? m.users_role_changed() : m.users_role_changed_for({ who: people(n) })),
       m.users_role_failed(),
     );
   }
@@ -980,16 +1045,13 @@ export class UsersPage {
       icon: 'ti-lock',
       ok: m.users_lock(),
       danger: true,
-      run: () => void this.#setStatus(list, 'locked', m.users_locked({ who }), true),
+      run: () => void this.#setStatus(list, 'locked', true),
     });
   }
 
   bulkUnlock(): void {
     const list = this.chosen.filter((u) => u.status === 'locked');
-    const [one] = list;
-    if (!one) return;
-    const who = list.length === 1 ? displayName(one) : people(list.length);
-    void this.#setStatus(list, 'active', m.users_unlocked({ who }), true);
+    if (list.length) void this.#setStatus(list, 'active', true);
   }
 
   /** Remove the selection or revoke invitations after confirmation. */
@@ -1018,7 +1080,7 @@ export class UsersPage {
           change,
           { action: 'remove', ids },
           // The selection bar always says "removed", for a single invitation with the address.
-          (n) => m.users_removed({ who: single ? who : people(n) }),
+          (changed) => m.users_removed({ who: whoOf(list, changed) }),
           m.error_act(),
           restore,
         );
@@ -1243,7 +1305,9 @@ function expiryOf(u: ListedUser): number | null {
 
 function sendNoteOf(p: UsersPage, u: ListedUser, sendErr: boolean, expired: boolean, now: number): string {
   if (u.status !== 'invited') return '';
-  if (expired && p.sendFail !== u.id) {
+  // A failed "Resend" leaves an expired invitation expired: its link no longer works, "Extend" does.
+  if (expired && p.sendFail === u.id) return m.users_note_resend_failed_expired();
+  if (expired) {
     if (u.requested_at) {
       const when = ago(Date.parse(u.requested_at) || now, now);
       return p.hasMail ? m.users_note_requested({ ago: when }) : m.users_note_requested_off({ ago: when });
@@ -1368,11 +1432,13 @@ function rowValues(p: UsersPage, u: ListedUser, ctx: UsersContext, now: number):
 
 function inviteResult(p: UsersPage): InviteResultValues {
   const r = p.result;
-  // Rows disappear after a successful resend, revocation or acceptance.
-  const open = r
-    ? r.ids.map((id) => p.rows.find((u) => u.id === id)).filter((u) => u?.status === 'invited' && !u.mail_sent_at)
-    : [];
-  const failed = r?.ids.length ?? 0;
+  // Rows disappear after a successful resend, revocation or acceptance; until a list has loaded since,
+  // the invitations from `POST invites` stand for themselves.
+  const open = (r?.invites ?? []).filter((i) => {
+    const u = p.rows.find((x) => x.id === i.id);
+    return u ? u.status === 'invited' && !u.mail_sent_at : !r?.listed;
+  });
+  const failed = r?.invites.length ?? 0;
   const sent = r ? r.n - failed : 0;
   const one = failed === 1;
   let title = '';
@@ -1397,7 +1463,7 @@ function inviteResult(p: UsersPage): InviteResultValues {
     icon: r?.off ? 'ti-mail-off' : 'ti-alert-triangle',
     title,
     text,
-    rows: open.flatMap((u) => (u ? [{ id: u.id, email: u.email, copy: () => void p.copyLink(u) }] : [])),
+    rows: open.map((i) => ({ id: i.id, email: i.email, copy: () => void p.copyLink(i) })),
     close: () => p.closeResult(),
   };
 }

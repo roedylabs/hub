@@ -9,7 +9,8 @@
 export function focusback(node: HTMLElement, selector: string): { destroy: () => void } {
   // When the box goes away it is already detached; the surrounding element stays.
   const scope = node.parentElement;
-  let inside = false;
+  // Focus already inside when the action attaches (e.g. moved there in the same update) counts too.
+  let inside = node.contains(document.activeElement);
   const into = () => (inside = true);
   const out = () => {
     // Removing the box may blur it too; only a focus that really moved counts.

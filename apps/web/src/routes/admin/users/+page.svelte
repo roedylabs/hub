@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
   import { scrollbar } from '#lib/actions/scrollbar.ts';
+  import { focusback } from '#lib/actions/focusback.ts';
   import { radiogroup } from '#lib/actions/radiogroup.ts';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -183,7 +184,8 @@
     {/if}
 
     {#if v.inviteOpen}
-      <div class="invite" class:mobile={isMobile}>
+      <!-- Closing it (Escape, "Cancel", sent) removes the focused control: focus goes back to "Invite". -->
+      <div class="invite" class:mobile={isMobile} use:focusback={'.invite-btn, .invite-round'}>
         <div class="invite-title">{m.users_invite_title()}</div>
         <div class="invite-hint">
           {isMobile ? m.users_invite_hint_mobile() : v.uHasMail ? m.users_invite_hint() : m.users_invite_hint_no_mail()}

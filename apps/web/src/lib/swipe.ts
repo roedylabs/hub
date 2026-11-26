@@ -75,7 +75,7 @@ const EDITABLE = 'input,textarea,select,[contenteditable="true"],[draggable="tru
  * bubbling order) is asked first and the first that takes the movement wins
  * (one `gDecide` for all gestures).
  */
-let pending: { down: PointerEvent; candidates: Steps[] } | null = null;
+let pending: { down: PointerEvent; candidates: Steps[]; drop: (steps: Steps) => void } | null = null;
 
 /** May a gesture start at this place (`onGDown`)? Also while an inner gesture still waits for the decision on the same pointer. */
 export function canStart(e: PointerEvent): boolean {
@@ -107,15 +107,21 @@ function swallowClick(): void {
  * Tracks the pointer from `down` across the window until release (`onGDown`,
  * `onGMove`, `onGUp`). A further call for the same `down` (an outer element)
  * only adds its steps as a candidate for the decision.
+ *
+ * Returns the cancellation for an element that goes away during the gesture:
+ * its steps leave the decision, and if the gesture is its own (or nobody else
+ * waits any more) the tracking ends without `end` and without swallowing the
+ * next click.
  */
-export function follow(down: PointerEvent, steps: Steps): void {
+export function follow(down: PointerEvent, steps: Steps): () => void {
   if (tracking && pending?.down === down) {
     pending.candidates.push(steps);
-    return;
+    const { drop } = pending;
+    return () => drop(steps);
   }
   tracking = true;
   const candidates = [steps];
-  pending = { down, candidates };
+  let done = false;
   const id = down.pointerId;
   let x0 = down.clientX;
   let y0 = down.clientY;
@@ -124,6 +130,7 @@ export function follow(down: PointerEvent, steps: Steps): void {
   const root = document.documentElement.style;
 
   const stop = () => {
+    done = true;
     tracking = false;
     pending = null;
     window.removeEventListener('pointermove', onMove);
@@ -170,9 +177,22 @@ export function follow(down: PointerEvent, steps: Steps): void {
     const [vx, vy] = cancelled ? [0, 0] : velocity(points, e.timeStamp);
     steps.end(vx, vy, cancelled);
   };
+  const drop = (gone: Steps) => {
+    if (done) return;
+    if (decided) {
+      if (steps === gone) stop();
+      return;
+    }
+    const i = candidates.indexOf(gone);
+    if (i >= 0) candidates.splice(i, 1);
+    if (!candidates.length) stop();
+  };
+  pending = { down, candidates, drop };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
+  const own = steps;
+  return () => drop(own);
 }
 
 /** Curves for springing back and sliding out; a sheet slides down with `SHEET_OUT`. */
@@ -296,6 +316,10 @@ export function dragSheet(get: () => SheetDrag | null): Attachment<HTMLElement> 
     let resetTimer: ReturnType<typeof setTimeout> | undefined;
     /** Touch that may become this gesture: where it went down, and whether the gesture has taken it. */
     let touch: { x: number; y: number; target: Element; taken: boolean } | null = null;
+    /** Ends the tracking of the current pointer when the attachment goes away during the gesture. */
+    let cancel: (() => void) | null = null;
+    /** Takes the inline styles of a running drag off again (panel and backdrop), `null` without one. */
+    let undo: (() => void) | null = null;
 
     /** Vertical movement the panel takes on touch: anywhere, inside scrolled content only downwards from its top. */
     const owns = (target: Element, dx: number, dy: number): boolean => {
@@ -337,7 +361,7 @@ export function dragSheet(get: () => SheetDrag | null): Attachment<HTMLElement> 
       const own = e.pointerType === 'touch' ? { x: e.clientX, y: e.clientY, target, taken: false } : null;
       touch = own;
 
-      follow(e, {
+      cancel = follow(e, {
         decide: (dx, dy) => {
           if (Math.abs(dx) > Math.abs(dy) || (!mouse && !owns(target, dx, dy))) {
             // Not this gesture: the rest of the touch stays with the browser.
@@ -352,6 +376,8 @@ export function dragSheet(get: () => SheetDrag | null): Attachment<HTMLElement> 
           if (own) own.taken = true;
           clearTimeout(resetTimer);
           scrim = o.scrim === undefined ? el.parentElement : o.scrim;
+          const dragged = scrim;
+          undo = () => resetSheet(el, dragged);
           height = el.offsetHeight;
           el.style.transition = 'none';
           if (scrim) scrim.style.transition = 'none';
@@ -367,6 +393,7 @@ export function dragSheet(get: () => SheetDrag | null): Attachment<HTMLElement> 
           if (scrim) scrim.style.opacity = String(Math.max(0, 1 - Math.max(0, off) / height));
         },
         end: (_vx, vy, cancelled) => {
+          undo = null;
           if (sc && off <= 0) {
             if (!cancelled) fling(sc, -vy);
             resetSheet(el, scrim);
@@ -392,6 +419,9 @@ export function dragSheet(get: () => SheetDrag | null): Attachment<HTMLElement> 
       el.removeEventListener('touchend', onTouchEnd);
       el.removeEventListener('touchcancel', onTouchEnd);
       clearTimeout(resetTimer);
+      // Removed during a gesture (the layer closed another way): stop following the pointer, without closing.
+      cancel?.();
+      undo?.();
     };
   };
 }

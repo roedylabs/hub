@@ -18,8 +18,10 @@
  * toast until the field is changed; the page does not add `https://`.
  *
  * Requests are sequenced: a response of `admin/org` that started before a
- * save (or an earlier `load`) never overwrites the newer state, and nothing
- * writes page state after `dispose`.
+ * save (or an earlier `load`) never overwrites the newer state, also across
+ * page instances (a save that answers after the page was left and reopened
+ * does not replace a newer save's state), and nothing writes page state after
+ * `dispose`.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/org.svelte.ts`) without the
  * deferred save with undo (the hub's toasts only inform) and the link to
@@ -31,6 +33,7 @@ import { failText } from '#lib/errors.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { session, type Org } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
+import { trimWs } from '#lib/trim.ts';
 
 export type OrgKey = keyof Org;
 export type OrgSection = 'firm' | 'support' | 'legal' | 'source';
@@ -80,14 +83,15 @@ function hasHost(value: string): boolean {
 }
 
 /**
- * Error of a field, like `org_error` in the backend (`api::organization`): the value is trimmed, empty is never an
- * error; characters count like Rust `chars()`. Name: over 120 characters `too_long`, control characters `invalid`.
- * Email: over 254 `too_long`, `invalid` without `local@domain` at the first `@` or with whitespace, `?` or control
- * characters. Links: over 2048 `too_long`, `invalid` without `http://` or `https://`, with whitespace or control
- * characters or without a host.
+ * Error of a field, like `org_error` in the backend (`api::organization`): the value is trimmed like Rust
+ * `str::trim` (a U+0085 at the edges goes, one inside is a control character), empty is never an error; characters
+ * count like Rust `chars()`. Name: over 120 characters `too_long`, control characters `invalid`. Email: over 254
+ * `too_long`, `invalid` without `local@domain` at the first `@` or with whitespace, `?` or control characters.
+ * Links: over 2048 `too_long`, `invalid` without `http://` or `https://`, with whitespace or control characters or
+ * without a host.
  */
 export function orgError(key: OrgKey, value: string): OrgError | null {
-  const t = value.trim();
+  const t = trimWs(value);
   if (!t) return null;
   const n = Array.from(t).length;
   const ctl = CONTROL.test(t);
@@ -161,10 +165,10 @@ export function draftOf(org: Org): OrgDraft {
   return Object.fromEntries(ORG_KEYS.map((k) => [k, org[k] ?? ''])) as OrgDraft;
 }
 
-/** Saved form: trimmed, empty means `null` (like the backend). */
+/** Saved form: trimmed like Rust `str::trim`, empty means `null` (like the backend). */
 export function orgOf(draft: OrgDraft): Org {
   const org = { ...NO_ORG };
-  for (const k of ORG_KEYS) org[k] = draft[k].trim() || null;
+  for (const k of ORG_KEYS) org[k] = trimWs(draft[k]) || null;
   return org;
 }
 
@@ -184,6 +188,13 @@ export function applyOrg(org: Org): void {
   if (!config) return;
   session.config = { ...config, org, name: org.name ?? m.app_name() };
 }
+
+/**
+ * Saves across page instances (each opening creates a new `OrgPage`): numbered when they start; a response only
+ * goes into the session if no later save has been taken over. A save that answers after the page was left still
+ * applies if it is the latest, so the session follows the server.
+ */
+const saves = { started: 0, applied: 0 };
 
 export class OrgPage {
   /** Saved state: `org` of `session.config` (until the response of `admin/org` the one from `public/config`). */
@@ -218,10 +229,13 @@ export class OrgPage {
   /** Loads `admin/org`; without a response the state from `public/config` stays. */
   async load(): Promise<void> {
     const seq = ++this.#seq;
+    const started = saves.started;
+    const before = session.config?.org;
     try {
       const org = await api<Org>('GET', 'admin/org');
-      // Left, loaded again or saved in the meantime: the newer state applies.
+      // Left, loaded again or saved in the meantime (also on another page instance): the newer state applies.
       if (seq !== this.#seq || this.#disposed || this.saving) return;
+      if (saves.started !== started || session.config?.org !== before) return;
       applyOrg(org);
     } catch (error) {
       if (seq !== this.#seq || this.#disposed) return;
@@ -271,11 +285,16 @@ export class OrgPage {
     }
     // A load still running started before this save: its response is older.
     this.#seq++;
+    const ticket = ++saves.started;
     this.saving = true;
     try {
       const org = await api<Org>('PUT', 'admin/org', body);
-      // The session state is global: it follows the server even if the page was left.
-      applyOrg(org);
+      // The session state is global: it follows the server even if the page was left, unless a save started later
+      // (on a page opened since) has already been taken over.
+      if (ticket > saves.applied) {
+        saves.applied = ticket;
+        applyOrg(org);
+      }
       // Inputs made during the request stay; the sent ones are saved now.
       const rest: Partial<OrgDraft> = {};
       for (const k of ORG_KEYS) {

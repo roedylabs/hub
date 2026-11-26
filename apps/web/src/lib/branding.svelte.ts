@@ -16,9 +16,11 @@
  *
  * Request sequencing: a load only applies if no save started meanwhile, the
  * session's branding is still the one it started from and the page is still
- * open; reading a file only applies if no later file, "Discard", "Remove",
- * "Reset" or other kind came in between; inputs made while a save runs stay
- * as inputs.
+ * open; a save's response only goes into the session if no save started later
+ * (also on a page opened since) has been taken over; reading a file only
+ * applies if no later file, "Discard", "Remove", "Reset" or other kind came in
+ * between; a save's response only sets or clears the logo error if none of
+ * these came in meanwhile; inputs made while a save runs stay as inputs.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/branding.svelte.ts`) without
  * the app name (the hub's name is the organization's, which also gives the
@@ -253,6 +255,13 @@ function publish(b: Branding): void {
   if (session.config) session.config = { ...session.config, branding: brandingOf(b) };
 }
 
+/**
+ * Saves across page instances (each opening creates a new `BrandingPage`): numbered when they start; a response
+ * only goes into the session if no later save has been taken over. A save that answers after the page was left
+ * still applies if it is the latest.
+ */
+const saves = { started: 0, applied: 0 };
+
 /** Name and details of the saved file, only from `admin/branding`; they apply to the logo under `image`. */
 interface FileInfo {
   image: string | null;
@@ -430,29 +439,39 @@ export class BrandingPage {
     }
     // A load still running would bring back the state before the save.
     this.#seq++;
+    const ticket = ++saves.started;
+    // A later file, "Discard", "Remove", "Reset" or another kind: the logo error then belongs to newer inputs.
+    const read = this.#read;
     this.saving = true;
     try {
       const saved = await api<AdminBranding>('PUT', 'admin/branding', body);
-      this.#accept(saved);
+      // A save started later (on a page opened since) has already been taken over: its state is newer.
+      if (ticket > saves.applied) {
+        saves.applied = ticket;
+        this.#accept(saved);
+      }
       settle();
-      this.error = null;
+      if (read === this.#read) this.error = null;
       ui.toasts.show(m.branding_saved());
     } catch (error) {
-      this.#failed(error);
+      this.#failed(error, read === this.#read);
     } finally {
       this.saving = false;
     }
   }
 
-  /** A failed save: the inputs stay with the bar; logo errors at the logo, all others as the error toast. */
-  #failed(error: unknown): void {
+  /**
+   * A failed save: the inputs stay with the bar; logo errors at the logo, all others as the error toast. `current`:
+   * the logo inputs are still the ones sent.
+   */
+  #failed(error: unknown, current: boolean): void {
     if (lostAccess(error)) {
       ui.toasts.error(failText(error, m.error_act()));
       return;
     }
     const code = imageErrorOf(error);
-    // Page already left: the logo error would not arrive there any more, so as a toast.
-    if (code && !this.#disposed) {
+    // Page already left, or a newer logo chosen meanwhile: the error belongs to neither, so as a toast.
+    if (code && current && !this.#disposed) {
       this.error = imageErrorText(code);
       this.#ctx.scrollTo('logo');
       return;

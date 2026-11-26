@@ -58,6 +58,17 @@ describe('draft and saved form', () => {
     });
   });
 
+  it('trims like the backend (Rust str::trim): U+0085 at the edges goes, inside it is a control character', () => {
+    expect(orgOf({ ...draftOf(ORG0), name: '\u0085New Ltd\u0085', help: '\u0085' })).toMatchObject({
+      name: 'New Ltd',
+      help: null,
+    });
+    expect(orgError('name', '\u0085New Ltd\u0085')).toBeNull();
+    expect(orgError('website', '\u0085https://example.com\u0085')).toBeNull();
+    expect(orgError('email', '\u0085help@example.com\u0085')).toBeNull();
+    expect(orgError('name', 'New\u0085Ltd')).toBe('invalid');
+  });
+
   it('applyOrg sets org and the hub name in the session; without a name "Roedy Hub"', () => {
     applyOrg({ ...ORG0, name: 'New Ltd' });
     expect(session.config?.org.name).toBe('New Ltd');
@@ -370,6 +381,41 @@ describe('OrgPage', () => {
     expect(ui.toast?.error).toBe(true);
     expect(p.draft.website).toBe('https://example.com/other');
     expect(p.errors).toEqual({});
+  });
+
+  it('a late save from a page left meanwhile does not replace a newer save from a page opened since', async () => {
+    const put = later();
+    mockApi({ 'PUT admin/org': [put.reply, { body: { ...ORG0, name: 'Newer Ltd' } }] });
+    const a = new OrgPage(ctx);
+    a.set('name', 'Older Ltd');
+    const first = a.save();
+    a.dispose();
+    const b = new OrgPage(ctx);
+    b.set('name', 'Newer Ltd');
+    await b.save();
+    put.answer({ body: { ...ORG0, name: 'Older Ltd' } });
+    await first;
+    expect(session.config?.org.name).toBe('Newer Ltd');
+    expect(session.appName).toBe('Newer Ltd');
+    expect(b.dirty).toBe(false);
+  });
+
+  it('a load on a page opened since does not overwrite a save that answers after it started', async () => {
+    const put = later();
+    const get = later();
+    mockApi({ 'PUT admin/org': [put.reply], 'GET admin/org': [get.reply] });
+    const a = new OrgPage(ctx);
+    a.set('name', 'Saved Ltd');
+    const saving = a.save();
+    a.dispose();
+    const b = new OrgPage(ctx);
+    const loading = b.load();
+    put.answer({ body: { ...ORG0, name: 'Saved Ltd' } });
+    await saving;
+    // The load may have read the state before the save: the save's response stays.
+    get.answer({ body: ORG0 });
+    await loading;
+    expect(session.config?.org.name).toBe('Saved Ltd');
   });
 
   it('a save that the server answers after the page was left still updates the session', async () => {

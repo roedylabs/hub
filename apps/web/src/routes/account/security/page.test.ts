@@ -2,7 +2,9 @@ import { fireEvent, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { goto } from '$app/navigation';
 import type { MfaOverview } from '#lib/security.svelte.ts';
+import { session } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
+import { sessionOf } from '#lib/test/session.ts';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 
@@ -155,10 +157,15 @@ describe('Security page', () => {
     await fireEvent.input(view.getAllByLabelText('Verification code')[0] as HTMLElement, {
       target: { value: '123456' },
     });
-    await fireEvent.click(view.getByRole('button', { name: 'Add' }));
+    // The button goes with the prompt: the focus moves to the codes, read with their hint.
+    const add = view.getByRole('button', { name: 'Add' });
+    add.focus();
+    await fireEvent.click(add);
     const list = await view.findByRole('list', { name: 'Recovery codes' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(10);
     expect(ui.toast?.text).toBe('Multi-factor authentication turned on');
+    expect(list).toHaveFocus();
+    expect(list).toHaveAccessibleDescription(/They’re only shown once\./);
     await fireEvent.click(view.getByRole('button', { name: 'Done' }));
     expect(view.queryByRole('list', { name: 'Recovery codes' })).toBeNull();
   });
@@ -257,6 +264,27 @@ describe('Security page', () => {
     expect(card).toHaveTextContent('That didn’t work. Please try again.');
     expect(view.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(view.queryByRole('heading', { level: 2 })).toBeNull();
+  });
+
+  it('shows the data of another account signed in by another tab and drops what was open', async () => {
+    const other = [{ ...SESSIONS[0], id: 'o0', device: 'Chrome on Android', device_type: 'mobile' }];
+    const view = renderPage({
+      'GET auth/totp/devices': [{ body: MFA }, { body: NO_MFA }],
+      'GET auth/sessions': [{ body: { sessions: SESSIONS } }, { body: { sessions: other } }],
+      'POST auth/totp/devices/enroll': [{ body: ENROLL }],
+    });
+    await view.findByText('Safari on iPhone');
+    await fireEvent.click(view.getByRole('button', { name: 'Add authenticator app' }));
+    await view.findByText('JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP');
+    await fireEvent.input(view.getAllByLabelText('Current password')[0] as HTMLElement, {
+      target: { value: 'Old-Password1' },
+    });
+    session.user = sessionOf({ id: '01JOTHER', email: 'jordan@example.com', name: 'Jordan Hale' }).user;
+    expect(await view.findByText('Chrome on Android')).toBeInTheDocument();
+    expect(view.queryByText('Safari on iPhone')).toBeNull();
+    expect(view.queryByText('JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP')).toBeNull();
+    expect(view.getByText('No authenticator app set up yet')).toBeInTheDocument();
+    expect(view.getByLabelText('Current password')).toHaveValue('');
   });
 
   it('ignores answers that arrive after the page was left', async () => {

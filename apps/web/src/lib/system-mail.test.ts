@@ -97,6 +97,15 @@ describe('address of the server', () => {
       expect(mailUrlOf(raw as string), raw).toEqual({ error });
   });
 
+  it('trims like the backend (Rust str::trim): U+0085 at the edges goes, whitespace inside stays an error', () => {
+    expect(mailUrlOf('\u0085https://mail.example.com\u0085')).toEqual({ origin: 'https://mail.example.com' });
+    expect(mailUrlOf('\u0085')).toEqual({ error: 'required' });
+    expect(mailUrlOf('https://mail.\u0085example.com')).toEqual({ error: 'invalid' });
+    // Rust keeps the byte order mark, so the backend rejects the address.
+    expect(mailUrlOf('\ufeffhttps://mail.example.com')).toEqual({ error: 'invalid' });
+    expect(normUrl('\u0085https://Mail.Example.com/\u0085')).toBe('https://mail.example.com');
+  });
+
   it('stored form and host', () => {
     expect(normUrl(' https://Mail.Example.com:8443/ ')).toBe('https://mail.example.com:8443');
     expect(normUrl(' mail.example.com ')).toBe('mail.example.com');
@@ -477,6 +486,109 @@ describe('saving', () => {
     expect(scrollTo).toHaveBeenLastCalledWith('sender');
     expect(values(p).mailErr.replyTo).toMatchObject({ bad: true, err: 'Please enter a valid email address.' });
     expect(sent(api.calls)).toEqual(['GET admin/system-mail']);
+  });
+
+  it('required errors follow the draft: a restored address brings the stored secret back', async () => {
+    const { p, api } = await loaded(STORED, {
+      'PUT admin/system-mail': [{ body: { ...STORED, sender_name: 'Example' } }],
+    });
+    p.set('url', 'https://other.example.com');
+    await p.save();
+    expect(p.errors).toEqual({ pass: 'required' });
+    // Back to the stored server: the stored password applies again.
+    p.set('url', 'https://mail.example.com');
+    p.set('name', 'Example');
+    expect(p.errors).toEqual({});
+    await p.save();
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'PUT admin/system-mail']);
+    expect(api.calls[1]?.body).toEqual({ sender_name: 'Example' });
+  });
+
+  it('a hidden field of the other sign-in method does not block saving', async () => {
+    const { p, api } = await loaded(STORED, {
+      'PUT admin/system-mail': [
+        { status: 422, body: { error: 'invalid', fields: { app_password: { code: 'invalid' } } } },
+        { body: { ...STORED, auth: 'token', status: 'ok' } },
+      ],
+    });
+    p.set('url', 'https://other.example.com');
+    await p.save();
+    expect(p.errors).toEqual({ pass: 'required' });
+    p.set('url', 'https://mail.example.com');
+    p.set('pass', 'pw');
+    await p.save();
+    expect(p.errors).toEqual({ pass: 'invalid' });
+    // Token: the password field is hidden, its errors do not count.
+    p.set('auth', 'token');
+    p.set('token', 'tok');
+    expect(p.errors).toEqual({});
+    await p.save();
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'PUT admin/system-mail', 'PUT admin/system-mail']);
+    expect(api.calls[2]?.body).toMatchObject({ auth: 'token', token: 'tok' });
+    expect(api.calls[2]?.body).not.toHaveProperty('app_password');
+  });
+
+  it('a saved connection change that fails its check clears the identities of the previous account', async () => {
+    const { p } = await loaded(STORED, {
+      'PUT admin/system-mail': [
+        {
+          body: {
+            ...STORED,
+            url: 'https://other.example.com',
+            user: 'sender@example.com',
+            status: 'err',
+            reason: 'auth_failed',
+            identities: [],
+          },
+        },
+      ],
+    });
+    expect(values(p).mailFrom).toBe('Example Org <noreply@example.com>');
+    p.set('url', 'https://other.example.com');
+    p.set('user', 'sender@example.com');
+    p.set('pass', 'pw');
+    await p.save();
+    expect(p.identities).toEqual([]);
+    expect(values(p).mailFrom).toBe('sender@example.com');
+  });
+
+  it('a check that started before a save changed the connection is ignored', async () => {
+    const post = later();
+    const { p, api } = await loaded(
+      { ...STORED, status: 'err', reason: 'unreachable' },
+      {
+        'POST admin/system-mail/test': [post.reply],
+        'PUT admin/system-mail': [{ body: { ...STORED, status: 'err', reason: 'auth_failed' } }],
+      },
+    );
+    const testing = p.test();
+    await vi.waitFor(() => expect(sent(api.calls)).toContain('POST admin/system-mail/test'));
+    // While the check of the stored password runs, a wrong new one is saved and fails its check.
+    p.set('pass', 'wrong');
+    await p.save();
+    expect(p.result).toBe('err');
+    post.answer({ body: { identities: IDS, sent: false } });
+    await testing;
+    expect(p.key).toBe('err');
+    expect(values(p).mailSendDis).toBe(true);
+    expect(p.busy).toBe(false);
+  });
+
+  it('a send that fails after a save changed the connection keeps the saved status', async () => {
+    const post = later();
+    const { p, api } = await loaded(STORED, {
+      'POST admin/system-mail/test': [post.reply],
+      'PUT admin/system-mail': [{ body: { ...STORED, checked_at: '2026-11-26T12:00:00Z' } }],
+    });
+    const sending = p.send();
+    await vi.waitFor(() => expect(sent(api.calls)).toContain('POST admin/system-mail/test'));
+    p.set('pass', 'new-pw');
+    await p.save();
+    expect(p.key).toBe('ok');
+    post.answer({ status: 502, body: { error: 'mail_failed', reason: 'auth_failed' } });
+    await sending;
+    expect(p.key).toBe('ok');
+    expect(ui.toast).toMatchObject({ text: 'Sign-in failed. The username or password is incorrect.', error: true });
   });
 
   it('a 422 shows the text at the field while it shows the sent value', async () => {

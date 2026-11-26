@@ -140,7 +140,7 @@ describe('Profile page', () => {
   });
 
   it('deletes the account after the confirmation and opens the sign-in', async () => {
-    const { calls, ...view } = show(ME, { 'DELETE auth/me': [{ status: 204 }] });
+    const { calls, ...view } = show(ME, { 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 204 }] });
     await fireEvent.click(await view.findByRole('button', { name: 'Delete account' }));
     expect(ui.confirm?.word).toBe('DELETE');
     ui.confirm?.run();
@@ -153,8 +153,12 @@ describe('Profile page', () => {
     const other = { ...ME, id: '01JOTHER', display_name: 'Jordan Hale', username: 'jordan' };
     const view = show(ME, { 'GET auth/me': [{ body: other }] });
     expect(await view.findByText('AE')).toBeInTheDocument();
+    await fireEvent.click(view.getByRole('button', { name: 'Delete account' }));
+    expect(ui.confirm).not.toBeNull();
     session.user = sessionOf({ id: '01JOTHER', email: 'jordan@example.com', name: 'Jordan Hale' }).user;
     expect(await view.findByText('JH')).toBeInTheDocument();
+    // The confirmation named the previous account.
+    expect(ui.confirm).toBeNull();
   });
 
   it('shows the field below the row and the bar with two buttons on mobile', async () => {

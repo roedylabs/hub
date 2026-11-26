@@ -4,15 +4,16 @@
   style classes (filter, segment, tile) from `on` and `warn`. Until the first
   response an empty frame the size of the empty state is shown, on failure
   per part the "Loading failed" card (`LoadCard`); further pages load via
-  "Load more entries". Times in the browser's time zone and the UI language.
+  "Load more entries". Times in the browser's time zone and the UI language;
+  "Today" and "Yesterday" move on at midnight while the page stays open.
 
   Taken over from Roedy Mail (`apps/web/src/routes/admin/audit-log/+page.svelte`)
   with the category "Apps" and without Mail's time settings.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { tooltip } from '#lib/actions/tooltip.ts';
-  import { browserTimeZone } from '#lib/audit-time.ts';
+  import { browserTimeZone, untilNextDay } from '#lib/audit-time.ts';
   import { AuditPage, auditValues, type AuditFailure } from '#lib/audit.svelte.ts';
   import Icon from '#lib/components/Icon.svelte';
   import LoadCard from '#lib/components/LoadCard.svelte';
@@ -23,11 +24,18 @@
 
   const p = new AuditPage();
   const tz = browserTimeZone();
-  // `now` lives here so that "Today" and "Yesterday" are right for every new list.
-  const v = $derived(auditValues(p, { now: Date.now(), tz, lang: prefs.lang }));
+  /** Counts up at midnight: `Date.now()` alone does not make the values change. */
+  let day = $state(0);
+  // `now` lives here so that "Today" and "Yesterday" are right for every new list and after midnight.
+  const v = $derived.by(() => {
+    void day;
+    return auditValues(p, { now: Date.now(), tz, lang: prefs.lang });
+  });
   const isMobile = $derived(ui.isMobile);
   const info = $derived(pageOf('/admin/audit-log'));
   let input: HTMLInputElement | undefined = $state();
+  let moreButton: HTMLButtonElement | undefined = $state();
+  let days: HTMLDivElement | undefined = $state();
 
   /** The button disappears with the text; the focus stays in the search. */
   function clear(): void {
@@ -35,9 +43,38 @@
     input?.focus();
   }
 
+  /**
+   * "Load more entries". On the last page the button disappears; if it had the focus (it then falls back to the
+   * page), the focus goes to the first new entry. Whoever has moved on in the meantime keeps their focus.
+   */
+  async function more(): Promise<void> {
+    const button = moreButton;
+    const from = p.entries.length;
+    await v.aMore.onClick();
+    await tick();
+    const first = p.entries[from];
+    if (!first || !button || button.isConnected) return;
+    if (document.activeElement !== null && document.activeElement !== document.body) return;
+    days?.querySelector<HTMLElement>(`[data-entry="${first.id}"]`)?.focus();
+  }
+
   onMount(() => {
     p.open();
-    return () => p.dispose();
+    let timer: ReturnType<typeof setTimeout>;
+    const midnight = () => {
+      timer = setTimeout(
+        () => {
+          day++;
+          midnight();
+        },
+        untilNextDay(Date.now(), tz),
+      );
+    };
+    midnight();
+    return () => {
+      clearTimeout(timer);
+      p.dispose();
+    };
   });
 </script>
 
@@ -89,7 +126,7 @@
     {/each}
   </div>
 
-  <div aria-busy={v.aBusyAttr}>
+  <div aria-busy={v.aBusyAttr} bind:this={days}>
     {#each v.aGroups as g (g.day)}
       <div class="day">
         <h2>{g.label}</h2>
@@ -97,7 +134,7 @@
           {#each g.rows as e (e.id)}
             <div>
               {#if e.sep}<div class="sep"></div>{/if}
-              <div class="entry">
+              <div class="entry" tabindex="-1" data-entry={e.id}>
                 <span class="tile" class:warn={e.warn}><Icon name={e.icon} /></span>
                 <div class="body">
                   <div class="line"><span class="who">{e.who}</span>{e.act}</div>
@@ -123,7 +160,13 @@
     {/if}
     {#if v.aMore.show}
       <div class="more">
-        <button type="button" aria-busy={v.aMore.busy} class:busy={v.aMore.busy} onclick={v.aMore.onClick}>
+        <button
+          bind:this={moreButton}
+          type="button"
+          aria-busy={v.aMore.busy}
+          class:busy={v.aMore.busy}
+          onclick={() => void more()}
+        >
           <Icon name={v.aMore.busy ? 'ti-loader-2' : 'ti-chevron-down'} />{v.aMore.label}
         </button>
       </div>
@@ -504,6 +547,17 @@
   .mobile .entry {
     gap: 12px;
     padding: 10px;
+  }
+
+  /* Target of the focus after the last page (`tabindex="-1"`). */
+  .entry {
+    border-radius: 20px;
+    outline: none;
+  }
+
+  .entry:focus-visible {
+    outline: 2px solid var(--acc);
+    outline-offset: -2px;
   }
 
   .tile {

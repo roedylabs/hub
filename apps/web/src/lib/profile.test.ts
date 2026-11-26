@@ -338,6 +338,33 @@ describe('saving', () => {
     expect(nav.goto).toHaveBeenCalledWith('/login?reauth=1&next=%2Faccount%2Fprofile');
     expect(ui.toast).toBeNull();
   });
+
+  it('an answer after the page was left neither redirects nor shows a toast', async () => {
+    const late = held();
+    const { p } = await loaded({ 'PATCH auth/me': [late.reply] });
+    p.editName();
+    p.setName('Alex Rivera');
+    const saving = p.save();
+    p.dispose();
+    late.release({ status: 403, body: { error: 'reauth_required' } });
+    await saving;
+    expect(nav.goto).not.toHaveBeenCalled();
+    expect(ui.toast).toBeNull();
+  });
+
+  it('a name saved after the page was left only reloads the session’s account', async () => {
+    const late = held();
+    const { p, calls } = await loaded({ 'PATCH auth/me': [late.reply] });
+    p.editName();
+    p.setName('Alex Rivera');
+    const saving = p.save();
+    p.dispose();
+    late.release({ body: { status: 'ok', user: { ...USER, display_name: 'Alex Rivera' } } });
+    await saving;
+    expect(ui.toast).toBeNull();
+    expect(p.me?.display_name).toBe('Alex Example');
+    expect(calls.map((c) => c.path)).toContain('session');
+  });
 });
 
 describe('send confirmation link', () => {
@@ -469,6 +496,27 @@ describe('send confirmation link', () => {
     expect(p.ea).toBeNull();
     expect(p.eaErr).toBeNull();
     expect(rowOf(profileValues(p), 'Email').auth).toBe(false);
+  });
+
+  it('a link sent for an earlier address keeps the prompt of a newer one', async () => {
+    const late = held();
+    const { p } = await asking({
+      'PATCH auth/me': [late.reply, { body: { status: 'reauth_required', user: USER } }],
+    });
+    p.setEaPw('Secret-123');
+    const sending = p.sendLink();
+    p.cancelAuth();
+    p.edit('email');
+    p.setField('email', 'two@example.com');
+    await p.save();
+    expect(p.ea).toEqual({ email: 'two@example.com' });
+    p.setEaPw('Other-456');
+    late.release({ body: { status: 'email_sent', user: USER, email_change: OPEN } });
+    await sending;
+    expect(p.ea).toEqual({ email: 'two@example.com' });
+    expect(p.eaPw).toBe('Other-456');
+    expect(p.me?.email_change).toEqual(OPEN);
+    expect(ui.toast?.text).toBe('Confirmation link sent');
   });
 
   it('reports the discarded change after `email_change_discarded` and reloads the account', async () => {
@@ -606,6 +654,28 @@ describe('confirmation pending', () => {
     expect(ui.toast).toBeNull();
   });
 
+  it('a "Resend link" answer after the page was left shows nothing', async () => {
+    const late = held();
+    const { p } = await loaded({ 'POST auth/me/email/resend': [late.reply] }, PENDING);
+    const resending = p.resend();
+    p.dispose();
+    late.release({ body: { ...OPEN, expires_at: '2026-10-28T12:00:00Z' } });
+    await resending;
+    expect(ui.toast).toBeNull();
+    expect(p.me?.email_change).toEqual(OPEN);
+  });
+
+  it('a failed "Resend link" after the page was left shows nothing', async () => {
+    const late = held();
+    const { p } = await loaded({ 'POST auth/me/email/resend': [late.reply] }, PENDING);
+    const resending = p.resend();
+    p.dispose();
+    late.release({ status: 500, body: {} });
+    await resending;
+    expect(ui.toast).toBeNull();
+    expect(p.pendErr).toBeNull();
+  });
+
   it('"Resend link" without an answer shows the server state and the error toast', async () => {
     const renewed = { ...OPEN, expires_at: '2026-10-28T12:00:00Z' };
     // No response for the POST: `fetch` fails.
@@ -709,11 +779,32 @@ describe('confirmation pending', () => {
     const late = held();
     const { p, calls } = await loaded(
       {
+        'GET auth/me': [{ body: PENDING }],
+        'PATCH auth/me': [{ body: { status: 'reauth_required', user: USER } }, late.reply],
+      },
+      PENDING,
+    );
+    p.edit('email');
+    p.setField('email', 'two@example.com');
+    await p.save();
+    p.setEaPw('Secret-123');
+    const sending = p.sendLink();
+    await vi.waitFor(() => expect(paths(calls)).toHaveLength(3));
+    await p.discardChange();
+    late.release({ body: { status: 'email_sent', user: USER, email_change: { ...OPEN, email: 'two@example.com' } } });
+    await sending;
+    expect(ui.toast?.text).toBe('Confirmation link sent');
+    expect(paths(calls)).not.toContain('DELETE auth/me/email');
+    expect(p.me?.email_change?.email).toBe('two@example.com');
+  });
+
+  it('sends no new link while "Discard change" is running', async () => {
+    const late = held();
+    const { p, calls } = await loaded(
+      {
         'GET auth/me': [late.reply],
-        'PATCH auth/me': [
-          { body: { status: 'reauth_required', user: USER } },
-          { body: { status: 'email_sent', user: USER, email_change: { ...OPEN, email: 'two@example.com' } } },
-        ],
+        'PATCH auth/me': [{ body: { status: 'reauth_required', user: USER } }],
+        'DELETE auth/me/email': [{ status: 204 }],
       },
       PENDING,
     );
@@ -723,13 +814,14 @@ describe('confirmation pending', () => {
     p.setEaPw('Secret-123');
     const discarding = p.discardChange();
     await vi.waitFor(() => expect(paths(calls)).toHaveLength(3));
-    const sending = p.sendLink();
+    expect(profileValues(p).eaBusy).toBe(true);
+    await p.sendLink();
+    expect(paths(calls).filter((c) => c === 'PATCH auth/me')).toHaveLength(1);
     late.release({ body: PENDING });
     await discarding;
-    await sending;
-    expect(ui.toast?.text).toBe('Confirmation link sent');
-    expect(paths(calls)).not.toContain('DELETE auth/me/email');
-    expect(p.me?.email_change?.email).toBe('two@example.com');
+    expect(ui.toast?.text).toBe('Change discarded');
+    expect(p.ea).toEqual({ email: 'two@example.com' });
+    expect(profileValues(p).eaBusy).toBe(false);
   });
 
   it('keeps a name saved while "Discard change" reads `auth/me`', async () => {
@@ -810,7 +902,7 @@ describe('confirmation pending', () => {
 
 describe('delete account', () => {
   it('asks with the confirmation word, then signs out and opens the sign-in', async () => {
-    const { p, calls } = await loaded({ 'DELETE auth/me': [{ status: 204 }] });
+    const { p, calls } = await loaded({ 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 204 }] });
     profileValues(p).del.onClick();
     expect(ui.confirm).toMatchObject({
       title: 'Permanently delete account?',
@@ -823,9 +915,52 @@ describe('delete account', () => {
     ui.confirm?.run();
     expect(profileValues(p).del).toMatchObject({ label: 'Deleting …', dis: true, busy: true });
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/login', { replace: true }));
-    expect(sent(calls).at(-1)).toEqual({ call: 'DELETE auth/me', body: { confirm: 'delete' } });
+    expect(sent(calls).slice(-2)).toEqual([
+      { call: 'GET auth/me', body: undefined },
+      { call: 'DELETE auth/me', body: { confirm: 'delete' } },
+    ]);
     expect(session.user).toBeNull();
     expect(p.deleting).toBe(false);
+  });
+
+  it('closes the confirmation when another tab signs in a different account', async () => {
+    const other = { ...ME, id: '01JOTHER', display_name: 'Jordan Hale', email: 'jordan@example.com' };
+    const { p, calls } = await loaded({ 'GET auth/me': [{ body: other }] });
+    p.deleteAccount();
+    const run = ui.confirm?.run;
+    p.follow('01JOTHER');
+    expect(ui.confirm).toBeNull();
+    // A confirmation that was still open for the previous account deletes nothing.
+    run?.();
+    await vi.waitFor(() => expect(p.me?.id).toBe('01JOTHER'));
+    expect(paths(calls)).toEqual(['GET auth/me', 'GET auth/me']);
+    expect(p.deleting).toBe(false);
+  });
+
+  it('deletes nothing if the session already belongs to another account', async () => {
+    const other = { ...ME, id: '01JOTHER', display_name: 'Jordan Hale', email: 'jordan@example.com' };
+    const { p, calls } = await loaded({ 'GET auth/me': [{ body: other }] });
+    p.deleteAccount();
+    ui.confirm?.run();
+    await vi.waitFor(() =>
+      expect(ui.toast).toMatchObject({
+        text: 'Account not deleted. Another account has since signed in.',
+        error: true,
+      }),
+    );
+    expect(paths(calls)).toEqual(['GET auth/me', 'GET auth/me']);
+    // The session's account reloads (then the layout follows the other account).
+    expect(calls.map((c) => c.path)).toContain('session');
+    expect(p.deleting).toBe(false);
+    expect(nav.goto).not.toHaveBeenCalled();
+  });
+
+  it('closes the confirmation when the page is left', async () => {
+    const { p } = await loaded();
+    p.deleteAccount();
+    expect(ui.confirm).not.toBeNull();
+    p.dispose();
+    expect(ui.confirm).toBeNull();
   });
 
   it('is locked for the only administrator', async () => {
@@ -844,7 +979,7 @@ describe('delete account', () => {
 
   it('locks the button after `last_admin`', async () => {
     const { p } = await loaded(
-      { 'DELETE auth/me': [{ status: 409, body: { error: 'last_admin' } }] },
+      { 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 409, body: { error: 'last_admin' } }] },
       {
         ...ME,
         role: 'admin',
@@ -859,7 +994,10 @@ describe('delete account', () => {
   });
 
   it('leads to a fresh sign-in after `reauth_required`', async () => {
-    const { p } = await loaded({ 'DELETE auth/me': [{ status: 403, body: { error: 'reauth_required' } }] });
+    const { p } = await loaded({
+      'GET auth/me': [{ body: ME }],
+      'DELETE auth/me': [{ status: 403, body: { error: 'reauth_required' } }],
+    });
     p.deleteAccount();
     ui.confirm?.run();
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/login?reauth=1&next=%2Faccount%2Fprofile'));
@@ -868,7 +1006,7 @@ describe('delete account', () => {
   });
 
   it('keeps the account and shows the error toast if deleting fails', async () => {
-    const { p } = await loaded({ 'DELETE auth/me': [{ status: 500, body: {} }] });
+    const { p } = await loaded({ 'GET auth/me': [{ body: ME }], 'DELETE auth/me': [{ status: 500, body: {} }] });
     p.deleteAccount();
     ui.confirm?.run();
     await vi.waitFor(() => expect(ui.toast).toMatchObject({ text: 'That didn’t work. Please try again.' }));

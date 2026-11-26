@@ -277,6 +277,47 @@ describe('Audit log page', () => {
     expect(view.queryByRole('button', { name: 'Load more entries' })).toBeNull();
   });
 
+  it('moves the focus to the first new entry when the last page takes the button away', async () => {
+    const view = renderPage({
+      'GET admin/audit': [{ body: { ...DATA, entries: ENTRIES.slice(0, 3), next: 2 } }],
+      'GET admin/audit?before=2': [{ body: { ...DATA, entries: ENTRIES.slice(3), next: null } }],
+    });
+    const more = await view.findByRole('button', { name: 'Load more entries' });
+    more.focus();
+    await fireEvent.click(more);
+    await vi.waitFor(() => expect(document.activeElement).toBe(row('Robin Lee')));
+    expect(more).not.toBeInTheDocument();
+  });
+
+  it('leaves the focus where the user moved it while the last page loads', async () => {
+    const page = held({ body: { ...DATA, entries: ENTRIES.slice(3), next: null } });
+    const view = renderPage({
+      'GET admin/audit': [{ body: { ...DATA, entries: ENTRIES.slice(0, 3), next: 2 } }],
+      'GET admin/audit?before=2': [page.reply],
+    });
+    const more = await view.findByRole('button', { name: 'Load more entries' });
+    more.focus();
+    await fireEvent.click(more);
+    const search = view.getByRole('textbox', { name: 'Search audit log' });
+    search.focus();
+    page.release();
+    await view.findByText('Robin Lee');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('moves "Today" and "Yesterday" on at midnight', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    // 23:59 in Berlin.
+    vi.setSystemTime(Date.parse('2026-11-05T22:59:00Z'));
+    const view = renderPage();
+    const days = () => view.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    await vi.waitFor(() => expect(days()).toEqual(['Today', 'Yesterday', 'Monday 2 November', 'Retention']));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(days()).toEqual(['Yesterday', 'Wednesday 4 November', 'Monday 2 November', 'Retention']);
+    expect(listCalls(view.calls)).toHaveLength(1);
+  });
+
   it('reports a failed load-more as an error toast; entries and button stay', async () => {
     const view = renderPage({
       'GET admin/audit': [{ body: { ...DATA, entries: ENTRIES.slice(0, 3), next: 2 } }],
@@ -294,7 +335,8 @@ describe('Audit log page', () => {
   it('exports the shown selection as CSV with the local date and shows the new entry', async () => {
     const view = renderPage({
       'GET admin/audit': [{ body: DATA }, { body: DATA }],
-      'POST admin/audit/export': [{ body: 'csv' }],
+      // The file as the server writes it: header and four entries.
+      'POST admin/audit/export': [{ raw: `\u{feff}"Time";"Who"\r\n${'"2026-11-05";"Jordan Hale"\r\n'.repeat(4)}` }],
     });
     await view.findByText('Jordan Hale');
     await fireEvent.click(view.getByRole('button', { name: 'Export as CSV' }));

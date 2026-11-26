@@ -8,7 +8,8 @@ export interface Call {
   headers: Record<string, string>;
 }
 
-type Answer = { status?: number; body?: unknown };
+/** `raw` is sent as it is (e.g. a CSV file), `body` as JSON. */
+type Answer = { status?: number; body?: unknown; raw?: string };
 type Reply = Answer | ((call: Call) => Answer | Promise<Answer>);
 
 /**
@@ -33,7 +34,9 @@ export function mockApi(routes: Record<string, Reply[]>) {
     if (!next) return Promise.reject(new Error(`no response for ${method} ${path}`));
     return Promise.resolve(typeof next === 'function' ? next(call) : next).then(
       (reply) =>
-        new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status ?? 200 }),
+        new Response(reply.raw ?? (reply.body === undefined ? null : JSON.stringify(reply.body)), {
+          status: reply.status ?? 200,
+        }),
     );
   });
   vi.stubGlobal('fetch', fetch);

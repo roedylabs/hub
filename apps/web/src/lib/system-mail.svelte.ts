@@ -50,6 +50,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { session } from '#lib/state/session.svelte.ts';
 import { Loading, ui } from '#lib/state/ui.svelte.ts';
 import { hostOf, mailUrlOf, normUrl } from '#lib/system-mail-url.ts';
+import { trimWs } from '#lib/trim.ts';
 import { waitText } from '#lib/wait.ts';
 
 export type MailAuth = 'password' | 'token';
@@ -183,9 +184,9 @@ export function draftOf(mail: SystemMail): MailDraft {
   };
 }
 
-/** Entered secret of the chosen sign-in method (token trimmed, app password not). */
+/** Entered secret of the chosen sign-in method (token trimmed like Rust `str::trim`, app password not). */
 function secretOf(d: MailDraft): string {
-  return d.auth === 'token' ? d.token.trim() : d.pass;
+  return d.auth === 'token' ? trimWs(d.token) : d.pass;
 }
 
 /**
@@ -193,17 +194,17 @@ function secretOf(d: MailDraft): string {
  * entered secret (empty = the stored one).
  */
 export function connOf(d: MailDraft): string {
-  return JSON.stringify([normUrl(d.url), d.auth, d.auth === 'password' ? d.user.trim() : '', secretOf(d)]);
+  return JSON.stringify([normUrl(d.url), d.auth, d.auth === 'password' ? trimWs(d.user) : '', secretOf(d)]);
 }
 
 /** Fields of the connection for `test` and `PUT`. */
 function connBody(d: MailDraft): Record<string, unknown> {
   const secret = secretOf(d);
   return {
-    url: d.url.trim(),
+    url: trimWs(d.url),
     auth: d.auth,
     // With a token the field is hidden; the backend keeps the stored user.
-    ...(d.auth === 'password' && { user: d.user.trim() }),
+    ...(d.auth === 'password' && { user: trimWs(d.user) }),
     ...(secret !== '' && (d.auth === 'token' ? { token: secret } : { app_password: secret })),
   };
 }
@@ -212,8 +213,8 @@ function connBody(d: MailDraft): Record<string, unknown> {
 function draftBody(d: MailDraft): Record<string, unknown> {
   return {
     ...connBody(d),
-    sender_name: d.name.trim() || null,
-    reply_to: d.replyTo.trim() || null,
+    sender_name: trimWs(d.name) || null,
+    reply_to: trimWs(d.replyTo) || null,
     keep_sent: d.keepSent,
   };
 }
@@ -227,8 +228,10 @@ export function changedBody(d: MailDraft, base: MailDraft): Record<string, unkno
   if ('user' in conn && conn.user !== base.user) body.user = conn.user;
   if ('app_password' in conn) body.app_password = conn.app_password;
   if ('token' in conn) body.token = conn.token;
-  if (d.name.trim() !== base.name) body.sender_name = d.name.trim() || null;
-  if (d.replyTo.trim() !== base.replyTo) body.reply_to = d.replyTo.trim() || null;
+  const name = trimWs(d.name);
+  const reply = trimWs(d.replyTo);
+  if (name !== base.name) body.sender_name = name || null;
+  if (reply !== base.replyTo) body.reply_to = reply || null;
   if (d.keepSent !== base.keepSent) body.keep_sent = d.keepSent;
   return body;
 }
@@ -253,17 +256,17 @@ export function liveErrors(d: MailDraft): MailErrors {
   const out: MailErrors = {};
   const url = mailUrlOf(d.url);
   if ('error' in url && url.error === 'invalid') out.url = 'invalid';
-  const user = d.user.trim();
+  const user = trimWs(d.user);
   if (d.auth === 'password' && user && (bytes(user) > MAIL_MAX.user || SPACE.test(user) || CONTROL.test(user)))
     out.user = 'invalid';
   const secret = secretOf(d);
   if (secret && (bytes(secret) > MAIL_MAX.secret || CONTROL.test(secret)))
     out[d.auth === 'token' ? 'token' : 'pass'] = 'invalid';
-  const name = d.name.trim();
+  const name = trimWs(d.name);
   if (name)
     if (Array.from(name).length > MAIL_MAX.name) out.name = 'too_long';
     else if (CONTROL.test(name) || INVISIBLE.test(name)) out.name = 'invalid';
-  const reply = d.replyTo.trim();
+  const reply = trimWs(d.replyTo);
   if (reply)
     if (Array.from(reply).length > MAIL_MAX.replyTo) out.replyTo = 'too_long';
     else if (!isEmail(reply) || INVISIBLE.test(reply)) out.replyTo = 'invalid';
@@ -276,8 +279,8 @@ export function liveErrors(d: MailDraft): MailErrors {
  */
 export function requiredErrors(d: MailDraft, saved: SystemMail): MailErrors {
   const out: MailErrors = {};
-  if (!d.url.trim()) out.url = 'required';
-  if (d.auth === 'password' && !d.user.trim()) out.user = 'required';
+  if (!trimWs(d.url)) out.url = 'required';
+  if (d.auth === 'password' && !trimWs(d.user)) out.user = 'required';
   if (!secretOf(d) && !storedSecret(d, saved)) out[d.auth === 'token' ? 'token' : 'pass'] = 'required';
   return out;
 }
@@ -310,6 +313,11 @@ export function mailErrorsOf(error: unknown): MailErrors {
     if (code === 'required' || code === 'invalid' || code === 'too_long') out[field] = code;
   }
   return out;
+}
+
+/** Fields of the chosen sign-in method: with a token the username and the app password are hidden. */
+function shownField(field: MailField, auth: MailAuth): boolean {
+  return auth === 'token' ? field !== 'user' && field !== 'pass' : field !== 'token';
 }
 
 /** Section of the first field with an error in page order. */
@@ -430,14 +438,25 @@ export class SystemMailPage {
   conn = $derived(connOf(this.draft));
   /** `PUT` is running ("Saving …" in the bar). */
   saving = $state(false);
-  /** Errors from a 422 of the server or a missing required field on "Save"; a field loses its error with the next input. */
+  /** Errors from a 422 of the server; a field loses its error with the next input. */
   serverErrors = $state.raw<MailErrors>({});
-  /** Error per field: the check in the browser, otherwise the server's. */
+  /**
+   * "Save" found a required field missing: from then on the fields the account needs show their error, derived
+   * from the current draft and the stored account (a restored address brings the stored secret back).
+   */
+  showRequired = $state(false);
+  /**
+   * Error per field of the chosen sign-in method (a hidden field never blocks "Save"): the check in the browser,
+   * then a missing required field, then the server's.
+   */
   errors = $derived.by((): MailErrors => {
-    const live = liveErrors(this.draft);
+    const d = this.draft;
+    const live = liveErrors(d);
+    const required = this.showRequired ? requiredErrors(d, this.saved) : {};
     const out: MailErrors = {};
     for (const k of FIELD_ORDER) {
-      const code = live[k] ?? this.serverErrors[k];
+      if (!shownField(k, d.auth)) continue;
+      const code = live[k] ?? required[k] ?? this.serverErrors[k];
       if (code) out[k] = code;
     }
     return out;
@@ -482,6 +501,11 @@ export class SystemMailPage {
   #inflight: Promise<unknown> | null = null;
   /** Counts saves: only the save that is still the latest clears `#inflight`. */
   #saveId = 0;
+  /**
+   * Counts saves that change the connection: a check that started before one says nothing about the stored
+   * credentials any more (the draft's key can be the same, an empty secret field means "the stored one").
+   */
+  #credSeq = 0;
 
   constructor(scrollTo: (section: MailSection) => void = () => {}) {
     this.#scrollTo = scrollTo;
@@ -493,7 +517,6 @@ export class SystemMailPage {
     try {
       const mail = await this.loading.run(api<SystemMail>('GET', 'admin/system-mail'));
       if (seq !== this.#seq || this.#disposed || this.saving) return;
-      this.identities = mail.identities;
       this.#adopt(mail);
       this.status = 'ready';
       if (mail.status === 'unchecked') void this.test(true);
@@ -512,7 +535,7 @@ export class SystemMailPage {
     return this.load();
   }
 
-  /** Take over the stored state with its status. */
+  /** Take over the stored state with its status and identities (also none: they describe the stored connection). */
   #adopt(view: SystemMail): void {
     this.saved = view;
     const k = connOf(draftOf(view));
@@ -524,7 +547,7 @@ export class SystemMailPage {
     if (view.status === 'ok') this.good = k;
     else if (this.good === k) this.good = null;
     this.checkedAt = view.checked_at ? Date.parse(view.checked_at) : this.checkedAt;
-    if (view.identities.length > 0) this.identities = view.identities;
+    this.identities = view.identities;
   }
 
   set<K extends MailDraftKey>(key: K, value: MailDraft[K]): void {
@@ -542,6 +565,7 @@ export class SystemMailPage {
     if (this.saving) return;
     this.edits = {};
     this.serverErrors = {};
+    this.showRequired = false;
   }
 
   /** Waits for a running save. */
@@ -571,6 +595,7 @@ export class SystemMailPage {
     if (this.busy || this.#disposed) return;
     const d = this.draft;
     const conn = connOf(d);
+    const cred = this.#credSeq;
     const local = precheck(d, this.saved);
     if (local) {
       this.#fail(conn, local);
@@ -583,7 +608,8 @@ export class SystemMailPage {
         ...connBody(d),
         ...this.#identityOf(d),
       });
-      if (this.#disposed) return;
+      // A save changed the connection meanwhile: its own check applies, this result is older.
+      if (this.#disposed || cred !== this.#credSeq) return;
       this.identities = res.identities;
       this.result = 'ok';
       this.errText = '';
@@ -594,6 +620,7 @@ export class SystemMailPage {
     } catch (error) {
       if (this.#disposed) return;
       if (lostAccess(error)) return;
+      if (cred !== this.#credSeq) return;
       // Without a response, a server error or 429 nothing is known about the connection: the status stays. The
       // silent check without a connection reports nothing, "Not checked" stays.
       if (!isCheckError(error)) {
@@ -618,7 +645,7 @@ export class SystemMailPage {
     const same =
       normUrl(d.url) === b.url &&
       d.auth === b.auth &&
-      (d.auth === 'token' ? secretOf(d) === '' : d.user.trim() === b.user);
+      (d.auth === 'token' ? secretOf(d) === '' : trimWs(d.user) === b.user);
     if (id === null || same) return {};
     return this.good === connOf(d) && this.identities.some((i) => i.id === id) ? {} : { identity_id: null };
   }
@@ -631,16 +658,18 @@ export class SystemMailPage {
    */
   async send(): Promise<void> {
     if (this.key !== 'ok' || this.sending) return;
-    const to = (this.to ?? session.user?.email ?? '').trim();
+    const to = trimWs(this.to ?? session.user?.email ?? '');
     if (!isEmail(to)) {
       ui.toasts.show(m.email_to_invalid());
       return;
     }
     this.sending = true;
     let d = this.draft;
+    let cred = this.#credSeq;
     try {
       await this.#settle();
       d = this.draft;
+      cred = this.#credSeq;
       if (this.key !== 'ok' || this.#disposed) return;
       await api('POST', 'admin/system-mail/test', { ...draftBody(d), ...this.#identityOf(d), to });
       if (!this.#disposed) ui.toasts.show(m.email_sent({ to }));
@@ -649,7 +678,9 @@ export class SystemMailPage {
       if (lostAccess(error)) return;
       if (isConnectionError(error)) {
         const text = errorText(error, d);
-        this.#fail(connOf(d), text, text);
+        // A save changed the connection meanwhile: its own check sets the status, only the toast stays.
+        if (cred !== this.#credSeq) ui.toasts.error(text);
+        else this.#fail(connOf(d), text, text);
       } else if (error instanceof ApiError && error.code === 'mail_failed') {
         ui.toasts.error(m.email_send_failed({ to }));
       } else if (error instanceof ApiError && fieldNames(error).includes('to')) {
@@ -684,7 +715,7 @@ export class SystemMailPage {
     const required = requiredErrors(d, this.saved);
     const bad = firstBadSection({ ...required, ...this.errors });
     if (bad) {
-      this.serverErrors = { ...this.serverErrors, ...required };
+      if (Object.keys(required).length > 0) this.showRequired = true;
       ui.toasts.show(m.email_check());
       this.#scrollTo(bad);
       return;
@@ -714,6 +745,7 @@ export class SystemMailPage {
   async #put(body: Record<string, unknown>, d: MailDraft): Promise<void> {
     const check = touchesConnection(body);
     if (check) {
+      this.#credSeq++;
       this.checks++;
       this.rot += 720;
     }
@@ -729,6 +761,7 @@ export class SystemMailPage {
       this.#adopt(view);
       this.edits = rest;
       this.serverErrors = {};
+      this.showRequired = false;
       if (check && view.status === 'err') ui.toasts.error(m.email_saved_conn_failed());
       else ui.toasts.show(m.email_saved());
     } catch (error) {
@@ -817,8 +850,8 @@ export interface SystemMailContext {
 
 /** Sender of the preview: sender name or name of the identity with its address. */
 function fromOf(name: string, id: MailIdentity | undefined, user: string): string {
-  const shown = name.trim() || id?.name || '';
-  const email = id?.email ?? (isEmail(user.trim()) ? user.trim() : '');
+  const shown = trimWs(name) || id?.name || '';
+  const email = id?.email ?? (isEmail(trimWs(user)) ? trimWs(user) : '');
   if (!email) return shown;
   return shown ? `${shown} <${email}>` : email;
 }
@@ -860,7 +893,7 @@ export function systemMailValues(p: SystemMailPage, now: number | undefined, ctx
     mailNotOk: !ok,
     mailRows: [
       [m.email_row_session(), origin ? `${origin}/.well-known/jmap` : ''],
-      [m.email_row_account(), token ? m.email_row_token() : d.user.trim()],
+      [m.email_row_account(), token ? m.email_row_token() : trimWs(d.user)],
       [m.email_row_checked(), p.checkedAt === null ? '' : ago(p.checkedAt, now)],
     ].map(([k = '', v = ''], i) => ({ k, v, sep: i > 0 })),
     mailF: d,

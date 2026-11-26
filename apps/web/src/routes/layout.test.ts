@@ -10,8 +10,15 @@ import { sessionOf } from '#lib/test/session.ts';
 import { setPhone } from '#lib/test/signed-in.ts';
 import Layout from './+layout.svelte';
 
-const nav = vi.hoisted(() => ({ goto: vi.fn(() => Promise.resolve()), replace: vi.fn() }));
-vi.mock('$app/navigation', () => ({ goto: nav.goto, afterNavigate: () => {} }));
+const nav = vi.hoisted(() => ({
+  goto: vi.fn(() => Promise.resolve()),
+  replace: vi.fn(),
+  after: [] as ((navigation: unknown) => void)[],
+}));
+vi.mock('$app/navigation', () => ({
+  goto: nav.goto,
+  afterNavigate: (callback: (navigation: unknown) => void) => nav.after.push(callback),
+}));
 vi.mock('$app/state', () => ({ page }));
 
 const CONFIG: PublicConfig = {
@@ -29,6 +36,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   nav.goto.mockClear();
   nav.replace.mockClear();
+  nav.after.length = 0;
+  vi.restoreAllMocks();
   session.config = null;
   session.user = null;
   session.current = null;
@@ -383,5 +392,64 @@ describe('shell of settings and administration (mobile)', () => {
     // Another page closes the sheet.
     page.url = new URL('http://localhost/admin/branding');
     await vi.waitFor(() => expect(view.queryByRole('dialog')).toBeNull());
+  });
+});
+
+/** A navigation as SvelteKit reports it to `afterNavigate`: from `from` to the current address. */
+function arrived(from: string, type = 'link', delta?: number) {
+  for (const callback of nav.after)
+    callback({ from: { url: new URL(`http://localhost${from}`) }, to: null, type, delta });
+}
+
+describe('shell across the breakpoint', () => {
+  it('keeps the page mounted when the window crosses between desktop and mobile', async () => {
+    const { view } = await shellAt('/account/profile');
+    const pageHeading = view.getByRole('heading', { level: 1, name: 'Page heading' });
+    expect(view.getByRole('navigation', { name: 'Settings' })).toBeInTheDocument();
+    setPhone(true);
+    // Mobile: "Back" to the area's list instead of header and navigation.
+    await vi.waitFor(() => expect(view.queryByRole('navigation')).toBeNull());
+    expect(view.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    expect(view.getAllByRole('main')).toHaveLength(1);
+    expect(view.getByRole('heading', { level: 1, name: 'Page heading' })).toBe(pageHeading);
+    setPhone(false);
+    await vi.waitFor(() => expect(view.getByRole('navigation', { name: 'Settings' })).toBeInTheDocument());
+    expect(view.getByRole('heading', { level: 1, name: 'Page heading' })).toBe(pageHeading);
+  });
+});
+
+describe('"Back" of the shell', () => {
+  it('goes back in the history only to the entry before (without the Navigation API)', async () => {
+    const back = vi.spyOn(history, 'back').mockImplementation(() => {});
+    const { view } = await shellAt('/account/profile', 'admin', true);
+    arrived('/account');
+    await fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(back).toHaveBeenCalledOnce();
+    // `/` → `/account/profile` → `/account`, then browser Back: `/account` now lies ahead, not before.
+    nav.goto.mockClear();
+    arrived('/account', 'popstate', -1);
+    await fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(back).toHaveBeenCalledOnce();
+    expect(nav.goto).toHaveBeenLastCalledWith('/account');
+  });
+
+  it('checks the entry before with the Navigation API', async () => {
+    const back = vi.spyOn(history, 'back').mockImplementation(() => {});
+    const entries = (...paths: string[]) => paths.map((p) => ({ url: `http://localhost${p}` }));
+    const navigation = {
+      canGoBack: true,
+      currentEntry: { index: 1 },
+      entries: () => entries('/', '/account/profile', '/account'),
+    };
+    vi.stubGlobal('navigation', navigation);
+    const { view } = await shellAt('/account/profile', 'admin', true);
+    arrived('/account', 'popstate', -1);
+    await fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(back).not.toHaveBeenCalled();
+    expect(nav.goto).toHaveBeenLastCalledWith('/account');
+    navigation.currentEntry = { index: 2 };
+    navigation.entries = () => entries('/', '/account', '/account/profile');
+    await fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(back).toHaveBeenCalledOnce();
   });
 });

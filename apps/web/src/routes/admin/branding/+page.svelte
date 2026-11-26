@@ -16,7 +16,7 @@
   import { radiogroup } from '#lib/actions/radiogroup.ts';
   import { tooltip } from '#lib/actions/tooltip.ts';
   import type { SegOption, Toggle } from '#lib/appearance.ts';
-  import { BrandingPage, MAX_LETTER, brandingValues, type BrandingSection } from '#lib/branding.svelte.ts';
+  import { BrandingPage, brandingValues, type BrandingSection } from '#lib/branding.svelte.ts';
   import DirtyBar from '#lib/components/DirtyBar.svelte';
   import Icon from '#lib/components/Icon.svelte';
   import Logo from '#lib/components/Logo.svelte';
@@ -31,6 +31,8 @@
 
   let root: HTMLElement | undefined = $state();
   let fileInput: HTMLInputElement | undefined = $state();
+  /** Image area (drop zone or file card with Replace and Remove). */
+  let imgPick: HTMLElement | undefined = $state();
   const ctx = {
     scrollTo: (section: BrandingSection) => scrollToSection(root, section, prefs.motion),
   };
@@ -78,6 +80,33 @@
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
   }
+
+  /**
+   * Initial (`onBrLetter`): the model limits it to two characters (code points, so `A😀` fits; a native `maxlength`
+   * counts UTF-16 units and would block it); the field then shows the limited value again.
+   */
+  function onLetter(e: Event & { currentTarget: HTMLInputElement }): void {
+    const el = e.currentTarget;
+    v.onBrLetter(el.value);
+    if (el.value !== v.brLetter) el.value = v.brLetter;
+  }
+
+  /**
+   * Remove and the first upload swap the drop zone and the file card: if the focus was in there and went with the
+   * removed control, it moves to the new Upload or Replace button; a focus moved elsewhere stays.
+   */
+  const hasImg = $derived(v.brHasImg);
+  let imgFocused = false;
+  $effect.pre(() => {
+    void hasImg;
+    imgFocused = !!imgPick && imgPick.contains(document.activeElement);
+  });
+  $effect(() => {
+    void hasImg;
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (imgFocused && lost) imgPick?.querySelector<HTMLButtonElement>('button')?.focus();
+    imgFocused = false;
+  });
 
   onMount(() => {
     void p.load();
@@ -192,10 +221,9 @@
             type="text"
             class="text letter"
             value={v.brLetter}
-            maxlength={MAX_LETTER}
             placeholder={v.brLetterPh}
             aria-label={m.branding_letter()}
-            oninput={(e) => v.onBrLetter(e.currentTarget.value)}
+            oninput={onLetter}
           />
         </div>
       {/if}
@@ -223,7 +251,7 @@
       {/if}
 
       {#if v.brIsImg}
-        <div class="pick">
+        <div class="pick" bind:this={imgPick}>
           <div class="label">{m.branding_image()}</div>
           <div class="desc">{m.branding_image_desc()}</div>
           {#if v.brNoImg}
@@ -484,10 +512,7 @@
     width: 40px;
     height: 40px;
     border-radius: 14px;
-    /* Fixed shadow (logo tile) */
-    box-shadow:
-      inset 0 -3px 0 rgba(0, 0, 0, 0.08),
-      var(--sh1);
+    box-shadow: var(--sh-edge), var(--sh1);
     transition:
       transform var(--dur, 220ms) cubic-bezier(0.3, 1.5, 0.5, 1),
       background-color var(--dur, 220ms);
@@ -1135,8 +1160,7 @@
     height: 56px;
     border-radius: 20px;
     background: var(--swatch);
-    /* fixed values (colour dots) */
-    box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.08);
+    box-shadow: var(--sh-edge);
     display: grid;
     place-items: center;
     font-size: 22px;

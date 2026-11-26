@@ -28,9 +28,9 @@
     border-radius: inherit;
     display: grid;
     place-items: center;
-    /* fixed values (the palette's hues, tile edge) */
+    /* fixed values: the hues of the colour palette (`MA_COLORS` of @roedy/tokens), the same in both themes */
     background: conic-gradient(from 210deg, #f5a06e, #f2c46b, #94c48d, #82bbec, #b0a2f2, #f097ad, #f5a06e);
-    box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.08);
+    box-shadow: var(--sh-edge);
   }
 
   .cdot {

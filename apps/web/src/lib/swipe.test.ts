@@ -157,6 +157,40 @@ describe('dragSheet', () => {
     expect(el.style.translate).toBe('');
   });
 
+  it('stops following the pointer when the panel goes away during the gesture, without closing', () => {
+    vi.useFakeTimers();
+    const { scrim, el, closed, off } = sheet();
+    pointer('pointerdown', 100, 100, el);
+    pointer('pointermove', 100, 110);
+    pointer('pointermove', 100, 200);
+    expect(el.style.translate).toBe('0px 90px');
+    expect(document.documentElement.style.userSelect).toBe('none');
+    // The layer closes another way (Escape, another page): the attachment goes away.
+    off?.();
+    expect(document.documentElement.style.userSelect).toBe('');
+    expect(el.style.translate).toBe('');
+    expect(scrim.style.opacity).toBe('');
+    pointer('pointermove', 100, 300);
+    expect(el.style.translate).toBe('');
+    vi.advanceTimersByTime(200);
+    pointer('pointerup', 100, 300);
+    vi.advanceTimersByTime(300);
+    expect(closed).not.toHaveBeenCalled();
+    // The next click on the page that stays is not swallowed.
+    const click = vi.fn();
+    document.body.addEventListener('click', click);
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(click).toHaveBeenCalledOnce();
+    // A new gesture can start.
+    const next = sheet();
+    pointer('pointerdown', 100, 100, next.el);
+    pointer('pointermove', 100, 110);
+    pointer('pointermove', 100, 150);
+    expect(next.el.style.translate).toBe('0px 40px');
+    pointer('pointerup', 100, 150);
+    vi.advanceTimersByTime(500);
+  });
+
   it('goes upwards only as a rubber band', () => {
     vi.useFakeTimers();
     const { scrim, el } = sheet();

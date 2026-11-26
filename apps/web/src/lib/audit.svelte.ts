@@ -8,8 +8,9 @@
  * zone setting) and the UI language (`prefs.lang`). The search only goes out
  * after a typing pause: on the server it reads all rows of the retention
  * period and counts towards a per-administrator limit. The export is `POST`
- * and loads the file via `fetch`; it is itself logged, so the page reloads
- * afterwards, as it does after a changed retention period.
+ * and loads the file via `fetch`; the toast counts the file's lines. It is
+ * itself logged, so the page reloads afterwards, as it does after a changed
+ * retention period.
  *
  * Request sequencing: every list request (first page, further pages) belongs
  * to a generation (`#seq`); a newer `load()` supersedes the running one (its
@@ -104,6 +105,21 @@ export function auditPath(base: string, filter: AuditFilter, q: string, before: 
   if (q) query.push(['q', q]);
   if (before !== null) query.push(['before', String(before)]);
   return query.length ? `${base}?${query.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}` : base;
+}
+
+/**
+ * Entries in the exported CSV: the server ends every line with CRLF and puts every field in quotation marks (`""`
+ * inside), so line ends outside quotation marks count the lines; the first one is the header.
+ */
+export function csvRows(csv: string): number {
+  let lines = 0;
+  let quoted = false;
+  for (let i = 0; i < csv.length; i++) {
+    const c = csv.charCodeAt(i);
+    if (c === 34) quoted = !quoted;
+    else if (c === 10 && !quoted) lines++;
+  }
+  return Math.max(0, lines - 1);
 }
 
 // --- State ------------------------------------------------------------------
@@ -266,17 +282,17 @@ export class AuditPage {
   }
 
   /**
-   * "Export as CSV" (`aExport`). A pending or running search goes first: file and count in the toast apply to the
-   * list that is shown.
+   * "Export as CSV" (`aExport`). A pending or running search goes first: the file applies to the list that is shown.
+   * The count in the toast comes from the file itself: an entry written between list and export is in the file but
+   * not in the list's counts.
    */
   async exportCsv(tz: string): Promise<void> {
     if (this.#exporting) return;
     this.#exporting = true;
     try {
       if (!(await this.#settled())) return;
-      const filter = this.filter;
-      const n = this.counts?.[filter] ?? 0;
-      const blob = await apiBlob('POST', auditPath(EXPORT, filter, this.#sent));
+      const blob = await apiBlob('POST', auditPath(EXPORT, this.filter, this.#sent));
+      const n = csvRows(await blob.text());
       if (!downloadBlob(exportName(Date.now(), tz), blob)) ui.toasts.error(m.error_act());
       else ui.toasts.show(n === 1 ? m.audit_exported_one() : m.audit_exported({ n }));
       // The export is itself an entry.
@@ -321,7 +337,9 @@ export class AuditPage {
       // The change is itself an entry.
       void this.load();
     } catch (error) {
-      if (!this.#disposed) this.keep = before;
+      // After leaving the page neither rollback nor toast nor `lostAccess()`: they would land on the next page.
+      if (this.#disposed) return;
+      this.keep = before;
       lostAccess(error);
       ui.toasts.error(failText(error));
     } finally {
@@ -392,7 +410,8 @@ export interface AuditMore {
   /** Loading more is running: ti-loader-2 and "Loading …", `aria-busy`. */
   busy: boolean;
   label: string;
-  onClick: () => void;
+  /** Settles when the page is appended (or dropped). */
+  onClick: () => Promise<void>;
 }
 
 export interface AuditValues {
@@ -489,7 +508,7 @@ export function auditValues(p: AuditPage, time: AuditTime): AuditValues {
       show: !off && p.next !== null,
       busy: more,
       label: more ? m.audit_more_busy() : m.audit_more(),
-      onClick: () => void p.more(),
+      onClick: () => p.more(),
     },
     aKeepLoad: {
       box: !keepFail,

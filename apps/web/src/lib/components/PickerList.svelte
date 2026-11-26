@@ -2,7 +2,9 @@
   Picker list: on mobile it fills the sheet (values `pick`, built like the
   shell's `mkSel`); on desktop the pages show the same list as a popover.
   Used for changing a user's role, and for country and time zone in language
-  and region settings.
+  and region settings. Keyboard as in the listbox pattern of the WAI-ARIA
+  Authoring Practices: one tab stop on the chosen option (or the first),
+  ↑/↓ move the focus, Home and End jump to the ends; Enter and Space choose.
 
   Taken over from Roedy Mail (`apps/web/src/lib/components/PickerList.svelte`).
 -->
@@ -13,6 +15,27 @@
   import type { PickerListValues } from '#lib/shell.ts';
 
   let { pick, closeSheet }: PickerListValues = $props();
+
+  /** The option with the tab stop: the chosen one, otherwise the first. */
+  const stop = $derived(
+    Math.max(
+      0,
+      pick.opts.findIndex((o) => o.on),
+    ),
+  );
+
+  let list = $state<HTMLElement>();
+
+  /** Arrow keys, Home and End move the focus on from option `i`; choosing stays with Enter, Space and a click. */
+  function onkeydown(event: KeyboardEvent, i: number): void {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !list) return;
+    const opts = list.querySelectorAll<HTMLElement>('[role="option"]');
+    const targets: Record<string, number> = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: opts.length - 1 };
+    const to = targets[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    opts[Math.max(0, Math.min(opts.length - 1, to))]?.focus();
+  }
 </script>
 
 <div class="head">
@@ -21,9 +44,17 @@
     <Icon name="ti-x" />
   </button>
 </div>
-<div role="listbox" aria-label={pick.title} class="opts">
-  {#each pick.opts as o (o.label)}
-    <button role="option" aria-selected={o.on} class="opt" class:on={o.on} onclick={o.onClick}>
+<div role="listbox" aria-label={pick.title} class="opts" bind:this={list}>
+  {#each pick.opts as o, i (o.label)}
+    <button
+      role="option"
+      aria-selected={o.on}
+      tabindex={i === stop ? 0 : -1}
+      class="opt"
+      class:on={o.on}
+      onclick={o.onClick}
+      onkeydown={(event) => onkeydown(event, i)}
+    >
       <span class="text">
         <span class="label" style:font-weight={o.fw}>{o.label}</span>
         {#if o.hasSub}<span class="sub">{o.sub}</span>{/if}

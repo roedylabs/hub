@@ -125,7 +125,8 @@ describe('Branding page', () => {
     const view = await renderPage();
     await fireEvent.click(radio('Type', 'Initials'));
     expect(radio('Type', 'Initials')).toHaveAttribute('aria-checked', 'true');
-    expect(field('Characters')).toHaveAttribute('maxlength', '2');
+    // No native maxlength: it counts UTF-16 units and would block `A😀`; the model limits code points.
+    expect(field('Characters')).not.toHaveAttribute('maxlength');
     expect(field('Characters')).toHaveAttribute('placeholder', 'E');
     expect(
       view.getByText('One or two characters. Leave empty to use the first letter of the organization’s name.'),
@@ -134,6 +135,13 @@ describe('Branding page', () => {
     await fireEvent.input(field('Characters'), { target: { value: 'XY' } });
     expect(within(stage('Header')).getByText('XY')).toBeInTheDocument();
     expect(bar()).not.toBeNull();
+    // Two code points of which one is an emoji; a third character is cut off, also in the field.
+    await fireEvent.input(field('Characters'), { target: { value: 'A😀' } });
+    expect(field('Characters')).toHaveValue('A😀');
+    expect(within(stage('Header')).getByText('A😀')).toBeInTheDocument();
+    await fireEvent.input(field('Characters'), { target: { value: 'A😀B' } });
+    expect(field('Characters')).toHaveValue('A😀');
+    expect(within(stage('Header')).getByText('A😀')).toBeInTheDocument();
 
     await fireEvent.click(radio('Type', 'Icon'));
     expect(view.queryByRole('textbox', { name: 'Characters' })).toBeNull();
@@ -190,19 +198,31 @@ describe('Branding page', () => {
     await fireEvent.click(drop);
     expect(click).toHaveBeenCalledTimes(1);
 
+    drop.focus();
     await fireEvent.change(input, { target: { files: [png()] } });
     await vi.waitFor(() => expect(view.getByText('logo.png')).toBeInTheDocument());
     expect(view.getByText('PNG · 2 KB')).toBeInTheDocument();
     expect(input.value).toBe('');
     expect(view.queryByRole('button', { name: /Drag an image here/ })).toBeNull();
+    // The drop zone had the focus and is gone: the focus goes to Replace.
+    expect(view.getByRole('button', { name: 'Replace' })).toHaveFocus();
     expect(stage('Header').querySelector('img')).toHaveAttribute('src', expect.stringMatching(/^data:image\/png/));
     expect(bar()).not.toBeNull();
 
     await fireEvent.click(view.getByRole('button', { name: 'Replace' }));
     expect(click).toHaveBeenCalledTimes(2);
+    view.getByRole('button', { name: 'Remove image' }).focus();
     await fireEvent.click(view.getByRole('button', { name: 'Remove image' }));
     expect(view.queryByText('logo.png')).toBeNull();
-    expect(view.getByRole('button', { name: /Drag an image here/ })).toBeInTheDocument();
+    // Remove had the focus and is gone: the focus goes to the drop zone.
+    expect(view.getByRole('button', { name: /Drag an image here/ })).toHaveFocus();
+
+    // A focus moved elsewhere stays when the image arrives.
+    radio('Type', 'Image').focus();
+    await fireEvent.change(input, { target: { files: [png()] } });
+    await vi.waitFor(() => expect(view.getByText('logo.png')).toBeInTheDocument());
+    expect(radio('Type', 'Image')).toHaveFocus();
+    await fireEvent.click(view.getByRole('button', { name: 'Remove image' }));
 
     // Without an image "Save" asks for one and leads to the logo.
     await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));

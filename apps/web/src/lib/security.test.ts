@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
@@ -704,6 +704,74 @@ describe('Recovery codes', () => {
     expect(v().rcForm).toBe(false);
   });
 
+  it('drops the codes shown and closes the form when a reload finds multi-factor off', async () => {
+    const { p, v } = await loaded({ 'GET auth/totp/devices': [{ body: MFA }, { body: NO_MFA }] });
+    // Another tab removed the last app: the form was open, the codes still shown.
+    p.openRegen();
+    p.setRcPw('Secret-123');
+    p.codes = CODES;
+    p.setPwOtp('123456');
+    await p.load();
+    const values = v();
+    expect([values.rcOff, values.rcShow, values.rcForm, p.rcForm, p.rcPw, p.pwOtp]).toEqual([
+      true,
+      false,
+      false,
+      false,
+      '',
+      '',
+    ]);
+  });
+
+  it('an earlier regeneration answering last does not replace the newer codes', async () => {
+    const first = later();
+    const set = (stamp: string, codes: string[]): MfaOverview => ({
+      ...MFA,
+      recovery: { total: 10, unused: 10, created_at: stamp },
+      recovery_codes: codes,
+    });
+    const older = set('2026-10-26T11:59:59.100Z', CODES);
+    const newer = set(
+      '2026-10-26T11:59:59.200Z',
+      CODES.map((c) => c.replace('ABCD', 'WXYZ')),
+    );
+    const { p, v } = await loaded({ 'POST auth/recovery-codes': [first.reply, { body: newer }] });
+    p.openRegen();
+    p.setRcPw('Secret-123');
+    p.setRcCode('123456');
+    const a = p.regenerate();
+    // Closed while on its way, opened again and sent once more; the second answers first.
+    p.cancelRegen();
+    p.openRegen();
+    p.setRcPw('Secret-123');
+    p.setRcCode('654321');
+    await p.regenerate();
+    expect(p.codes).toEqual(newer.recovery_codes);
+    first.release({ body: older });
+    await a;
+    expect(p.codes).toEqual(newer.recovery_codes);
+    expect(p.recovery).toEqual(newer.recovery);
+    expect(v().rcShow).toBe(true);
+  });
+
+  it('shows new codes whose form was closed while they were on their way', async () => {
+    const answer = later();
+    const after: MfaOverview = {
+      ...MFA,
+      recovery: { total: 10, unused: 10, created_at: minutesAgo(0) },
+      recovery_codes: CODES,
+    };
+    const { p } = await loaded({ 'POST auth/recovery-codes': [answer.reply] });
+    p.openRegen();
+    p.setRcPw('Secret-123');
+    p.setRcCode('123456');
+    const going = p.regenerate();
+    p.cancelRegen();
+    answer.release({ body: after });
+    await going;
+    expect([p.codes, p.recovery]).toEqual([CODES, after.recovery]);
+  });
+
   it('reloads when the last app was removed in the meantime', async () => {
     const { p, calls } = await loaded({
       'POST auth/recovery-codes': [{ status: 409, body: { error: 'mfa_disabled' } }],
@@ -723,8 +791,24 @@ describe('Recovery codes', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText } });
     // jsdom knows no blob URLs and would navigate when clicking the link.
     const created = vi.fn((blob: Blob) => (blob.size ? 'blob:codes' : ''));
-    Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() });
+    const keys = ['createObjectURL', 'revokeObjectURL'] as const;
+    const before = keys.map((k) => Object.getOwnPropertyDescriptor(URL, k));
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    // Also after a failed assertion: the originals come back for the following tests.
+    onTestFinished(() => {
+      click.mockRestore();
+      keys.forEach((k, i) => {
+        const d = before[i];
+        if (d) Object.defineProperty(URL, k, d);
+        else Reflect.deleteProperty(URL, k);
+      });
+    });
+    for (const [k, value] of [
+      ['createObjectURL', created],
+      ['revokeObjectURL', vi.fn()],
+    ] as const) {
+      Object.defineProperty(URL, k, { value, configurable: true, writable: true });
+    }
     const { p, v } = await loaded();
     p.codes = CODES;
     v().rcCopy();
@@ -734,9 +818,6 @@ describe('Recovery codes', () => {
     expect(ui.toast?.text).toBe('Codes downloaded');
     expect(created).toHaveBeenCalled();
     expect(click).toHaveBeenCalled();
-    click.mockRestore();
-    Reflect.deleteProperty(URL, 'createObjectURL');
-    Reflect.deleteProperty(URL, 'revokeObjectURL');
   });
 });
 

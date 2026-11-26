@@ -54,6 +54,8 @@ const ENTRIES: AuditEntry[] = [
 ];
 const COUNTS = { all: 3, login: 1, users: 1, apps: 1, settings: 0, system: 0 };
 const LIST = { body: { entries: ENTRIES, counts: COUNTS, next: 1 } };
+/** Hits of the search: still a further page. */
+const FOUND = { body: { entries: ENTRIES.slice(0, 1), counts: { ...COUNTS, all: 1, users: 0, apps: 0 }, next: 3 } };
 const KEEP = { body: { days: 90 } };
 const never = () => new Promise<never>(() => {});
 
@@ -72,11 +74,14 @@ const CASES: [string, Show][] = [
   [
     'entries with a search',
     show(
-      () => ({ 'GET admin/audit': [LIST], 'GET admin/audit/retention': [KEEP] }),
+      () => ({ 'GET admin/audit': [LIST], 'GET admin/audit?q=jordan': [FOUND], 'GET admin/audit/retention': [KEEP] }),
       async (view) => {
         await view.findByText('Jordan Hale');
         await view.findByText('Entries older than 90 days are deleted');
         await fireEvent.input(view.getByRole('textbox'), { target: { value: 'jordan' } });
+        // The scan runs on the hits, not while the search is still on its way.
+        await vi.waitFor(() => expect(view.queryByText('Alex Example')).toBeNull());
+        expect(view.getByText('Jordan Hale')).toBeInTheDocument();
       },
     ),
   ],

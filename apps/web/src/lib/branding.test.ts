@@ -480,6 +480,68 @@ describe('BrandingPage', () => {
     expect(ctx.scrollTo).not.toHaveBeenCalled();
   });
 
+  it('a save does not mark or clear the logo error of a file chosen meanwhile', async () => {
+    const put = later({ error: 'invalid', fields: { image: { code: 'svg_text' } } }, 422);
+    mockApi({ 'PUT admin/branding': [put.reply] });
+    const p = new BrandingPage(ctx);
+    await p.readFile(png(10, 'logo.svg', 'image/svg+xml'));
+    const saving = p.save();
+    await p.readFile(png(20, 'other.png'));
+    put.release();
+    await saving;
+    // The rejected SVG is no longer the draft: a toast, no mark at the new image.
+    expect(p.error).toBeNull();
+    expect(ctx.scrollTo).not.toHaveBeenCalled();
+    expect(ui.toast).toMatchObject({ text: 'Text in SVG isn’t supported. Convert the text to paths.', error: true });
+    expect(p.draft.imageName).toBe('other.png');
+
+    const ok = later({ ...SAVED, imageName: 'logo.png', imageMeta: 'PNG · 1 KB' });
+    mockApi({ 'PUT admin/branding': [ok.reply] });
+    const q = new BrandingPage(ctx);
+    await q.readFile(png(10));
+    const again = q.save();
+    await q.readFile(png(10, 'logo.gif', 'image/gif'));
+    ok.release();
+    await again;
+    // The newer file's error stays.
+    expect(q.error).toBe('This format isn’t supported. Use PNG, SVG, JPG, or WebP.');
+  });
+
+  it('an older save that answers late does not replace a newer save from a page opened since', async () => {
+    const slow = later({ ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '', color: 'rose' });
+    mockApi({
+      'PUT admin/branding': [
+        slow.reply,
+        { body: { ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '', color: 'sky' } },
+      ],
+    });
+    const a = new BrandingPage(ctx);
+    a.set('color', 'rose');
+    const first = a.save();
+    a.dispose();
+    const b = new BrandingPage(ctx);
+    b.set('color', 'sky');
+    await b.save();
+    expect(session.branding.color).toBe('sky');
+    slow.release();
+    await first;
+    expect(session.branding.color).toBe('sky');
+    expect(b.draft.color).toBe('sky');
+    expect(b.dirty).toBe(false);
+  });
+
+  it('a save that answers after the page was left still applies if it is the latest', async () => {
+    const slow = later({ ...SAVED, kind: 'standard', image: null, imageName: '', imageMeta: '', color: 'rose' });
+    mockApi({ 'PUT admin/branding': [slow.reply] });
+    const p = new BrandingPage(ctx);
+    p.set('color', 'rose');
+    const saving = p.save();
+    p.dispose();
+    slow.release();
+    await saving;
+    expect(session.branding.color).toBe('rose');
+  });
+
   it('other errors show the error toast and keep the inputs', async () => {
     mockApi({
       'PUT admin/branding': [{ status: 422, body: { error: 'invalid', fields: { letter: { code: 'too_long' } } } }],
