@@ -152,9 +152,9 @@ impl Plate {
     }
 }
 
-/// Branding and organisation. The default: app name "Roedy Hub" on apricot,
-/// no organisation details (then the app name is in the footer); branding and
-/// organisation follow with the administration.
+/// Branding and organisation (`AppState::brand`). The default: app name
+/// "Roedy Hub" on apricot, no organisation details (then the app name is in
+/// the footer).
 #[derive(Debug, Clone)]
 pub struct Brand {
     pub app: String,
@@ -540,6 +540,26 @@ pub struct SecurityRecoveryCodes<'a> {
     pub at: Timestamp,
 }
 
+/// Security notice "Multi-factor reset" (`security_mfa_reset`): to the
+/// person affected after "Reset second factor" in Administration › Users.
+/// Taken over from Roedy Mail.
+#[derive(Debug, Clone, Copy)]
+pub struct SecurityMfaReset<'a> {
+    pub to: &'a str,
+    pub name: &'a str,
+    /// Display name of the administrator; without it "Your
+    /// administrator".
+    pub by: Option<&'a str>,
+    pub at: Timestamp,
+}
+
+/// Values of `security_mfa_reset`.
+struct MfaResetView {
+    by: String,
+    /// "5 November 2026 at 09:26".
+    when: String,
+}
+
 /// Shared values of all security notices; the template reads each variant's
 /// own ones from its input `t`.
 struct SecurityView<'a> {
@@ -688,6 +708,32 @@ impl SecurityRecoveryCodes<'_> {
     }
 }
 
+impl SecurityMfaReset<'_> {
+    pub fn render(&self, ctx: &Context<'_>) -> anyhow::Result<Mail> {
+        let lang = ctx.lang();
+        let subject = t(lang, "mail.security_mfa_reset.subject").to_owned();
+        let f = Frame::new(ctx, &subject, self.to);
+        let v = SecurityView::new(ctx, self.name, "", None, self.at);
+        let t = MfaResetView {
+            by: self
+                .by
+                .map(full_name)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| your_administrator(lang).into()),
+            when: tf(
+                lang,
+                "mail.date_at_time",
+                &[
+                    ("date", &ctx.format.date(self.at)),
+                    ("time", &ctx.format.time(self.at)),
+                ],
+            ),
+        };
+        let pair = security_mfa_reset::pair(lang, &f, &v, &t)?;
+        Ok(assemble("security_mfa_reset", self.to, subject, pair))
+    }
+}
+
 /// Test email from Administration › Email (`system_test`): without a
 /// greeting, because the address is arbitrary.
 #[derive(Debug, Clone, Copy)]
@@ -815,6 +861,12 @@ templates! {
         "de/security_recovery_codes.html", "de/security_recovery_codes.txt"
     ) {
         v: &'a SecurityView<'a>
+    }
+    security_mfa_reset(
+        "en/security_mfa_reset.html", "en/security_mfa_reset.txt",
+        "de/security_mfa_reset.html", "de/security_mfa_reset.txt"
+    ) {
+        v: &'a SecurityView<'a>, t: &'a MfaResetView
     }
     system_test(
         "en/system_test.html", "en/system_test.txt",
@@ -1183,6 +1235,17 @@ pub(super) mod tests {
                 .unwrap(),
             ),
             (
+                "security_mfa_reset",
+                SecurityMfaReset {
+                    to: "max@example.net",
+                    name: "Max Example",
+                    by: Some("Example, Anna"),
+                    at: at(AT),
+                }
+                .render(ctx)
+                .unwrap(),
+            ),
+            (
                 "system_test",
                 SystemTest {
                     to: "max@example.net",
@@ -1285,6 +1348,11 @@ pub(super) mod tests {
                     "security_recovery_codes",
                     net,
                     "New recovery codes generated",
+                ),
+                (
+                    "security_mfa_reset",
+                    net,
+                    "Multi-factor authentication reset",
                 ),
                 ("system_test", net, "Test email from Roedy Hub"),
             ];
@@ -1447,9 +1515,9 @@ pub(super) mod tests {
         );
     }
 
-    /// The sole administrator is sent to the server operator, nobody
-    /// else; after "Reset password" and for further apps it makes no
-    /// difference.
+    /// The sole administrator is sent to the server operator and
+    /// `roedy-hub reset-admin`, nobody else; after "Reset password" and for
+    /// further apps it makes no difference.
     #[test]
     fn sole_admin_only_changes_its_variants() {
         let brand = brand();
@@ -1467,9 +1535,8 @@ pub(super) mod tests {
                 ] {
                     assert_eq!(mail.html.contains("server operator"), sole);
                     assert_eq!(mail.text.contains("server operator"), sole);
-                    assert!(
-                        !mail.text.contains("reset-admin") && !mail.html.contains("reset-admin")
-                    );
+                    assert_eq!(mail.text.contains("roedy-hub reset-admin"), sole);
+                    assert_eq!(mail.html.contains("roedy-hub reset-admin"), sole);
                 }
             }
         });

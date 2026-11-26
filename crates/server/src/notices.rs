@@ -1,6 +1,6 @@
 //! Security notices by mail: "New sign-in", "Password changed",
-//! authenticator app added or removed, recovery code used and new recovery
-//! codes. They always go out – a hijacked session must not be able to switch
+//! authenticator app added or removed, recovery code used, new recovery
+//! codes and a second factor reset by an administrator. They always go out – a hijacked session must not be able to switch
 //! the warning off.
 //!
 //! Callers report an event in the transaction of the change ([`security`]);
@@ -30,8 +30,8 @@ use crate::{
         delivery::{Delivery, Unavailable},
         format::Format,
         templates::{
-            Context, Place, SecurityLogin, SecurityPassword, SecurityRecoveryCodes,
-            SecurityRecoveryUsed, SecurityTotpAdded, SecurityTotpRemoved,
+            Context, Place, SecurityLogin, SecurityMfaReset, SecurityPassword,
+            SecurityRecoveryCodes, SecurityRecoveryUsed, SecurityTotpAdded, SecurityTotpRemoved,
         },
     },
     settings,
@@ -120,6 +120,10 @@ pub enum Security<'a> {
     /// "New recovery codes generated" (`security_recovery_codes`): the
     /// previous ones are no longer valid.
     RecoveryCodesRenewed { at: Whereabouts },
+    /// "Multi-factor reset" (`security_mfa_reset`): an administrator (`by`,
+    /// display name) removed the person's authenticator apps and recovery
+    /// codes; they now sign in with the password alone.
+    MfaReset { by: &'a str },
 }
 
 impl Security<'_> {
@@ -176,6 +180,10 @@ impl Security<'_> {
                 at,
             },
             Self::RecoveryCodesRenewed { at: seen } => Notice::RecoveryCodes { seen, at },
+            Self::MfaReset { by } => Notice::MfaReset {
+                by: by.to_owned(),
+                at,
+            },
         }
     }
 }
@@ -252,6 +260,10 @@ enum Notice {
         seen: Whereabouts,
         at: Timestamp,
     },
+    MfaReset {
+        by: String,
+        at: Timestamp,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +284,7 @@ impl Pending {
             Notice::TotpRemoved { .. } => "security_totp_remove",
             Notice::RecoveryUsed { .. } => "security_recovery_used",
             Notice::RecoveryCodes { .. } => "security_recovery_codes",
+            Notice::MfaReset { .. } => "security_mfa_reset",
         }
     }
 
@@ -356,6 +369,13 @@ impl Pending {
                 name,
                 device: &seen.device.label(lang),
                 place: place(seen),
+                at: *at,
+            }
+            .render(ctx),
+            Notice::MfaReset { by, at } => SecurityMfaReset {
+                to,
+                name,
+                by: Some(by),
                 at: *at,
             }
             .render(ctx),
@@ -478,6 +498,7 @@ mod tests {
                 at: seen(),
             },
             Security::RecoveryCodesRenewed { at: seen() },
+            Security::MfaReset { by: "Anna Example" },
         ] {
             security(&conn, &mut outbox, (&profile).into(), event).unwrap();
         }
@@ -490,12 +511,14 @@ mod tests {
                 "security_totp_remove",
                 "security_recovery_used",
                 "security_recovery_codes",
+                "security_mfa_reset",
             ]
         );
         let texts = texts(&outbox);
         assert!(texts[0].contains("Firefox on Linux"), "{}", texts[0]);
         assert!(texts[0].contains("198.51.x.x"), "{}", texts[0]);
         assert!(texts[4].contains("Unused: 9 of 10"), "{}", texts[4]);
+        assert!(texts[6].contains("Anna Example reset"), "{}", texts[6]);
     }
 
     /// The advice for the sole administrator is decided in the transaction.
@@ -515,6 +538,7 @@ mod tests {
         }
         let texts = texts(&outbox);
         assert!(texts[0].contains("server operator"), "{}", texts[0]);
+        assert!(texts[0].contains("roedy-hub reset-admin"), "{}", texts[0]);
         assert!(!texts[1].contains("server operator"), "{}", texts[1]);
     }
 

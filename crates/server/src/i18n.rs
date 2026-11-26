@@ -6,8 +6,8 @@
 //! A key missing in a language falls back to English, a key missing in
 //! English to the key itself; tests keep both files in step.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/i18n.rs`) without plurals:
-//! the hub's mails need none.
+//! Taken over from Roedy Mail (`crates/server/src/i18n.rs`); plurals as
+//! `<key>.one` and `<key>.other` ([`plural`]).
 
 use std::{
     collections::HashMap,
@@ -64,6 +64,16 @@ fn unknown(key: &str) -> &'static str {
 /// The text of `key` in `lang` with its `{name}` placeholders replaced.
 pub fn tf(lang: Language, key: &str, args: &[(&str, &dyn Display)]) -> String {
     fill(t(lang, key), args)
+}
+
+/// `<key>.one` for 1, otherwise `<key>.other`, with `{count}` set to `n`
+/// besides `args`.
+pub fn plural(lang: Language, key: &str, n: u64, args: &[(&str, &dyn Display)]) -> String {
+    let form = if n == 1 { "one" } else { "other" };
+    let text = t(lang, &format!("{key}.{form}"));
+    let mut all: Vec<(&str, &dyn Display)> = vec![("count", &n)];
+    all.extend_from_slice(args);
+    fill(text, &all)
 }
 
 fn fill(text: &str, args: &[(&str, &dyn Display)]) -> String {
@@ -130,6 +140,16 @@ mod tests {
         assert_eq!(fill("{a} and {b}", &[("a", &1), ("b", &"x")]), "1 and x");
         assert_eq!(fill("{unknown} {", &[]), "{unknown} {");
         assert_eq!(placeholders("{b} {a} {b}"), ["a", "b"]);
+    }
+
+    #[test]
+    fn plurals_pick_the_form_and_fill_the_count() {
+        assert_eq!(plural(Language::English, "duration.days", 1, &[]), "1 day");
+        assert_eq!(
+            plural(Language::English, "duration.days", 30, &[]),
+            "30 days"
+        );
+        assert_eq!(plural(Language::German, "duration.days", 0, &[]), "0 Tage");
     }
 
     #[test]

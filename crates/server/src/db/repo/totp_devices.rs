@@ -165,6 +165,16 @@ pub fn delete(conn: &Connection, user_id: &str, id: &str) -> rusqlite::Result<bo
     Ok(n > 0)
 }
 
+/// Removes all apps of the user, pending ones too ("Reset second factor",
+/// `reset-admin`); returns how many were confirmed.
+pub fn delete_all(conn: &Connection, user_id: &str) -> rusqlite::Result<usize> {
+    let confirmed = conn
+        .prepare("DELETE FROM totp_devices WHERE user_id = ?1 RETURNING confirmed_at IS NOT NULL")?
+        .query_map([user_id], |row| row.get::<_, bool>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(confirmed.into_iter().filter(|c| *c).count())
+}
+
 /// Time steps fit into `i64` until well after the year 3000.
 fn step_value(step: u64) -> i64 {
     i64::try_from(step).unwrap_or(i64::MAX)
@@ -250,5 +260,22 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM totp_devices", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn delete_all_counts_confirmed_apps() {
+        let conn = conn();
+        let max = add(&conn, "max", "max@example.com", Role::User);
+        let eva = add(&conn, "eva", "eva@example.com", Role::User);
+        for (id, user) in [("a", &max), ("b", &eva)] {
+            insert_pending(&conn, id, user, b"x").unwrap();
+            confirm(&conn, id, "Phone", 1).unwrap();
+        }
+        insert_pending(&conn, "p", &max, b"y").unwrap();
+        assert_eq!(delete_all(&conn, &max).unwrap(), 1);
+        assert!(pending_secret(&conn, &max, "p").unwrap().is_none());
+        assert!(!has_confirmed(&conn, &max).unwrap());
+        assert!(has_confirmed(&conn, &eva).unwrap(), "others stay");
+        assert_eq!(delete_all(&conn, &max).unwrap(), 0);
     }
 }

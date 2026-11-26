@@ -1,0 +1,11 @@
+Hi Max,
+
+Anna Example reset multi-factor authentication for your Roedy Hub account on 24 October 2026 at 15:57. You now sign in with just your password. Set up an authenticator app again under Account > Security:
+https://hub.example.com/account/security
+
+Didn’t you ask for this? Change your password and contact your administrator.
+
+--
+Example Ltd · support@example.com
+Legal notice: https://example.com/imprint
+Privacy policy: https://example.com/privacy

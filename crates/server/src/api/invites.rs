@@ -12,7 +12,12 @@
 //!   count; the invitation ends its link for good.
 //! - `POST invites/:id/resend`: the same link; on success a new expiry
 //!   (7 days) and `mail_sent_at`, otherwise 502 `mail_failed` without change.
-//! - `GET invites/:id/link` ("Copy link"), `DELETE invites/:id` (revoke).
+//! - `POST invites/:id/renew` ("Extend"): the same link, new expiry
+//!   (7 days), no mail; `mail_sent_at` stays. As with `resend`, the acting
+//!   administrator becomes the inviter. Also for valid invitations (the page
+//!   only offers it for expired ones).
+//! - `GET invites/:id/link` ("Copy link"), `PATCH invites/:id` (`{role}`),
+//!   `DELETE invites/:id` (revoke).
 //!
 //! Public with the token from the link (`invites/:token`; unknown tokens are
 //! 404 and count towards the per-IP limit like the other links from mails):
@@ -25,11 +30,15 @@
 //!   the first app, the codes and the session; the invitation is gone
 //!   afterwards. 201 with the codes (`null` without an app) and the session
 //!   cookie.
+//! - `POST …/request`: "Request a new invitation" for an expired invitation
+//!   (otherwise 422 `invite_valid`); always 202. At most once per 24 hours
+//!   it is recorded (`requested_at` in the list, `users.invite_request` in
+//!   the audit log).
 //!
 //! Taken over from Roedy Mail (`crates/server/src/api/invites.rs`) without
-//! changing the role, "Extend", "Request a new invitation" and the
-//! notifications in the app; the multi-factor step is optional here. The app
-//! access chosen in the form follows with milestone 5.
+//! the notifications in the app (a request shows in the list instead); the
+//! multi-factor step is optional here. The app access chosen in the form
+//! follows with milestone 5.
 
 use std::{collections::HashSet, net::IpAddr, time::Duration};
 
@@ -49,6 +58,7 @@ use super::{
     ApiError, FieldErrors, JsonBody, auth,
     me::{check_display_name, check_email, check_new_password},
     password::LINK_IP,
+    users::RoleBody,
 };
 use crate::{
     app::AppState,
@@ -92,11 +102,13 @@ const INVITE_CODE: Policy = Policy::lockout(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/invites", get(list).post(create))
-        .route("/invites/{key}", get(show).delete(revoke))
+        .route("/invites/{key}", get(show).patch(update).delete(revoke))
         .route("/invites/{key}/resend", post(resend))
+        .route("/invites/{key}/renew", post(renew))
         .route("/invites/{key}/link", get(link))
         .route("/invites/{key}/totp", post(enroll))
         .route("/invites/{key}/accept", post(accept))
+        .route("/invites/{key}/request", post(request))
 }
 
 fn rejected(code: &'static str) -> ApiError {
@@ -122,6 +134,38 @@ impl Actor<'_> {
             .target(target)
             .details(details)
     }
+}
+
+/// New role of an invitation with audit entry; `false` if it already applied.
+pub(super) fn change_role(
+    conn: &Connection,
+    actor: &Actor<'_>,
+    invite: &Invitation,
+    role: Role,
+) -> anyhow::Result<bool> {
+    if invite.role == role || !invitations::set_role(conn, &invite.id, role)? {
+        return Ok(false);
+    }
+    let details = json!({ "email": invite.email, "role": role.as_str() });
+    audit_log::insert(conn, &actor.entry("users.invite_role", &invite.id, details))?;
+    Ok(true)
+}
+
+/// Revokes the invitation: the link no longer works.
+pub(super) fn revoke_invite(
+    conn: &Connection,
+    actor: &Actor<'_>,
+    invite: &Invitation,
+) -> anyhow::Result<bool> {
+    if !invitations::delete(conn, &invite.id)? {
+        return Ok(false);
+    }
+    let details = json!({ "email": invite.email });
+    audit_log::insert(
+        conn,
+        &actor.entry("users.invite_revoke", &invite.id, details),
+    )?;
+    Ok(true)
 }
 
 /// Whether the acting administrator may still act: their session exists, the
@@ -185,6 +229,7 @@ pub(super) fn invite_json(invite: &Invitation) -> Value {
         "mail_sent_at": invite.mail_sent_at,
         "expires_at": invite.expires_at,
         "expired": invite.expired,
+        "requested_at": invite.requested_at,
     })
 }
 
@@ -514,6 +559,64 @@ async fn link(
     Ok(Json(json!({ "url": url })))
 }
 
+/// "Extend": valid for seven days again, without a mail; the link stays the
+/// same, one already passed on works again.
+async fn renew(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    ip: ClientIp,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let now = one_invite(&state, admin, ip, id, |conn, actor, invite| {
+        let until = invitations::next_expiry(conn)?;
+        if !invitations::renew(conn, &invite.id, &actor.admin.id, &until)? {
+            return Ok(false);
+        }
+        let details = json!({ "email": invite.email });
+        audit_log::insert(
+            conn,
+            &actor.entry("users.invite_renew", &invite.id, details),
+        )?;
+        Ok(true)
+    })
+    .await?;
+    Ok(Json(json!({ "invite": now.as_ref().map(invite_json) })))
+}
+
+/// Changes an invitation (`admin_change`); then returns its state (`None`
+/// after revoking).
+async fn one_invite(
+    state: &AppState,
+    admin: AuthUser,
+    ip: ClientIp,
+    id: String,
+    apply: impl FnOnce(&Connection, &Actor<'_>, &Invitation) -> anyhow::Result<bool> + Send + 'static,
+) -> Result<Option<Invitation>, ApiError> {
+    admin_change(state, admin, ip, move |tx, actor| {
+        let Some(invite) = invitations::get(tx, &id)? else {
+            return Ok(Err(ApiError::NotFound));
+        };
+        apply(tx, actor, &invite)?;
+        Ok(Ok(invitations::get(tx, &id)?))
+    })
+    .await
+}
+
+/// "Role" of an invitation.
+async fn update(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    ip: ClientIp,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<RoleBody>,
+) -> Result<Json<Value>, ApiError> {
+    let now = one_invite(&state, admin, ip, id, move |conn, actor, invite| {
+        change_role(conn, actor, invite, body.role)
+    })
+    .await?;
+    Ok(Json(json!({ "invite": now.as_ref().map(invite_json) })))
+}
+
 /// "Revoke invitation" after confirmation: the link no longer works.
 async fn revoke(
     State(state): State<AppState>,
@@ -521,16 +624,7 @@ async fn revoke(
     ip: ClientIp,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    admin_change(&state, admin, ip, move |tx, actor| {
-        let Some(invite) = invitations::get(tx, &id)? else {
-            return Ok(Err(ApiError::NotFound));
-        };
-        invitations::delete(tx, &invite.id)?;
-        let details = json!({ "email": invite.email });
-        audit_log::insert(tx, &actor.entry("users.invite_revoke", &invite.id, details))?;
-        Ok(Ok(()))
-    })
-    .await?;
+    one_invite(&state, admin, ip, id, revoke_invite).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -593,7 +687,7 @@ async fn enroll(
     }
     let secret = totp::generate_secret()?;
     let sealed = state.secrets.seal(TOTP_PURPOSE, &invite.id, &secret)?;
-    let (base32, uri) = totp::enrollment(&secret, state.issuer(), &invite.email)?;
+    let (base32, uri) = totp::enrollment(&secret, &state.issuer(), &invite.email)?;
     let id = invite.id;
     let stored = db::call(&state.db, move |conn| {
         Ok(invitations::set_totp(conn, &id, &sealed)?)
@@ -801,6 +895,36 @@ async fn accept(
         body,
     )
         .into_response())
+}
+
+/// "Request a new invitation" on the page of an expired invitation: always
+/// 202; it is recorded at most once per 24 hours. Without an account the
+/// audit log names the invited address as the actor.
+async fn request(
+    State(state): State<AppState>,
+    ip: ClientIp,
+    Path(token): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let (_, found) = find(&state, ip, &token).await?;
+    let invite = found.invitation;
+    if !invite.expired {
+        return Err(rejected("invite_valid"));
+    }
+    db::call(&state.db, move |conn| {
+        let tx = conn.transaction()?;
+        if invitations::request(&tx, &invite.id)? {
+            let mut entry = Entry::new(Category::Users, "users.invite_request")
+                .ip(ip.0)
+                .target(&invite.id)
+                .details(json!({ "email": invite.email }));
+            entry.actor_name = Some(invite.email.clone());
+            audit_log::insert(&tx, &entry)?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[cfg(test)]

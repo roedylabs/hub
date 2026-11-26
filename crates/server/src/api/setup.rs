@@ -210,7 +210,7 @@ async fn enroll(
 ) -> Result<Json<Value>, ApiError> {
     let email = enroll_email(body).map_err(FieldErrors::into_error)?;
     let secret = totp::generate_secret()?;
-    let (base32, uri) = totp::enrollment(&secret, state.issuer(), &email)?;
+    let (base32, uri) = totp::enrollment(&secret, &state.issuer(), &email)?;
     let pending = Pending::new(&state.secrets, &email, &secret, recovery::generate()?)?;
     let stored = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;

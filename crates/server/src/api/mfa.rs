@@ -100,7 +100,7 @@ async fn enroll(
     let id = db::new_id()?;
     let secret = totp::generate_secret()?;
     let sealed = state.secrets.seal(totp::SECRET_PURPOSE, &id, &secret)?;
-    let (base32, uri) = totp::enrollment(&secret, state.issuer(), &user.email)?;
+    let (base32, uri) = totp::enrollment(&secret, &state.issuer(), &user.email)?;
     let (row, user_id) = (id.clone(), user.id.clone());
     db::call(&state.db, move |conn| {
         Ok(totp_devices::insert_pending(conn, &row, &user_id, &sealed)?)

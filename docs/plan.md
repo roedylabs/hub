@@ -207,9 +207,26 @@ checks pass in every PR; every PR has tests for what it adds.
       `/invite/…` and `/account/confirm-email/…`. The advice for the sole
       administrator sends them to the server operator; it can name
       `roedy-hub reset-admin` once that command exists (administration).
-   3. [ ] **Administration (API)** – users (lock, roles, reset the second
+   3. [x] **Administration (API)** – users (lock, roles, reset the second
       factor), audit log with texts, branding and organization, cleanup of
-      expired sessions.
+      expired sessions. Done: `users` (list with the invitations, details,
+      role, lock and unlock – ends sessions, links from mails and pending
+      sign-ins –, reset the second factor with the notice
+      `security_mfa_reset`, remove, bulk actions; never the own account,
+      `last_admin` for the sole active administrator), `invites` (role,
+      "Extend", "Request a new invitation" without notifications: it shows
+      as `requested_at`), `admin/audit` (pages, categories, search, counts,
+      CSV export with a limit, retention 30/90/365 days, texts in en and de
+      for every key in `api::audit::texts`), `admin/org` and
+      `admin/branding` (`instance`: the organization's name is `hub.name`,
+      the issuer of authenticator apps and the name in mails; accent colour
+      and `userAccent`), `public/config`, `roedy-hub reset-admin`
+      (`--link` prints a reset link instead of a password; the sole-admin
+      advice in mails names it again) and the jobs `session_cleanup`
+      (hourly) and `audit_retention` (daily) on Mail's small scheduler. No
+      migration was needed. Not taken over: the logo (rendering it for mails
+      needs `resvg` and fonts; upload only would need `usvg`), banner and
+      sign-in texts of Mail's branding.
    4. [ ] **Pages** – setup, sign-in (with `?next=` and `reauth=1`),
       invitation, account and administration in the web app.
 4. **Gateway, pairing, identity** – `crates/contract`, signing keys and

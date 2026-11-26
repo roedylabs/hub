@@ -3,9 +3,7 @@
 //! accepting delete the row; an expired one stays until it is revoked or
 //! resent.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/db/repo/invitations.rs`)
-//! without changing the role, renewing and "Request new invitation", which
-//! can follow with the administration.
+//! Taken over from Roedy Mail (`crates/server/src/db/repo/invitations.rs`).
 
 use rusqlite::{Connection, OptionalExtension as _};
 
@@ -19,6 +17,8 @@ pub const TOKEN_PURPOSE: &str = "invitations.token";
 pub const TOTP_PURPOSE: &str = "invitations.totp";
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+/// "Request a new invitation" counts at most this often.
+const REQUEST_EVERY: &str = "-24 hours";
 
 /// An open invitation as the user list shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,8 @@ pub struct Invitation {
     /// Last successful send; `None` = "Not sent".
     pub mail_sent_at: Option<String>,
     pub expired: bool,
+    /// Last "Request a new invitation" from the invitation page.
+    pub requested_at: Option<String>,
 }
 
 /// Fields of a new invitation; [`insert`] sets the timestamps.
@@ -52,7 +54,7 @@ pub struct NewInvitation<'a> {
 
 const COLUMNS: &str = "i.id, i.email, i.name, i.role, i.invited_by, u.display_name, \
                        i.created_at, i.expires_at, i.mail_sent_at, \
-                       i.expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+                       i.expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), i.requested_at";
 const FROM: &str = "FROM invitations i LEFT JOIN users u ON u.id = i.invited_by";
 
 fn invitation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Invitation> {
@@ -68,6 +70,7 @@ fn invitation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Invitation> {
         expires_at: row.get(7)?,
         mail_sent_at: row.get(8)?,
         expired: row.get(9)?,
+        requested_at: row.get(10)?,
     })
 }
 
@@ -127,7 +130,7 @@ pub fn by_token(conn: &Connection, token_hash: &[u8; 32]) -> rusqlite::Result<Op
         |row| {
             Ok(Found {
                 invitation: invitation(row)?,
-                totp_secret_enc: row.get(10)?,
+                totp_secret_enc: row.get(11)?,
             })
         },
     )
@@ -177,6 +180,39 @@ pub fn mark_sent(
              WHERE id = ?1"
         ),
         (id, by, expires_at),
+    )?;
+    Ok(n == 1)
+}
+
+/// "Extend": valid until `expires_at` again, without a mail; `by` becomes
+/// the inviter like with [`mark_sent`]. `false` if the invitation is gone.
+pub fn renew(conn: &Connection, id: &str, by: &str, expires_at: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        &format!("UPDATE invitations SET expires_at = ?3, {INVITED_BY} WHERE id = ?1"),
+        (id, by, expires_at),
+    )?;
+    Ok(n == 1)
+}
+
+/// New role; `false` if the invitation is gone.
+pub fn set_role(conn: &Connection, id: &str, role: Role) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE invitations SET role = ?2 WHERE id = ?1",
+        (id, role.as_str()),
+    )?;
+    Ok(n == 1)
+}
+
+/// "Request a new invitation": records the request; `false` if the last one
+/// is less than 24 hours old (then nothing is recorded again).
+pub fn request(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        &format!(
+            "UPDATE invitations SET requested_at = {NOW} \
+             WHERE id = ?1 AND (requested_at IS NULL \
+                                OR requested_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2))"
+        ),
+        (id, REQUEST_EVERY),
     )?;
     Ok(n == 1)
 }
@@ -302,5 +338,42 @@ mod tests {
         assert!(delete(&conn, "i1").unwrap());
         assert!(!delete(&conn, "i1").unwrap());
         assert!(!mark_sent(&conn, "i1", &anna, &until).unwrap());
+    }
+
+    #[test]
+    fn role_renew_and_request() {
+        let conn = conn();
+        let anna = add(&conn, "anna", "anna@example.com", Role::Admin);
+        let lukas = add(&conn, "lukas", "lukas@example.com", Role::Admin);
+        insert(&conn, &new("i1", "jonas@example.com", &[1; 32], &anna)).unwrap();
+        assert!(set_role(&conn, "i1", Role::Admin).unwrap());
+        assert_eq!(get(&conn, "i1").unwrap().unwrap().role, Role::Admin);
+        assert!(!set_role(&conn, "missing", Role::Admin).unwrap());
+
+        conn.execute(
+            "UPDATE invitations SET expires_at = '2000-01-01T00:00:00.000Z'",
+            [],
+        )
+        .unwrap();
+        // At most once per 24 hours.
+        assert!(request(&conn, "i1").unwrap());
+        assert!(!request(&conn, "i1").unwrap());
+        let requested = get(&conn, "i1").unwrap().unwrap();
+        assert!(requested.requested_at.is_some());
+        conn.execute(
+            "UPDATE invitations SET requested_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-25 hours')",
+            [],
+        )
+        .unwrap();
+        assert!(request(&conn, "i1").unwrap());
+
+        let until = next_expiry(&conn).unwrap();
+        assert!(renew(&conn, "i1", &lukas, &until).unwrap());
+        let renewed = get(&conn, "i1").unwrap().unwrap();
+        assert!(!renewed.expired);
+        assert_eq!(renewed.expires_at, until);
+        assert_eq!(renewed.invited_by.as_deref(), Some(lukas.as_str()));
+        assert_eq!(renewed.mail_sent_at, None, "no mail");
+        assert!(!renew(&conn, "missing", &lukas, &until).unwrap());
     }
 }
