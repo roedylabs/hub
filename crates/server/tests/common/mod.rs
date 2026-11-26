@@ -30,6 +30,7 @@ use roedy_hub_server::{
             users::{self, NewUser, Role},
         },
     },
+    mailer::system_mail::{self, SystemMail},
     web::static_files::WebAssets,
 };
 use serde_json::{Value, json};
@@ -57,7 +58,8 @@ pub async fn env() -> Env {
         &Config::default(),
         Url::parse("https://app.example.com").unwrap(),
         SecretKey::random().unwrap(),
-    );
+    )
+    .unwrap();
     state.hasher = fast_hasher();
     Env { _tmp: tmp, state }
 }
@@ -101,6 +103,15 @@ impl Env {
         .await
         .unwrap();
         secret
+    }
+
+    /// Stores a sending account on the JMAP server `url` with the fake's
+    /// credentials (`fake_jmap::MAIL_USER`, `MAIL_PASSWORD`).
+    pub async fn configure_mail(&self, url: &str, user: &str, password: &str) {
+        let mail = SystemMail::new(&self.state.secrets, url, user, password, None).unwrap();
+        db::call(&self.state.db, move |conn| system_mail::save(conn, &mail))
+            .await
+            .unwrap();
     }
 
     pub async fn sql<T: Send + 'static>(
@@ -191,6 +202,37 @@ impl Env {
         .unwrap();
         let app: Router =
             router(self.state.clone()).layer(MockConnectInfo(SocketAddr::from((ip, 4711))));
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        Reply {
+            status,
+            headers,
+            body: String::from_utf8(bytes.to_vec()).unwrap(),
+        }
+    }
+
+    /// A modifying request without `X-Requested-With`, as a foreign form
+    /// would send it.
+    pub async fn without_csrf(
+        &self,
+        method: Method,
+        path: &str,
+        body: Value,
+        cookies: &[(&str, &str)],
+    ) -> Reply {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(format!("/api/v1{path}"))
+            .header(header::CONTENT_TYPE, "application/json");
+        if !cookies.is_empty() {
+            let cookie: Vec<String> = cookies.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            builder = builder.header(header::COOKIE, cookie.join("; "));
+        }
+        let request = builder.body(Body::from(body.to_string())).unwrap();
+        let app: Router =
+            router(self.state.clone()).layer(MockConnectInfo(SocketAddr::from((CLIENT, 4711))));
         let response = app.oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();

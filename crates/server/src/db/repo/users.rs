@@ -226,6 +226,42 @@ pub fn set_password(conn: &Connection, id: &str, hash: &str) -> rusqlite::Result
     )
 }
 
+/// Active account with this address (ignoring case), for "Forgot password".
+pub fn find_active_by_email(conn: &Connection, email: &str) -> rusqlite::Result<Option<Profile>> {
+    conn.query_row(
+        &format!("{CREDENTIALS} WHERE email = ?1 AND status = 'active'"),
+        [email.trim()],
+        credentials,
+    )
+    .optional()
+    .map(|found| found.map(|c| c.user))
+}
+
+/// Whether `email` belongs to a user other than `except` (case-insensitive);
+/// with `only_active` only to active ones.
+pub fn email_taken(
+    conn: &Connection,
+    email: &str,
+    except: &str,
+    only_active: bool,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE email = ?1 AND id <> ?2 \
+                        AND (?3 = 0 OR status = 'active'))",
+        (email.trim(), except, only_active),
+        |row| row.get(0),
+    )
+}
+
+/// New email address after the confirmation (`api::email`).
+pub fn set_email(conn: &Connection, id: &str, email: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE users SET email = ?2 WHERE id = ?1",
+        (id, email.trim()),
+    )?;
+    Ok(())
+}
+
 /// Whether the username belongs to a user other than `except`.
 pub fn username_taken(conn: &Connection, username: &str, except: &str) -> rusqlite::Result<bool> {
     conn.query_row(

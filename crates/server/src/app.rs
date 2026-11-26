@@ -36,7 +36,9 @@ use crate::{
     config::{Config, TrustProxy},
     crypto::SecretKey,
     db::{self, Db},
+    locks::KeyedLocks,
     logging::{self, SETUP_TARGET},
+    mailer::{self, Mailer, templates::Brand},
     rate_limit::RateLimiter,
     setup_token,
     web::{
@@ -66,17 +68,32 @@ pub struct AppState {
     pub public_url: Arc<Url>,
     /// Key for secrets in the database.
     pub secrets: Arc<SecretKey>,
+    /// Sending of the system mails (`mailer`).
+    pub mailer: Arc<Mailer>,
+    /// Email address changes run one after another per user (`api::email`).
+    pub email_locks: Arc<KeyedLocks>,
+    /// Requests with the same password reset link run one after another,
+    /// until the link is used up (`api::password`).
+    pub reset_locks: Arc<KeyedLocks>,
     pub background: Background,
 }
 
 /// Tasks that keep running after the response. On shutdown `serve` waits
-/// briefly for them ([`Self::finish`]) before the database closes.
+/// briefly for them ([`Self::finish`]) before the database closes. Tasks can
+/// also be started from the database thread (e.g. the mails of a committed
+/// change): they run on the runtime that created the set.
 #[derive(Clone)]
-pub struct Background(Arc<std::sync::Mutex<Option<JoinSet<()>>>>);
+pub struct Background {
+    tasks: Arc<std::sync::Mutex<Option<JoinSet<()>>>>,
+    runtime: Option<tokio::runtime::Handle>,
+}
 
 impl Default for Background {
     fn default() -> Self {
-        Self(Arc::new(std::sync::Mutex::new(Some(JoinSet::new()))))
+        Self {
+            tasks: Arc::new(std::sync::Mutex::new(Some(JoinSet::new()))),
+            runtime: tokio::runtime::Handle::try_current().ok(),
+        }
     }
 }
 
@@ -84,20 +101,23 @@ impl Background {
     /// Starts `task`; once [`Self::finish`] has begun, the task is dropped
     /// (logged): nothing would wait for it before the database closes.
     pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
-        let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let Some(tasks) = tasks.as_mut() else {
             tracing::warn!("background task dropped during shutdown");
             return;
         };
         // Clean up finished ones so the list does not grow.
         while tasks.try_join_next().is_some() {}
-        tasks.spawn(task);
+        match &self.runtime {
+            Some(runtime) => tasks.spawn_on(task, runtime),
+            None => tasks.spawn(task),
+        };
     }
 
     /// Closes admission, waits at most `within` for running tasks and aborts
     /// the rest.
     pub async fn finish(&self, within: Duration) {
-        let taken = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let taken = self.tasks.lock().unwrap_or_else(|e| e.into_inner()).take();
         let Some(mut tasks) = taken else {
             return;
         };
@@ -117,8 +137,8 @@ impl AppState {
         config: &Config,
         public_url: Url,
         secrets: SecretKey,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             db,
             web,
             hasher: Arc::new(Hasher::default()),
@@ -127,8 +147,11 @@ impl AppState {
             trust_proxy: config.trust_proxy,
             public_url: Arc::new(public_url),
             secrets: Arc::new(secrets),
+            mailer: Arc::new(Mailer::new(mailer::http_client()?)),
+            email_locks: Arc::new(KeyedLocks::default()),
+            reset_locks: Arc::new(KeyedLocks::default()),
             background: Background::default(),
-        }
+        })
     }
 }
 
@@ -136,6 +159,12 @@ impl AppState {
     /// Issuer of the authenticator apps (the name the app shows).
     pub fn issuer(&self) -> &'static str {
         "Roedy Hub"
+    }
+
+    /// Branding of the mails; the default until the administration offers
+    /// branding and organization.
+    pub fn brand(&self) -> Brand {
+        Brand::default()
     }
 }
 
@@ -208,7 +237,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     tracing::info!(source = %key_source, "secret key loaded");
     let db = Db::from(conn);
 
-    let state = AppState::new(db.clone(), web, &config, public_url, secrets);
+    let state = AppState::new(db.clone(), web, &config, public_url, secrets)?;
     let background = state.background.clone();
     let result = async {
         // Placeholder hash before the first request, so that even the first
@@ -390,7 +419,8 @@ pub(crate) mod tests {
             &Config::default(),
             Url::parse("https://app.example.com").unwrap(),
             SecretKey::random().unwrap(),
-        );
+        )
+        .unwrap();
         // Low cost so that tests stay fast.
         state.hasher = Arc::new(password::tests::fast());
         (state, tmp)
@@ -473,6 +503,25 @@ pub(crate) mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(done.load(Ordering::SeqCst), 1, "dropped after shutdown");
         background.finish(Duration::from_secs(5)).await;
+    }
+
+    /// The database thread has no runtime context; its tasks still run.
+    #[tokio::test]
+    async fn background_accepts_tasks_from_other_threads() {
+        let background = Background::default();
+        let (done, finished) = tokio::sync::oneshot::channel();
+        let from = background.clone();
+        std::thread::spawn(move || {
+            from.spawn(async move {
+                let _ = done.send(());
+            });
+        })
+        .join()
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), finished)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

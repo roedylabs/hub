@@ -14,7 +14,9 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use rusqlite::Connection;
 use sha2::{Digest as _, Sha256};
 
+use super::device::Device;
 use crate::{
+    crypto::SecretKey,
     db::repo::{
         sessions,
         users::{self, Profile, Role},
@@ -92,6 +94,12 @@ impl Token {
         well_formed.then(|| Self(value.to_owned()))
     }
 
+    /// The token as text, for links in mails (invitations, "Forgot
+    /// password", email change).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     /// SHA-256 for `sessions.token_hash`.
     pub fn hash(&self) -> [u8; 32] {
         Sha256::digest(self.0.as_bytes()).into()
@@ -143,22 +151,32 @@ pub struct Client<'a> {
     pub lang: Option<Language>,
 }
 
-/// Origin of a request: user agent, client IP and language – for session and
-/// audit log. Built with `api::auth::origin`.
+/// Origin of a request: user agent, client IP, language and the ID of the
+/// device (`auth::device::Device::hash`) – for session, audit log, known
+/// devices and security notices.
 #[derive(Debug, Clone)]
 pub struct Origin {
     pub user_agent: Option<String>,
     pub ip: IpAddr,
     pub lang: Option<Language>,
+    pub device_hash: [u8; 32],
 }
 
 impl Origin {
-    pub fn new(headers: &HeaderMap, ip: IpAddr) -> Self {
+    pub fn new(headers: &HeaderMap, ip: IpAddr, secrets: &SecretKey) -> Self {
+        let user_agent = user_agent(headers);
+        let device_hash = Device::parse(user_agent.as_deref()).hash(secrets, ip);
         Self {
-            user_agent: user_agent(headers),
+            user_agent,
             ip,
             lang: accept_language(headers),
+            device_hash,
         }
+    }
+
+    /// Device from the user agent, for the security notices.
+    pub fn device(&self) -> Device {
+        Device::parse(self.user_agent.as_deref())
     }
 
     pub fn client(&self) -> Client<'_> {
@@ -386,12 +404,14 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("Firefox/140"));
         headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static("de-DE"));
-        let origin = Origin::new(&headers, "198.51.100.1".parse().unwrap());
+        let key = SecretKey::random().unwrap();
+        let origin = Origin::new(&headers, "198.51.100.1".parse().unwrap(), &key);
         assert_eq!(origin.user_agent.as_deref(), Some("Firefox/140"));
         assert_eq!(origin.lang, Some(Language::German));
         let client = origin.client();
         assert_eq!(client.ip, Some("198.51.100.1".parse().unwrap()));
-        let origin = Origin::new(&HeaderMap::new(), "198.51.100.1".parse().unwrap());
-        assert_eq!((origin.user_agent, origin.lang), (None, None));
+        let other = Origin::new(&HeaderMap::new(), "198.51.100.1".parse().unwrap(), &key);
+        assert_ne!(other.device_hash, origin.device_hash, "another browser");
+        assert_eq!((other.user_agent, other.lang), (None, None));
     }
 }

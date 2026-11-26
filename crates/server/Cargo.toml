@@ -17,6 +17,9 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 # Password hashes (`auth::password`): Argon2id as in Roedy Mail.
 argon2 = "0.6.0"
+# Mail templates in templates/ (`mailer::templates`), as in Roedy Mail;
+# without `config`, which would bring in the unmaintained basic-toml.
+askama = { version = "0.16.1", default-features = false, features = ["derive", "std"] }
 axum = "0.8.9"
 # Instance key in Base64 (`crypto`) and the CSP hashes of inline scripts.
 base64 = "0.23.1"
@@ -30,10 +33,20 @@ hmac = "0.13.0"
 # Letters and marks in display names (general category); already comes with
 # url/idna.
 icu_properties = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+# Times in mails in the recipient's time zone (`mailer::format`), as in
+# Roedy Mail. The image (`scratch`) has no time zone database, so it is
+# embedded.
+jiff = { version = "1.0.0", default-features = false, features = ["std", "tzdb-bundle-always"] }
 mimalloc = "0.1.52"
 # Decoding request paths for the embedded web app.
 percent-encoding = "2.3.2"
+# System mails go out over JMAP (`mailer`): rustls with ring instead of
+# aws-lc-rs (cross-compiling without C tools), root certificates from the
+# system, as in Roedy Mail.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+roedy-jmap = { path = "../jmap" }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rust-embed = { version = "8.13.0", features = ["debug-embed", "deterministic-timestamps"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

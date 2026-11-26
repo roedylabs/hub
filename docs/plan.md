@@ -138,7 +138,8 @@ New:
 | Crate | Why |
 |---|---|
 | `hyper`, `hyper-util` (client, http1), `http-body-util` | Proxy client with streaming and upgrades; `hyper` already comes with axum |
-| `roedy-jmap` (copy of Mail's `crates/jmap`) | System mails go out over JMAP from a sending account, as in Mail (decided on 2026-11-26) |
+| `roedy-jmap` (copy of Mail's `crates/jmap`), `reqwest` (rustls without provider), `rustls` (ring) | System mails go out over JMAP from a sending account, as in Mail (decided on 2026-11-26) |
+| `askama`, `jiff` (embedded time zone database) | Same as Mail: mail templates, times in the recipient's time zone |
 | `argon2`, `totp-rs`, `icu_properties` | Same as Mail: password hashes, authenticator apps, letters in display names (`icu_properties` already comes with `url`) |
 | `ulid`, `ring`, `usvg` | Same as Mail: IDs, Ed25519, sanitizing the app icons |
 
@@ -181,15 +182,31 @@ checks pass in every PR; every PR has tests for what it adds.
    *Tests:* API integration tests per flow (as in Mail), rate limits, CSRF,
    `next` open-redirect cases, mail snapshots, component tests, axe.
    Split into four PRs (decided on 2026-11-26):
-   1. [ ] **Auth core (API)** – migration 0002 (authenticator apps, recovery
+   1. [x] **Auth core (API)** – migration 0002 (authenticator apps, recovery
       codes, user settings), setup with mandatory TOTP, sign-in with
       password, TOTP and recovery codes, a fresh sign-in in the same session
       (`auth_time`, the session ID stays), sign-out with `Clear-Site-Data`,
       `GET /api/v1/session`, profile, password change, authenticator apps,
       signed-in devices, settings, deleting the own account.
-   2. [ ] **System mails (API)** – JMAP sending account, templates and
+   2. [x] **System mails (API)** – JMAP sending account, templates and
       snapshots, invitations, password reset, email change, security notices
-      with known devices.
+      with known devices. Done: `crates/jmap` (`roedy-jmap`, Mail's client
+      trimmed to sending), `mailer` (sending account in
+      `app_settings.system_mail` with the JMAP server's address instead of
+      Mail's registry, failure limits, `mail_failed`), askama templates in
+      `crates/server/templates/{en,de}` with snapshots, `notices` (Mail's
+      `events::security` and outbox without notifications in the app),
+      migration 0003 (`known_devices`, `password_resets`, `email_changes`,
+      `invitations`), `admin/system-mail` (get, set, test), `invites`
+      (list, create, resend, copy link, revoke; accept with password and an
+      optional authenticator app), `auth/password/forgot` and
+      `auth/password/reset/:token`, the email change in two steps in
+      `PATCH auth/me` with `auth/email/check|confirm`, resend and discard.
+      Mails use the default time zone (Europe/Berlin) until the settings
+      offer one; their links point to `/login/forgot`, `/login/reset/…`,
+      `/invite/…` and `/account/confirm-email/…`. The advice for the sole
+      administrator sends them to the server operator; it can name
+      `roedy-hub reset-admin` once that command exists (administration).
    3. [ ] **Administration (API)** – users (lock, roles, reset the second
       factor), audit log with texts, branding and organization, cleanup of
       expired sessions.

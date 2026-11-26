@@ -24,6 +24,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "auth",
         sql: include_str!("migrations/0002_auth.sql"),
     },
+    Migration {
+        version: 3,
+        name: "mail",
+        sql: include_str!("migrations/0003_mail.sql"),
+    },
 ];
 
 /// Applies all pending migrations and returns the schema version.
@@ -133,6 +138,10 @@ mod tests {
             [
                 "app_settings",
                 "audit_log",
+                "email_changes",
+                "invitations",
+                "known_devices",
+                "password_resets",
                 "recovery_codes",
                 "schema_migrations",
                 "sessions",
