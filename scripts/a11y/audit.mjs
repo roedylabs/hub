@@ -408,8 +408,12 @@ async function route(page, opts) {
       body: answer.body === undefined ? '' : JSON.stringify(answer.body),
     });
   });
-  // Branding files of the server: none in the audit.
-  await page.route(/\/(branding\/|manifest\.webmanifest)/, (req) => req.fulfill({ status: 404, body: '' }));
+  // Branding files of the server: none in the audit. Matched on the path's start only: Vite serves the page
+  // module of `/admin/branding` as `/src/routes/admin/branding/+page.svelte`, which must still load.
+  await page.route(
+    (url) => /^\/(branding\/|manifest\.webmanifest$)/.test(url.pathname),
+    (req) => req.fulfill({ status: 404, body: '' }),
+  );
 }
 
 async function runAxe(page) {

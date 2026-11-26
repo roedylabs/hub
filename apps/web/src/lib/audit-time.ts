@@ -1,0 +1,87 @@
+/**
+ * Times of the audit log: days and times of the entries and the date of the
+ * export file, in a time zone (the browser's; the hub has no time zone
+ * setting) and the UI language.
+ *
+ * Taken over from Roedy Mail (`dtf`, `dayNumber`, `clock` and `dayLabel` in
+ * `apps/web/src/lib/mail-list.ts`, `formatDate` in `#lib/date.ts`) without
+ * Mail's time format setting, with the year on days of another year.
+ */
+import { intlLocale, type Lang } from '#lib/locale.ts';
+import { m } from '#lib/paraglide/messages.js';
+
+/** Time context of the list: now, time zone (empty = the browser's) and UI language. */
+export interface AuditTime {
+  now: number;
+  /** IANA time zone; empty or unknown = the browser's. */
+  tz: string;
+  lang: Lang;
+}
+
+const DAY = 86_400_000;
+const formats = new Map<string, Intl.DateTimeFormat>();
+
+/** Formatter per language, time zone and options, cached; an unknown zone counts as the browser's. */
+function dtf(time: Pick<AuditTime, 'tz' | 'lang'>, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const locale = intlLocale(time.lang);
+  const key = `${locale}|${time.tz}|${JSON.stringify(options)}`;
+  let f = formats.get(key);
+  if (!f) {
+    try {
+      f = new Intl.DateTimeFormat(locale, { ...options, timeZone: time.tz || undefined });
+    } catch {
+      f = new Intl.DateTimeFormat(locale, options);
+    }
+    formats.set(key, f);
+  }
+  return f;
+}
+
+/** Calendar day of `t` in the time zone as a number (days since 1970). */
+export function dayNumber(t: number, time: Pick<AuditTime, 'tz' | 'lang'>): number {
+  const parts = dtf(time, { year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(t);
+  const n = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value);
+  return Math.round(Date.UTC(n('year'), n('month') - 1, n('day')) / DAY);
+}
+
+function yearOf(t: number, time: Pick<AuditTime, 'tz' | 'lang'>): string {
+  return dtf(time, { year: 'numeric' }).format(t);
+}
+
+/** Time of day in the language ("09:26"). */
+export function clock(t: number, time: Pick<AuditTime, 'tz' | 'lang'>): string {
+  return dtf(time, { hour: '2-digit', minute: '2-digit' }).format(t);
+}
+
+/**
+ * Heading of a day: today, yesterday, otherwise weekday and date ("Monday 2 November"); with the year if it is
+ * not the current one (a retention of one year reaches the same date a year ago).
+ */
+export function dayLabel(t: number, time: AuditTime): string {
+  const k = dayNumber(t, time) - dayNumber(time.now, time);
+  if (k === 0) return m.audit_today();
+  if (k === -1) return m.audit_yesterday();
+  const year = yearOf(t, time) === yearOf(time.now, time) ? {} : { year: 'numeric' as const };
+  return dtf(time, { weekday: 'long', day: 'numeric', month: 'long', ...year }).format(t);
+}
+
+/** Date in the time zone as `YYYY-MM-DD`. */
+export function isoDate(t: number, tz: string): string {
+  const parts = dtf({ tz, lang: 'en' }, { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(t);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+/** File name with the date in the time zone (`audit-log-YYYY-MM-DD.csv`); the server only knows UTC. */
+export function exportName(now: number, tz: string): string {
+  return m.audit_file_name({ date: isoDate(now, tz) });
+}
+
+/** The browser's time zone (the hub has no setting of its own). */
+export function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  } catch {
+    return '';
+  }
+}

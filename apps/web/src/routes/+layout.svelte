@@ -242,6 +242,7 @@
     })),
     langSeg: langChoices(prefs.values.lang, prefs.browserLang, (patch) => prefs.set(patch)),
     openAccountSettings: () => go(resolve('/account/profile')),
+    openAdmin: ui.isMobile && session.isAdmin ? () => go(resolve(FIRST_PAGE.admin)) : undefined,
     logout: () => void logout(),
   });
 
@@ -349,12 +350,17 @@
 {:else if shell}
   <div class="app mobile">
     <div class="m-page">
-      <header class="m-back">
-        <button type="button" onclick={panelBack}>
-          <span class="m-back-icon"><Icon name="ti-arrow-left" /></span>
-          <span class="m-back-label">{mBackLabel}</span>
-        </button>
-      </header>
+      {#if panelList}
+        <!-- The area's list: brand (home) and avatar (account menu with sign-out and, for administrators, administration). -->
+        <Header {...header} goHome={() => go(HOME)} openAccountSheet={() => ui.toggleMenu('account')} />
+      {:else}
+        <header class="m-back">
+          <button type="button" onclick={panelBack}>
+            <span class="m-back-icon"><Icon name="ti-arrow-left" /></span>
+            <span class="m-back-label">{mBackLabel}</span>
+          </button>
+        </header>
+      {/if}
       <main class="m-panel no-scrollbar" bind:this={scroller}>
         {#if panelList}<SettingsNav {...settingsNav} />{:else}{@render content()}{/if}
       </main>

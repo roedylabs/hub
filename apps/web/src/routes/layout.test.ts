@@ -322,21 +322,31 @@ describe('shell of settings and administration (desktop)', () => {
 });
 
 describe('shell of settings and administration (mobile)', () => {
-  it('shows the area’s list on its start, "Back to home" leads home', async () => {
+  it('shows the area’s list on its start with the brand (home) and the avatar (account menu)', async () => {
     const { view } = await shellAt('/account', 'admin', true);
     expect(view.getByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
     expect(view.queryByText('Page heading')).toBeNull();
-    // No header with the brand, the avatar and the toolbar; only "Back".
-    expect(view.queryByRole('button', { name: 'Example Org' })).toBeNull();
-    expect(view.queryByRole('button', { name: 'Alex Example' })).toBeNull();
     expect(view.getAllByRole('main')).toHaveLength(1);
     // No redirect to the first page on mobile.
     expect(nav.goto).not.toHaveBeenCalledWith('/account/profile', { replace: true });
     await fireEvent.click(view.getByRole('button', { name: 'Security' }));
     expect(nav.goto).toHaveBeenLastCalledWith('/account/security');
-    await fireEvent.click(view.getByRole('button', { name: 'Back to home' }));
+    await fireEvent.click(view.getByRole('button', { name: 'Example Org' }));
     expect(nav.goto).toHaveBeenLastCalledWith('/');
     await vi.waitFor(() => expect(document.title).toBe('Settings – Example Org'));
+    // The account menu with sign-out and, for administrators, the administration.
+    await fireEvent.click(view.getByRole('button', { name: /Alex Example/ }));
+    const sheet = await view.findByRole('dialog', { name: 'Alex Example' });
+    expect(within(sheet).getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    await fireEvent.click(within(sheet).getByRole('button', { name: 'Administration' }));
+    expect(nav.goto).toHaveBeenLastCalledWith('/admin/users');
+  });
+
+  it('offers no administration in the account menu to a user', async () => {
+    const { view } = await shellAt('/account', 'user', true);
+    await fireEvent.click(view.getByRole('button', { name: /Alex Example/ }));
+    const sheet = await view.findByRole('dialog', { name: 'Alex Example' });
+    expect(within(sheet).queryByRole('button', { name: 'Administration' })).toBeNull();
   });
 
   it('shows the page with "Back" to its area’s list', async () => {

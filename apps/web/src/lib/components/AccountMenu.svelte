@@ -19,7 +19,8 @@
     id?: string;
   }
 
-  let { isMobile, initials, userName, userEmail, modeSeg, langSeg, openAccountSettings, logout, id }: Props = $props();
+  let { isMobile, initials, userName, userEmail, modeSeg, langSeg, openAccountSettings, openAdmin, logout, id }: Props =
+    $props();
 </script>
 
 {#snippet content()}
@@ -81,6 +82,11 @@
         {/each}
       </div>
     </div>
+    {#if openAdmin}
+      <button class="row link" onclick={openAdmin}>
+        <span class="icon"><Icon name="ti-shield" /></span>{m.shell_admin()}
+      </button>
+    {/if}
     <button class="row logout" onclick={logout}>
       <span class="icon"><Icon name="ti-logout" /></span>{m.account_logout()}
     </button>

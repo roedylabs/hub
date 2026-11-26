@@ -60,6 +60,8 @@ export interface AccountMenuValues {
   /** Languages like on the page Settings › Language. */
   langSeg: LangChoice[];
   openAccountSettings: () => void;
+  /** "Administration" (only for administrators, on mobile where the header has no shield). */
+  openAdmin?: (() => void) | undefined;
   logout: () => void;
 }
 

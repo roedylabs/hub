@@ -1,11 +1,11 @@
 /**
  * The interface languages to choose from: "System" (follows the browser,
- * `prefs.browserLang`) and the languages themselves, as cards (Settings ›
- * Language) or as the segment of the account menu (`langSeg`). A choice
- * applies at once (`prefs.set`).
+ * `prefs.browserLang`) and the languages themselves, as cards (Account ›
+ * Language, `languageValues`) or as the segment of the account menu
+ * (`langSeg`). A choice applies at once (`prefs.set`).
  *
- * Taken over from Roedy Mail (`apps/web/src/lib/language.ts`), so far only
- * the language choices the account menu needs.
+ * Taken over from Roedy Mail (`apps/web/src/lib/language.ts`) with the
+ * language only: the hub stores no region, time zone or formats.
  */
 import { m } from '#lib/paraglide/messages.js';
 import type { Locale } from '#lib/paraglide/runtime.js';
@@ -85,4 +85,35 @@ export function langChoices(
       };
     }),
   ];
+}
+
+/** Language as a card of the Language page (`langOpts`), "System" with `ti-world` instead of a code. */
+export interface LangOption extends LangChoice {
+  hasSub: boolean;
+}
+
+export interface LanguageValues {
+  langOpts: LangOption[];
+  /** Note below the cards while "System" is chosen: mails use the language of the last sign-in. */
+  systemNote: string | null;
+}
+
+export interface LanguageInput {
+  lang: Settings['lang'];
+  /** Language of the browser (`prefs.browserLang`), shown under "System". */
+  browserLang: Locale;
+  /** Name of the hub in the note under "System" (`session.appName`). */
+  appName: string;
+}
+
+/**
+ * Values of the Account › Language page: the language cards and, while "System" is chosen, the note that the
+ * server's mails then use the language of the last sign-in (`crate::settings` of the server). Roedy Mail's
+ * region, time zone and formats are left out: the hub stores only the language.
+ */
+export function languageValues(input: LanguageInput, set: (patch: Partial<Settings>) => void): LanguageValues {
+  return {
+    langOpts: langChoices(input.lang, input.browserLang, set).map((l) => ({ ...l, hasSub: !!l.sub })),
+    systemNote: input.lang === 'system' ? m.region_lang_system_mail({ app: input.appName }) : null,
+  };
 }

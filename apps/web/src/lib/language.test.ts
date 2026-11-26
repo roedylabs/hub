@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { langChoices } from '#lib/language.ts';
+import { langChoices, languageValues } from '#lib/language.ts';
 
 describe('langChoices', () => {
   it('offers "System" with the browser’s language first, then the languages by their own names', () => {
@@ -27,5 +27,28 @@ describe('langChoices', () => {
     de!.onClick();
     system!.onClick();
     expect(set.mock.calls).toEqual([[{ lang: 'de' }], [{ lang: 'system' }]]);
+  });
+});
+
+describe('languageValues', () => {
+  it('returns the cards with a second line only where it differs', () => {
+    const v = languageValues({ lang: 'en', browserLang: 'de', appName: 'Example Org' }, () => {});
+    expect(v.langOpts.map((l) => [l.id, l.sub, l.hasSub, l.on])).toEqual([
+      ['system', 'Browser: Deutsch', true, false],
+      ['de', 'German', true, false],
+      ['en', '', false, true],
+    ]);
+    expect(v.systemNote).toBeNull();
+  });
+
+  it('notes under "System" that mails use the language of the last sign-in', () => {
+    const v = languageValues({ lang: 'system', browserLang: 'en', appName: 'Example Org' }, () => {});
+    expect(v.systemNote).toBe('Emails from Example Org use the language of your last sign-in.');
+  });
+
+  it('saves a choice through `set`', () => {
+    const set = vi.fn();
+    languageValues({ lang: 'en', browserLang: 'en', appName: 'Example Org' }, set).langOpts[1]!.onClick();
+    expect(set).toHaveBeenCalledWith({ lang: 'de' });
   });
 });
