@@ -344,7 +344,7 @@ async fn sign_in(
     previous: Option<CurrentUser>,
     method: Method,
     ticket: Option<Ticket>,
-) -> Result<Option<(AuthUser, Option<HeaderValue>)>, ApiError> {
+) -> Result<SignedIn, ApiError> {
     let worker = state.clone();
     let started = db::call(&state.db, move |conn| {
         let previous = previous.map(|CurrentUser(user)| user);
@@ -362,18 +362,38 @@ async fn sign_in(
         )?;
         // Right after the commit, even if the request is gone by now.
         outbox.send(&worker);
-        Ok(started)
+        // The intermediate step comes into being in the same job as the
+        // checks of account and second factor: a lock, removal or reset runs
+        // before it (then no step) or after it (then its discard ends the
+        // step) – never in between.
+        let code = match &started {
+            Started::Code => Some(worker.challenges.start(Challenge {
+                user_id: user_id.clone(),
+                remember: persistent,
+                password_changed_at: checked_at.clone(),
+            })?),
+            _ => None,
+        };
+        Ok((started, code))
     })
     .await?;
     match started {
-        Started::Done(user, cookie) => {
+        (Started::Done(user, cookie), _) => {
             tracing::info!(user = %user.id, "signed in");
-            Ok(Some((user, cookie)))
+            Ok(SignedIn::Done(user, cookie))
         }
-        Started::Code => Ok(None),
-        Started::Expired => Err(login_expired()),
-        Started::Locked => Err(rejected("invalid_credentials")),
+        (Started::Code, Some(cookie)) => Ok(SignedIn::Code(cookie)),
+        (Started::Code, None) | (Started::Expired, _) => Err(login_expired()),
+        (Started::Locked, _) => Err(rejected("invalid_credentials")),
     }
+}
+
+/// Result of [`sign_in`].
+enum SignedIn {
+    /// With the cookie of a new session (`None`: renewed).
+    Done(AuthUser, Option<HeaderValue>),
+    /// The second factor is due; the cookie of the intermediate step.
+    Code(HeaderValue),
 }
 
 /// 200 with `status: ok`, the user and the cookies.
@@ -483,14 +503,10 @@ async fn login(
         None,
     )
     .await?;
-    if let Some((user, cookie)) = signed {
-        return Ok(signed_in(&user, cookie));
-    }
-    let cookie = state.challenges.start(Challenge {
-        user_id: profile.id,
-        remember,
-        password_changed_at,
-    })?;
+    let cookie = match signed {
+        SignedIn::Done(user, cookie) => return Ok(signed_in(&user, cookie)),
+        SignedIn::Code(cookie) => cookie,
+    };
     Ok((
         [(header::SET_COOKIE, cookie)],
         Json(json!({ "status": "totp_required" })),
@@ -573,7 +589,9 @@ async fn complete(
     )
     .await?;
     // With a confirmed code there is no further step.
-    let (user, cookie) = signed.ok_or_else(login_expired)?;
+    let SignedIn::Done(user, cookie) = signed else {
+        return Err(login_expired());
+    };
     Ok(signed_in(
         &user,
         cookie.into_iter().chain([challenge::clear_cookie()]),

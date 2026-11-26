@@ -287,6 +287,30 @@ mod tests {
         assert!(!ticket.spent_at(ticket.expires - Duration::from_secs(1)));
     }
 
+    /// The discard note of a user can be pruned by a later discard of
+    /// another user; by then the ticket of the discarded step has expired, so
+    /// it stays spent.
+    #[test]
+    fn ticket_stays_spent_after_its_note_is_pruned() {
+        let store = Arc::new(Challenges::default());
+        let t0 = Instant::now();
+        let headers = request_with(&store.start_at(challenge(), t0).unwrap());
+        let claim = store
+            .claim_at(&headers, t0 + Duration::from_secs(1))
+            .unwrap();
+        let discarded_at = t0 + Duration::from_secs(2);
+        store.discard_user_at("u1", discarded_at);
+        let (_, ticket) = claim.consume();
+        assert!(ticket.spent_at(discarded_at));
+        // Another discard after the note's lifetime prunes the note …
+        let later = discarded_at + TTL + Duration::from_secs(1);
+        store.discard_user_at("u2", later);
+        assert!(!store.lock().discarded.contains_key("u1"));
+        // … but the step expired before that.
+        assert!(ticket.expires <= later);
+        assert!(ticket.spent_at(later));
+    }
+
     #[test]
     fn expires_after_ttl() {
         let store = Arc::new(Challenges::default());
