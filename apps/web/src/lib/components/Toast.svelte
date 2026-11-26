@@ -2,19 +2,33 @@
   Toast: notice at the bottom center. Single-line as long as the text fits in
   the window; longer ones wrap into at most two lines, on mobile three. The
   error toast shows a warning icon and announces itself as `alert`, the
-  others as `status`.
+  others as `status`. If the page shows the bar "Unsaved changes", it sits
+  12 px above it (`lift`, `#lib/toast-lift.svelte.ts`); the change glides
+  with `--dur`.
 
   Taken over from Roedy Mail (`apps/web/src/lib/components/Toast.svelte`)
-  without "Undo", swiping and the lift above the bar "Unsaved changes".
+  without "Undo" and swiping.
 -->
 <script lang="ts">
   import Icon from '#lib/components/Icon.svelte';
   import type { Toast } from '#lib/state/ui.svelte.ts';
 
-  let { toast, isMobile }: { toast: Toast; isMobile: boolean } = $props();
+  interface Props {
+    toast: Toast;
+    isMobile: boolean;
+    /** Distance from the bottom edge above the bar "Unsaved changes" in px; `null` at its usual place. */
+    lift?: number | null;
+  }
+
+  let { toast, isMobile, lift = null }: Props = $props();
 </script>
 
-<div class="toast" class:mobile={isMobile} role={toast.error ? 'alert' : 'status'}>
+<div
+  class="toast"
+  class:mobile={isMobile}
+  role={toast.error ? 'alert' : 'status'}
+  style:bottom={lift === null ? undefined : `${lift}px`}
+>
   {#if toast.error}
     <span class="tile err"><Icon name="ti-alert-triangle" /></span>
   {:else}
@@ -30,6 +44,8 @@
     left: 50%;
     bottom: 32px;
     z-index: 95;
+    /* above the bar "Unsaved changes" and back; without motion --dur is 0 */
+    transition: bottom var(--dur, 220ms) ease;
     /* like the end of snToast, so that the toast is centered without animations too */
     transform: translateX(-50%);
     /* as wide as the text, at most the window: long texts (e.g. server names) wrap */

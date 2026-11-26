@@ -3,8 +3,15 @@
  * others show Alt (the shortcut Alt+Shift+P of the password fields).
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/keys.ts`): only the detection
- * of Apple systems, without the shortcuts of the shell.
+ * of Apple systems and the key event of the select lists, without the
+ * shortcuts of the shell.
  */
+
+/** What the select lists need from a key event (`#lib/select.ts`; tests without a DOM). */
+export interface KeyInput {
+  key: string;
+  preventDefault: () => void;
+}
 
 /** Part of `navigator` for detecting the system (tests without a DOM). */
 export interface PlatformInfo {

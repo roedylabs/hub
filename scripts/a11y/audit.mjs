@@ -298,7 +298,22 @@ const SCENARIOS = [
   gateway('app_not_ready'),
   gateway('app_timeout'),
   { id: 'offline', path: '/', opts: { offline: true } },
+  // Account and administration: one module per page in `scenarios/`, each a function of the shared helpers.
+  ...(await pageScenarios()),
 ];
+
+/** Scenarios of `scenarios/*.mjs` (sorted by file name); each module's default export returns a list. */
+async function pageScenarios() {
+  const dir = path.join(import.meta.dirname, 'scenarios');
+  if (!fs.existsSync(dir)) return [];
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.mjs'))
+    .sort();
+  const helpers = { mock, fill, submit, button, USER, SESSION, CONFIG, BRANDING, ORG, ENROLL, CODES, PASSWORD };
+  const lists = await Promise.all(files.map(async (f) => (await import(path.join(dir, f))).default(helpers)));
+  return lists.flat();
+}
 
 function invitation() {
   const base = { 'GET invites/x': { body: INVITE } };
