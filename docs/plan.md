@@ -175,7 +175,7 @@ checks pass in every PR; every PR has tests for what it adds.
    rate limiter, client IP.
    *Tests:* config parsing (every variable, error messages), migrations,
    `/healthz` and `/readyz`, headers, SPA fallback, trust proxy.
-3. **Auth and users** – setup wizard with mandatory TOTP, sign-in with
+3. [x] **Auth and users** – setup wizard with mandatory TOTP, sign-in with
    password, TOTP and recovery codes, "Stay signed in", `?next=` validation,
    account pages, signed-in devices, invitations, password reset, email
    change, system mails, administration of users, audit log, branding and
@@ -256,9 +256,38 @@ checks pass in every PR; every PR has tests for what it adds.
          and dark (`src/a11y.test.ts`), and `scripts/a11y/audit.mjs` (axe
          with contrast in Chromium, desktop and mobile, light and dark, via
          `scripts/dev/browser.sh`).
-      2. [ ] **Account and administration** – `/account/*` (profile,
+      2. [x] **Account and administration** – `/account/*` (profile,
          security, appearance, language) and `/admin/*` (users, audit log,
          branding, organization, email) as in the current Roedy Mail app.
+         Done: Mail's shell for both areas (header with the home link,
+         administration only for administrators and the account menu with
+         colour scheme, language and sign-out; the settings navigation and
+         the content card on desktop, the area's list and "Back" on mobile;
+         `/account` and `/admin` open the first page on desktop, 403 inside
+         the shell for users), the confirmation dialog, `DirtyBar`, the
+         loading and failure cards and the colour editor; the pages with
+         Mail's markup on the hub's API: profile (name, username, email
+         change with password and code, pending confirmation with resend and
+         discard, deleting the account with the typed word and
+         `last_admin`; `DELETE auth/me` now also takes the confirmed
+         account's `id` and answers 409 `account_mismatch` when another
+         account signed in meanwhile), security (password, authenticator apps with QR code,
+         recovery codes, signed-in devices), appearance and language (the
+         three stored settings; the accent is locked without `userAccent`),
+         users with invitations (search, filters, sorting, details with
+         devices, role, lock, second factor, remove, bulk actions, resend,
+         extend, copy link, `requested_at`), audit log (categories with
+         counts, search, paging, CSV export, retention), branding (logo
+         kinds with upload checks, plate, tilt, brand colour,
+         `userAccent`), organization and email (sending account, test mail;
+         no template preview, the API has none). Every load is sequenced so
+         that only the latest response writes and nothing writes after the
+         page is left. Without undo in the hub's toasts actions run at once,
+         destructive ones after a confirmation. Times in the browser's time
+         zone and the interface language. Tests: state modules, component
+         tests per page and state, axe in jsdom per page state light and
+         dark (`a11y.test.ts` next to each page), and the Chromium audit
+         with one scenario module per page (`scripts/a11y/scenarios/`).
 4. **Gateway, pairing, identity** – `crates/contract`, signing keys and
    rotation, the proxy, internal listener, pairing, manifest, events with
    delivery and catch-up, users endpoint, health poll, the example app.

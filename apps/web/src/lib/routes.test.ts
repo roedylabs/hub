@@ -49,4 +49,14 @@ describe('routes', () => {
       'Confirm new email address – Example Org',
     );
   });
+
+  it('names the account and administration pages and the start of their areas (WCAG 2.4.2)', () => {
+    expect(pageTitle({ path: '/account/profile', appName: 'Example Org' })).toBe('Profile – Example Org');
+    expect(pageTitle({ path: '/admin/audit-log', appName: 'Example Org' })).toBe('Audit log – Example Org');
+    expect(pageTitle({ path: '/account', appName: 'Example Org' })).toBe('Settings – Example Org');
+    expect(pageTitle({ path: '/admin', appName: 'Example Org' })).toBe('Administration – Example Org');
+    expect(pageTitle({ path: '/admin/users', appName: 'Example Org', error: '403' })).toBe(
+      'Access denied – Example Org',
+    );
+  });
 });

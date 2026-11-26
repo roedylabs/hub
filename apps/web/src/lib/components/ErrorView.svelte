@@ -10,7 +10,7 @@
   to the sign-in; "Back" goes to the previous page, without one home.
 
   Taken over from Roedy Mail (`apps/web/src/lib/components/ErrorView.svelte`)
-  without the shell, the developer log and "Copy details".
+  without the developer log and "Copy details".
 -->
 <script lang="ts">
   import { scrollbar } from '#lib/actions/scrollbar.ts';
@@ -74,7 +74,13 @@
   <title>{m.error_doc_title({ title: page.title(), app: session.appName })}</title>
 </svelte:head>
 
-<svelte:element this={tag()} class="error no-scrollbar" class:mobile={ui.isMobile} {@attach scrollbar}>
+<svelte:element
+  this={tag()}
+  class="error no-scrollbar"
+  class:mobile={ui.isMobile}
+  class:framed={tag() === 'div'}
+  {@attach scrollbar}
+>
   <!-- Centered with `margin: auto`, so that content that is too tall is not cut off at the top -->
   <div class="inner">
     <span class="kicker">{kicker}</span>
@@ -133,6 +139,11 @@
 
   .error.mobile {
     padding: 28px 22px;
+  }
+
+  /* Inside the shell's card or panel ("Access denied"): as tall as the card, not the window */
+  .error.framed {
+    min-height: 0;
   }
 
   .kicker {

@@ -6,7 +6,9 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/routes.ts` and
  * `apps/web/src/lib/page-title.ts`), trimmed to the hub's routes.
  */
+import { ERRS, type ErrorCode } from '#lib/errors.ts';
 import { m } from '#lib/paraglide/messages.js';
+import { isSectionHome, pageOf, sectionName, sectionOf } from '#lib/settings-nav.ts';
 
 export const HOME_PATH = '/';
 export const LOGIN_PATH = '/login';
@@ -65,12 +67,29 @@ export function redirectFor(
 /** Separator between the parts of the title. */
 const SEP = ' – ';
 
+/** Heading of the page: of an account or administration page, of the start of its area, of "Confirm email". */
+function headingOf(path: string): string {
+  if (path.startsWith('/account/confirm-email/')) return m.ec_ask_title();
+  const page = pageOf(path);
+  if (page) return page.label;
+  const section = sectionOf(path);
+  return section && isSectionHome(path) ? sectionName(section) : '';
+}
+
 /**
  * Document title: the guest page's own (`auth`, set by its shell on `/setup`, `/login…` and `/invite/…`), otherwise
- * "‹Page› – ‹Hub name›" or only the hub's name.
+ * "‹Page› – ‹Hub name›" (e.g. "Profile – Roedy Hub", or the error page's title instead of the page: "Access
+ * denied") or only the hub's name.
  */
-export function pageTitle(input: { path: string; appName: string; auth?: string | null }): string {
+export function pageTitle(input: {
+  path: string;
+  appName: string;
+  auth?: string | null;
+  /** Error page in place of the page (e.g. 403 on `/admin/…` for a user). */
+  error?: ErrorCode | null;
+}): string {
+  if (input.error) return [ERRS[input.error].title(), input.appName].join(SEP);
   if (input.auth) return input.auth;
-  const heading = input.path.startsWith('/account/confirm-email/') ? m.ec_ask_title() : '';
+  const heading = headingOf(input.path);
   return heading ? [heading, input.appName].join(SEP) : input.appName;
 }

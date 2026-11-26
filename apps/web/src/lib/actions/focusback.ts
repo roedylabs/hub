@@ -1,0 +1,35 @@
+/**
+ * Keeps keyboard focus in place when a box disappears while it holds the
+ * focus, e.g. "Confirmation pending" in the profile after "Discard change":
+ * the focus moves to `selector` in the surrounding element instead of falling
+ * back to the page.
+ *
+ * Taken over from Roedy Mail (`apps/web/src/lib/actions/focusback.ts`).
+ */
+export function focusback(node: HTMLElement, selector: string): { destroy: () => void } {
+  // When the box goes away it is already detached; the surrounding element stays.
+  const scope = node.parentElement;
+  // Focus already inside when the action attaches (e.g. moved there in the same update) counts too.
+  let inside = node.contains(document.activeElement);
+  const into = () => (inside = true);
+  const out = () => {
+    // Removing the box may blur it too; only a focus that really moved counts.
+    queueMicrotask(() => {
+      if (node.isConnected) inside = node.contains(document.activeElement);
+    });
+  };
+  node.addEventListener('focusin', into);
+  node.addEventListener('focusout', out);
+  return {
+    destroy() {
+      node.removeEventListener('focusin', into);
+      node.removeEventListener('focusout', out);
+      if (!inside || !scope) return;
+      queueMicrotask(() => {
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        scope.querySelector<HTMLElement>(selector)?.focus();
+      });
+    },
+  };
+}

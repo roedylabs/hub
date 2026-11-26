@@ -2,8 +2,7 @@
  * Base styles of the hub. Colours, fonts and keyframes come from @roedy/tokens
  * (a copy of Roedy Mail's tokens, packages/tokens/README.md).
  *
- * Taken over from Roedy Mail (apps/web/src/app.css) without the mobile page
- * titles of its shell.
+ * Taken over from Roedy Mail (apps/web/src/app.css).
  */
 @import '@roedy/tokens/tokens.css';
 
@@ -117,4 +116,12 @@ a:hover {
   display: none;
   width: 0;
   height: 0;
+}
+
+/* Break long words in the mobile page titles instead of overflowing, e.g.
+   "Administration" at 320 px (zoom 400 %, WCAG 1.4.10); applies only
+   when a word does not fit on the line. */
+h1.m-title {
+  overflow-wrap: anywhere;
+  hyphens: auto;
 }

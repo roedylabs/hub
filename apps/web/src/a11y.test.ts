@@ -1,29 +1,35 @@
 /**
- * axe-core over the pages before and around the sign-in, each in the light
- * and the dark theme (`data-mode` on `<html>`). jsdom draws nothing, so the
- * colour contrast is left to the browser audit (scripts/a11y/audit.mjs);
- * everything else axe checks (names, roles, labels, ARIA, landmarks inside
- * the page) runs here on every `pnpm test`.
+ * axe-core over the pages before and around the sign-in and over the shell of
+ * settings and administration (header, navigation, account menu,
+ * confirmation; desktop and mobile), each in the light and the dark theme
+ * (`data-mode` on `<html>`). jsdom draws nothing, so the colour contrast is
+ * left to the browser audit (scripts/a11y/audit.mjs); everything else axe
+ * checks (names, roles, labels, ARIA, landmarks inside the page) runs here on
+ * every `pnpm test`.
  */
 import { fireEvent, render, type RenderResult } from '@testing-library/svelte';
-import axe from 'axe-core';
+import { createRawSnippet } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ErrorView from '#lib/components/ErrorView.svelte';
+import Header from '#lib/components/Header.svelte';
 import LoginPage from '#lib/components/LoginPage.svelte';
 import type { LoginRoute } from '#lib/login.svelte.ts';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
 import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
+import { violations } from '#lib/test/axe.ts';
 import { page } from '#lib/test/page.svelte.ts';
 import { sessionOf } from '#lib/test/session.ts';
+import { setPhone } from '#lib/test/signed-in.ts';
 import ConfirmEmail from './routes/account/confirm-email/[token]/+page.svelte';
 import Invite from './routes/invite/[token]/+page.svelte';
+import Layout from './routes/+layout.svelte';
 import Home from './routes/+page.svelte';
 import Setup from './routes/setup/+page.svelte';
 
 const nav = vi.hoisted(() => ({ goto: vi.fn(() => Promise.resolve()) }));
-vi.mock('$app/navigation', () => ({ goto: nav.goto }));
+vi.mock('$app/navigation', () => ({ goto: nav.goto, afterNavigate: () => {} }));
 // The stand-in is imported lazily: the pages above load `$app/state` before it.
 vi.mock('$app/state', async () => ({ page: (await import('#lib/test/page.svelte.ts')).page }));
 
@@ -53,6 +59,7 @@ const INVITE = {
 const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 
 afterEach(() => {
+  setPhone(false);
   vi.unstubAllGlobals();
   nav.goto.mockClear();
   session.config = null;
@@ -61,17 +68,9 @@ afterEach(() => {
   prefs.reset();
   ui.reset();
   sessionStorage.clear();
+  page.url = new URL('http://localhost/');
   delete document.documentElement.dataset.mode;
 });
-
-/** Violations of axe in `view`, without colour contrast (jsdom has no layout). */
-async function violations(view: RenderResult<never>): Promise<string[]> {
-  const result = await axe.run(view.container, {
-    runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] },
-    rules: { 'color-contrast': { enabled: false }, region: { enabled: false } },
-  });
-  return result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`);
-}
 
 function ready(config: Partial<PublicConfig> = {}) {
   session.config = { ...CONFIG, ...config };
@@ -114,6 +113,86 @@ async function confirmEmail(state: string) {
   await vi.waitFor(() => expect(view.container.querySelector('[aria-busy="true"]')).toBeNull());
   return view;
 }
+
+/** Head of a page in the shell, as the account and administration pages render it. */
+const pageHead = createRawSnippet(() => ({
+  render: () =>
+    '<div class="page"><h1 class="title">Profile</h1><p class="lead">The account you sign in with.</p></div>',
+}));
+
+/** The layout with the shell at `path`, signed in as `role`; `then` opens what the case shows. */
+async function shell(
+  path: string,
+  opts: { role?: 'admin' | 'user'; phone?: boolean; then?: () => unknown; sees?: string } = {},
+) {
+  const mode = document.documentElement.dataset.mode;
+  setPhone(opts.phone ?? false);
+  page.url = new URL(`http://localhost${path}`);
+  const user = sessionOf({ id: '01J', email: 'alex@example.com', name: 'Alex Example', role: opts.role ?? 'admin' });
+  mockApi({
+    'GET public/config': [{ body: CONFIG }],
+    'GET session': [{ body: user }],
+    'GET settings': [{ body: { version: 1, settings: { lang: 'en', mode, accent: null } } }],
+  });
+  const view = render(Layout, { children: pageHead }) as RenderResult<never>;
+  await vi.waitFor(() => expect(view.container.querySelector('main')).not.toBeNull());
+  await opts.then?.();
+  const sees = opts.sees ?? 'main';
+  await vi.waitFor(() => expect(view.container.querySelector(sees)).not.toBeNull());
+  return view;
+}
+
+const askRemove = () =>
+  ui.ask({
+    title: 'Remove Jordan Hale?',
+    text: 'Jordan can no longer sign in.',
+    icon: 'ti-user-minus',
+    ok: 'Remove',
+    danger: true,
+    word: 'REMOVE',
+    run: () => {},
+  });
+
+const SHELL: Case[] = [
+  ['shell: page (desktop)', () => shell('/account/profile')],
+  [
+    'shell: account menu open (desktop)',
+    () => shell('/admin/users', { then: () => (ui.menu = 'account'), sees: '[role="group"] .manage' }),
+  ],
+  ['shell: confirmation (desktop)', () => shell('/admin/users', { then: askRemove, sees: '[role="alertdialog"]' })],
+  ['shell: access denied (desktop)', () => shell('/admin/users', { role: 'user', sees: 'main .error' })],
+  ['shell: list of the area (mobile)', () => shell('/admin', { phone: true, sees: 'main .m-item' })],
+  ['shell: page (mobile)', () => shell('/account/security', { phone: true, sees: '.m-back' })],
+  [
+    'shell: account menu sheet (mobile)',
+    () =>
+      shell('/account/profile', { phone: true, then: () => (ui.menu = 'account'), sees: '[role="dialog"] .manage' }),
+  ],
+  [
+    'shell: confirmation (mobile)',
+    () => shell('/admin/users', { phone: true, then: askRemove, sees: '[role="alertdialog"]' }),
+  ],
+  ['shell: access denied (mobile)', () => shell('/admin/users', { role: 'user', phone: true, sees: 'main .error' })],
+  [
+    'header (mobile)',
+    () => {
+      ready();
+      return Promise.resolve(
+        render(Header, {
+          isMobile: true,
+          appName: 'Example Org',
+          logo: session.logo,
+          accountOpen: false,
+          userName: 'Alex Example',
+          initials: 'AE',
+          showAdmin: true,
+          adminOn: false,
+          settingsOn: false,
+        }) as RenderResult<never>,
+      );
+    },
+  ],
+];
 
 const CASES: Case[] = [
   ['setup: language and appearance', () => Promise.resolve(render(Setup) as RenderResult<never>)],
@@ -159,6 +238,7 @@ const CASES: Case[] = [
       return Promise.resolve(render(Home) as RenderResult<never>);
     },
   ],
+  ...SHELL,
 ];
 
 describe('accessibility (axe)', () => {

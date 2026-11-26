@@ -421,7 +421,36 @@ async fn deleting_the_account() {
     assert_eq!(reply.status, StatusCode::CONFLICT);
     assert_eq!(reply.error(), "last_admin");
 
-    let reply = delete(&max, "delete").await;
+    // The confirmation named another account (another tab signed in someone else meanwhile): nothing happens.
+    let anna_id: String = env
+        .sql(|c| {
+            c.query_row("SELECT id FROM users WHERE username = 'anna'", [], |r| {
+                r.get(0)
+            })
+        })
+        .await;
+    let max_id: String = env
+        .sql(|c| {
+            c.query_row("SELECT id FROM users WHERE username = 'max'", [], |r| {
+                r.get(0)
+            })
+        })
+        .await;
+    let named = async |token: &str, id: &str| {
+        env.as_user(
+            token,
+            Method::DELETE,
+            "/auth/me",
+            Some(json!({ "confirm": "delete", "id": id })),
+        )
+        .await
+    };
+    let reply = named(&max, &anna_id).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.error(), "account_mismatch");
+    assert_eq!(env.count("users").await, 2);
+
+    let reply = named(&max, &max_id).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert!(reply.clears(session::COOKIE));
     assert_eq!(env.count("users").await, 1);

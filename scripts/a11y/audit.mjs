@@ -298,7 +298,22 @@ const SCENARIOS = [
   gateway('app_not_ready'),
   gateway('app_timeout'),
   { id: 'offline', path: '/', opts: { offline: true } },
+  // Account and administration: one module per page in `scenarios/`, each a function of the shared helpers.
+  ...(await pageScenarios()),
 ];
+
+/** Scenarios of `scenarios/*.mjs` (sorted by file name); each module's default export returns a list. */
+async function pageScenarios() {
+  const dir = path.join(import.meta.dirname, 'scenarios');
+  if (!fs.existsSync(dir)) return [];
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.mjs'))
+    .sort();
+  const helpers = { mock, fill, submit, button, USER, SESSION, CONFIG, BRANDING, ORG, ENROLL, CODES, PASSWORD };
+  const lists = await Promise.all(files.map(async (f) => (await import(path.join(dir, f))).default(helpers)));
+  return lists.flat();
+}
 
 function invitation() {
   const base = { 'GET invites/x': { body: INVITE } };
@@ -393,8 +408,12 @@ async function route(page, opts) {
       body: answer.body === undefined ? '' : JSON.stringify(answer.body),
     });
   });
-  // Branding files of the server: none in the audit.
-  await page.route(/\/(branding\/|manifest\.webmanifest)/, (req) => req.fulfill({ status: 404, body: '' }));
+  // Branding files of the server: none in the audit. Matched on the path's start only: Vite serves the page
+  // module of `/admin/branding` as `/src/routes/admin/branding/+page.svelte`, which must still load.
+  await page.route(
+    (url) => /^\/(branding\/|manifest\.webmanifest$)/.test(url.pathname),
+    (req) => req.fulfill({ status: 404, body: '' }),
+  );
 }
 
 async function runAxe(page) {
