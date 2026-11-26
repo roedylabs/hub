@@ -46,35 +46,33 @@
    */
   let created = 0;
   let covered = 0;
-  /** Settings and account are loading (after "Welcome", on leaving or on another invitation). */
-  let loading = false;
-  /** An account came while a load ran: another load follows once that one has ended, whatever its outcome. */
-  let queued = false;
+  /**
+   * The loads run one after another: an older load's late answer (its settings) could otherwise land on top of a
+   * newer account's.
+   */
+  let tail: Promise<unknown> = Promise.resolve();
   /** The page has gone: the account still loads, but no navigation follows. */
   let leaving = false;
 
-  /** Loads settings and account of the newest session. */
-  async function loadAccount(): Promise<boolean> {
-    const upTo = created;
-    loading = true;
-    try {
+  /**
+   * Loads settings and account of the newest session after any load still running; `true` once the accounts
+   * created so far are covered (without a request if a load in between did that).
+   */
+  function loadAccount(): Promise<boolean> {
+    const run = tail.then(async () => {
+      const upTo = created;
+      if (upTo <= covered) return true;
       const done = await loadSignedIn();
       if (done) covered = Math.max(covered, upTo);
       return done;
-    } finally {
-      loading = false;
-      if (queued) {
-        queued = false;
-        adopt();
-      }
-    }
+    });
+    tail = run.catch(() => {});
+    return run;
   }
 
-  /** Loads the newest created account unless a finished load covers it; while a load runs, after that one. */
+  /** Loads the newest created account unless a finished load covers it. */
   function adopt() {
-    if (created <= covered) return;
-    if (loading) queued = true;
-    else void loadAccount();
+    if (created > covered) void loadAccount();
   }
 
   /** Fields of the screens on the shared shell: on mobile entering one focuses the heading (no on-screen keyboard). */

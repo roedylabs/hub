@@ -149,4 +149,41 @@ describe('Invitation page: the accounts of several invitations', () => {
     second({ status: 200, body: sessionOf({ id: 'b', email: 'b@example.com', name: 'Jonas Schulz' }) });
     await vi.waitFor(() => expect(session.user?.email).toBe('c@example.com'));
   });
+
+  it('loads the welcome’s account after a pending load, so that the older settings do not win', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let older: (a: { status: number; body: unknown }) => void = () => {};
+    const { calls } = mockApi({
+      ...invitation('a', 'a@example.com'),
+      ...invitation('b', 'b@example.com'),
+      'GET settings': [
+        () => new Promise((resolve) => (older = resolve)),
+        { body: { version: 2, settings: { lang: 'en', mode: 'dark', accent: null } } },
+        // The account changes from A to B: `account.ts` loads B's settings once more.
+        { body: { version: 2, settings: { lang: 'en', mode: 'dark', accent: null } } },
+      ],
+      'GET session': [
+        { body: sessionOf({ id: 'a', email: 'a@example.com', name: 'Jonas Schulz' }) },
+        { body: sessionOf({ id: 'b', email: 'b@example.com', name: 'Jonas Schulz' }) },
+        { body: sessionOf({ id: 'b', email: 'b@example.com', name: 'Jonas Schulz' }) },
+      ],
+    });
+    session.config = { name: 'Roedy Hub', branding: BRAND0, org: {} as never, setup_required: false };
+    page.params = { token: 'a' };
+    const view = render(Page);
+    await acceptWithoutApp();
+    // B opens while A's settings are still on their way; B's welcome signs in after its 2.7 s.
+    page.params = { token: 'b' };
+    await acceptWithoutApp();
+    await vi.advanceTimersByTimeAsync(2700);
+    older({ status: 200, body: { version: 1, settings: { lang: 'en', mode: 'light', accent: null } } });
+    await vi.waitFor(() => expect(session.user?.email).toBe('b@example.com'));
+    await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/'));
+    await vi.waitFor(() => expect(prefs.values.mode).toBe('dark'));
+    // One load after the other: B's settings are only asked for once A's load has ended.
+    const paths = calls.map((c) => c.path).filter((p) => p === 'settings' || p === 'session');
+    expect(paths.slice(0, 4)).toEqual(['settings', 'session', 'settings', 'session']);
+    view.unmount();
+    vi.useRealTimers();
+  });
 });
