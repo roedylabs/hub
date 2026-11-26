@@ -9,7 +9,7 @@
 //
 // Result: <output-dir>/report.json (all findings), report.md (summary) and,
 // unless --no-shots, one screenshot per state in <output-dir>/screenshots/.
-// The exit code is 1 if any state has a finding or could not be audited.
+// The exit code is 1 if any state has a finding, a page error or could not be audited.
 //
 // Taken over from Roedy Mail (scripts/a11y/audit.mjs) and trimmed to the axe
 // run over the hub's pages before and around the sign-in.
@@ -478,11 +478,12 @@ await Promise.all(
     for (let run = queue.shift(); run; run = queue.shift()) {
       const result = await check(browser, ...run);
       results.push(result);
-      const bad = result.violations.length + result.problems.length;
+      const bad = result.violations.length + result.problems.length + result.errors.length;
       console.log(`${bad ? '✗' : '✓'} ${result.id} (${result.view}, ${result.theme})${bad ? '' : ''}`);
       for (const v of result.violations)
         console.log(`    ${v.id}: ${v.help} – ${v.nodes.map((n) => n.target).join(', ')}`);
       for (const p of result.problems) console.log(`    ${p}`);
+      for (const e of result.errors) console.log(`    page error: ${e}`);
     }
   }),
 );
@@ -490,7 +491,7 @@ await browser.close();
 
 results.sort((a, b) => `${a.id}${a.view}${a.theme}`.localeCompare(`${b.id}${b.view}${b.theme}`));
 fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(results, null, 2));
-const failed = results.filter((r) => r.violations.length || r.problems.length);
+const failed = results.filter((r) => r.violations.length || r.problems.length || r.errors.length);
 const md = [
   '# Accessibility audit of the hub',
   '',
@@ -502,6 +503,7 @@ const md = [
     `- ${r.id} (${r.view}, ${r.theme})`,
     ...r.violations.map((v) => `  - ${v.id} (${v.impact}): ${v.help} – ${v.nodes.map((n) => n.target).join(', ')}`),
     ...r.problems.map((p) => `  - ${p}`),
+    ...r.errors.map((e) => `  - page error: ${e}`),
   ]),
   '',
 ];
