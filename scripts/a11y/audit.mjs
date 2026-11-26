@@ -464,10 +464,13 @@ async function check(browser, scenario, view, theme) {
   }
 }
 
+const chosen = SCENARIOS.filter((s) => !only.length || only.some((o) => s.id.includes(o)));
+if (!chosen.length) {
+  console.error(`--only ${only.join(',')} matches no scenario; known: ${SCENARIOS.map((s) => s.id).join(', ')}`);
+  process.exit(2);
+}
 const browser = await chromium.launch();
-const runs = SCENARIOS.filter((s) => !only.length || only.some((o) => s.id.includes(o))).flatMap((s) =>
-  Object.keys(VIEWS).flatMap((view) => THEMES.map((theme) => [s, view, theme])),
-);
+const runs = chosen.flatMap((s) => Object.keys(VIEWS).flatMap((view) => THEMES.map((theme) => [s, view, theme])));
 const results = [];
 const queue = [...runs];
 await Promise.all(

@@ -1,4 +1,4 @@
-import { render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { createRawSnippet } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
@@ -141,6 +141,23 @@ describe('root layout', () => {
     expect(await view.findByRole('heading', { level: 1, name: 'No connection' })).toBeInTheDocument();
     expect(view.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(view.queryByText('Page content')).toBeNull();
+  });
+
+  it('loads the account’s settings after a successful "Try again" too', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    page.url = new URL('http://localhost/');
+    const { calls } = mockApi({
+      'GET public/config': [{ status: 500, body: { error: 'internal' } }, { body: CONFIG }],
+      'GET session': [{ body: SESSION }],
+      'GET settings': [{ body: { version: 1, settings: { lang: 'en', mode: 'dark', accent: null } } }],
+    });
+    const view = render(Layout, { children: content });
+    await fireEvent.click(await view.findByRole('button', { name: 'Try again' }));
+    await vi.advanceTimersByTimeAsync(900);
+    expect(await view.findByText('Page content')).toBeInTheDocument();
+    await vi.waitFor(() => expect(calls.map((c) => c.path)).toContain('settings'));
+    await vi.waitFor(() => expect(prefs.values.mode).toBe('dark'));
+    vi.useRealTimers();
   });
 
   it('shows the error the gateway put into the page without loading anything', () => {

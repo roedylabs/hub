@@ -39,14 +39,15 @@
   // An error the gateway answered with: the page shows it without loading anything else.
   const gatewayError = gatewayErrorIn();
 
+  /** Session, then the account's settings (theme, language); without them the defaults apply. */
+  async function start(): Promise<void> {
+    await session.load();
+    if (session.authed) await prefs.load().catch(() => {});
+  }
+
   $effect(() => {
     if (gatewayError) return;
-    untrack(() => {
-      void session.load().then(() => {
-        // The account's settings (theme, language); without them the defaults apply.
-        if (session.authed) prefs.load().catch(() => {});
-      });
-    });
+    untrack(() => void start());
     return session.watchTabs();
   });
 
@@ -113,7 +114,7 @@
 </svelte:head>
 
 {#if session.status === 'error' && !gatewayError && !page.error}
-  <ErrorView code={session.failure ?? '500'} retry={() => session.load()} />
+  <ErrorView code={session.failure ?? '500'} retry={start} />
 {:else if showPage}
   <div class="page">{@render children()}</div>
 {/if}

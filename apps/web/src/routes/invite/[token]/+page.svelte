@@ -41,6 +41,8 @@
   let netBox: HTMLDivElement | undefined = $state();
   /** Settings and account are loading (after "Welcome" or on leaving). */
   let signingIn = false;
+  /** The page has gone: the account still loads, but no navigation follows. */
+  let leaving = false;
 
   function loadAccount(): Promise<boolean> {
     signingIn = true;
@@ -89,7 +91,7 @@
         signingIn = false;
         return false;
       }
-      void goto(resolve('/'));
+      if (!leaving) void goto(resolve('/'));
       return true;
     },
     toLogin: () => void goto(resolve('/login')),
@@ -109,6 +111,7 @@
   const net = new Reconnect({ probe, stayed: () => shake(netBox, undefined) });
 
   onDestroy(() => {
+    leaving = true;
     flow.dispose();
     net.close();
     // Page left after the account was created: the new session applies.
@@ -118,7 +121,11 @@
   // New link (visit, switch between invitations): load from the start.
   $effect(() => {
     const value = token;
-    untrack(() => void flow.open(value));
+    untrack(() => {
+      // Another invitation in the same page: the account just created still applies before the flow starts anew.
+      if (flow.accepted && !signingIn) void loadAccount();
+      void flow.open(value);
+    });
   });
 </script>
 
