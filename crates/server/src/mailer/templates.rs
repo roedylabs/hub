@@ -9,7 +9,7 @@
 //! notices and the test email; without digests, system notices, the mail
 //! logo and places from GeoIP. The links point to the hub's pages.
 
-use std::net::IpAddr;
+use std::{net::IpAddr, sync::Arc};
 
 use askama::Template;
 use jiff::Timestamp;
@@ -23,6 +23,7 @@ use super::{
 use crate::{
     db::repo::users::Role,
     i18n::{t, tf},
+    logo::{Logos, Png},
     settings::Language,
 };
 
@@ -152,14 +153,21 @@ impl Plate {
     }
 }
 
+/// Path of the mail logo: public and without sign-in
+/// ([`crate::web::branding`]), the mails embed it with an absolute URL.
+pub const MAIL_LOGO_PATH: &str = "/branding/mail-logo.png";
+
 /// Branding and organisation (`AppState::brand`). The default: app name
-/// "Roedy Hub" on apricot, no organisation details (then the app name is in
-/// the footer).
+/// "Roedy Hub", standard mark on apricot, no organisation details (then the
+/// app name is in the footer).
 #[derive(Debug, Clone)]
 pub struct Brand {
     pub app: String,
     pub accent: Accent,
     pub plate: Plate,
+    /// All versions of the app icon, drawn from the branding; `None` if
+    /// drawing failed.
+    pub logos: Option<Arc<Logos>>,
     pub org: Option<String>,
     pub support: Option<String>,
     pub imprint: Option<String>,
@@ -172,11 +180,19 @@ impl Default for Brand {
             app: APP_NAME.into(),
             accent: Accent::named("apricot"),
             plate: Plate::Accent,
+            logos: Logos::standard(),
             org: None,
             support: None,
             imprint: None,
             privacy: None,
         }
+    }
+}
+
+impl Brand {
+    /// Mail logo as PNG; without it the header shows only the plate.
+    pub fn mail_logo(&self) -> Option<&Png> {
+        self.logos.as_ref().map(|logos| &logos.mail)
     }
 }
 
@@ -252,9 +268,12 @@ impl<'a> Frame<'a> {
             acc_ink: brand.accent.ink,
             app: &brand.app,
             logo_bg: brand.plate.colors(brand.accent).0,
-            // The mail logo follows with the branding; until then the header
-            // shows the plate.
-            logo_src: None,
+            // With a version: image proxies (e.g. Gmail's) load the new logo after a
+            // branding change; the route always returns the current one,
+            // so older mails never show a missing one either.
+            logo_src: brand
+                .mail_logo()
+                .map(|png| format!("{}?v={}", ctx.link(MAIL_LOGO_PATH), png.version)),
             org: some(&brand.org).unwrap_or(&brand.app),
             // The organisation is already checked on save; here only so
             // that no other scheme ever ends up as a link in a mail.
@@ -958,9 +977,27 @@ pub(super) mod tests {
         text.parse().unwrap()
     }
 
+    /// Fixed logos for the tests: otherwise the version in the address depends
+    /// on the PNG bytes, i.e. on the resvg version.
+    fn logos() -> Option<Arc<Logos>> {
+        let png = |bytes: &'static [u8]| Png {
+            bytes: bytes.into(),
+            etag: "\"logo\"".into(),
+            version: "0123456789ab".into(),
+        };
+        Some(Arc::new(Logos {
+            mail: png(b"mail"),
+            small: png(b"small"),
+            icon: png(b"icon"),
+            maskable: png(b"maskable"),
+            touch: png(b"touch"),
+        }))
+    }
+
     /// Branding with every organisation detail filled in.
     fn brand() -> Brand {
         Brand {
+            logos: logos(),
             org: Some("Example Ltd".into()),
             support: Some("support@example.com".into()),
             imprint: Some("https://example.com/imprint".into()),
@@ -1390,11 +1427,62 @@ pub(super) mod tests {
     /// nothing; the header shows only the plate.
     #[test]
     fn defaults_without_organisation() {
-        let brand = Brand::default();
+        let brand = Brand {
+            accent: Accent::named("sky"),
+            logos: logos(),
+            ..Brand::default()
+        };
         let mail = with_context(&brand, Theme::Light, |ctx| invite().render(ctx).unwrap());
         assert!(mail.text.contains("\n--\nRoedy Hub"), "{}", mail.text);
-        assert!(!mail.html.contains("mailto:") && !mail.html.contains("<img"));
+        assert!(!mail.html.contains("mailto:"));
         assert!(!mail.text.contains("Legal notice"));
+        // Plate in the brand colour, with this branding's logo inside.
+        assert!(mail.html.contains(
+            r##"bgcolor="#82bbec" aria-hidden="true" style="width:40px;height:40px;padding:0;border-radius:12px;background:#82bbec;vertical-align:middle"><img src="##
+        ));
+    }
+
+    #[test]
+    fn logo_png_with_the_standard_brand() {
+        let brand = brand();
+        for theme in [Theme::Light, Theme::Dark] {
+            let html = with_context(&brand, theme, |ctx| invite().render(ctx).unwrap().html);
+            assert!(html.contains(
+                r##"<td width="40" height="40" bgcolor="#f5a06e" aria-hidden="true" style="width:40px;height:40px;padding:0;border-radius:12px;background:#f5a06e;vertical-align:middle"><img src="https://hub.example.com/branding/mail-logo.png?v=0123456789ab" width="40" height="40" alt="" "##
+            ), "{html}");
+        }
+    }
+
+    #[test]
+    fn plates_without_png_show_only_the_plate() {
+        for (plate, bg) in [("light", "#fffdfa"), ("dark", "#2b221c")] {
+            // Without a PNG (drawing failed) only the plate.
+            let brand = Brand {
+                plate: Plate::named(plate),
+                logos: None,
+                ..brand()
+            };
+            assert_eq!(brand.mail_logo(), None, "{plate}");
+            let html = with_context(&brand, Theme::Light, |ctx| {
+                invite().render(ctx).unwrap().html
+            });
+            assert!(
+                html.contains(&format!(
+                    r#"bgcolor="{bg}" aria-hidden="true" style="width:40px;height:40px;padding:0;border-radius:12px;background:{bg};vertical-align:middle"></td>"#
+                )),
+                "{plate}"
+            );
+            assert!(!html.contains("<img"), "{plate}");
+            // The button stays in the brand colour.
+            assert!(html.contains("background:#f5a06e"), "{plate}");
+        }
+    }
+
+    #[test]
+    fn standard_brand_has_the_standard_logos() {
+        let brand = Brand::default();
+        assert_eq!(brand.logos, Logos::standard());
+        assert!(brand.mail_logo().unwrap().bytes.starts_with(b"\x89PNG"));
     }
 
     #[test]

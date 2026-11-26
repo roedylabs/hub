@@ -1,30 +1,41 @@
 //! Instance-wide details for everyone: organization and branding
 //! (Administration › Organization and Branding).
 //!
-//! They live in `app_settings` (keys [`ORG`] and [`BRANDING`]) and in memory
-//! ([`Instance`], loaded at startup, set after every change while still on
-//! the database thread). `GET session`, `GET public/config`, the issuer of
+//! They live in `app_settings` (keys [`ORG`] and [`BRANDING`], the logo in
+//! `assets`) and in memory ([`Instance`], loaded at startup with the logos
+//! drawn, set after every change while still on the database thread). `GET session`, `GET public/config`, the issuer of
 //! authenticator apps and `AppState::brand` (mails) read from there – one
 //! source without a database query per request.
 //! Changed by: `api::organization` and `api::branding`.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/instance.rs`) without the
-//! banner, the update hint, the browser cache version and the logo (which
-//! needs `resvg` and fonts to render it for mails); the hub's name is the
-//! organization's name.
+//! banner, the update hint, the browser cache version, the app name and the
+//! sign-in texts of the branding: the hub's name is the organization's name,
+//! which also gives the logo's initial.
 
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::{db::repo::app_settings, mailer::templates::APP_NAME};
+use crate::{
+    db::repo::{app_settings, assets},
+    logo::{Image, Logos},
+    mailer::templates::APP_NAME,
+};
 
 /// Key of the organization in `app_settings`.
 pub const ORG: &str = "org";
 /// Key of the branding in `app_settings`.
 pub const BRANDING: &str = "branding";
+
+/// Logo kinds; the first is the default.
+pub const KINDS: [&str; 4] = ["standard", "initial", "icon", "image"];
+/// How an image is fitted; the first is the default.
+pub const FITS: [&str; 2] = ["padded", "fill"];
+/// Plates behind the logo; the first is the default.
+pub const PLATES: [&str; 3] = ["accent", "light", "dark"];
 
 /// Organization details; `None` means "not specified" (an empty field on the
 /// page).
@@ -66,22 +77,93 @@ impl Org {
     }
 }
 
-/// Branding: the accent colour (one of `mailer::templates::ACCENTS`) and
-/// whether users may choose their own (`userAccent`).
+/// Branding: the logo (`kind`, `letter`, `icon`, `image`, `fit`, `plate`,
+/// `tilt`), the accent colour (one of `mailer::templates::ACCENTS`) and
+/// whether users may choose their own (`userAccent`). `image` is the ID of
+/// the logo in `assets` (its address comes from [`Image::path`]),
+/// `imageName` and `imageMeta` describe it on the page (file name and size).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Branding {
+    pub kind: String,
+    pub letter: String,
+    pub icon: String,
+    pub image: Option<String>,
+    pub image_name: String,
+    pub image_meta: String,
+    pub fit: String,
+    pub plate: String,
+    pub tilt: bool,
     pub color: String,
     pub user_accent: bool,
 }
 
 impl Default for Branding {
-    /// Apricot; users may choose their own accent.
+    /// The standard logo in apricot; users may choose their own accent.
     fn default() -> Self {
         Self {
+            kind: KINDS[0].into(),
+            letter: String::new(),
+            icon: "ti-mountain".into(),
+            image: None,
+            image_name: String::new(),
+            image_meta: String::new(),
+            fit: FITS[0].into(),
+            plate: PLATES[0].into(),
+            tilt: true,
             color: "apricot".into(),
             user_accent: true,
         }
+    }
+}
+
+/// The branding with its logo and the PNGs drawn from it.
+#[derive(Debug, Clone)]
+pub struct BrandingState {
+    pub branding: Branding,
+    pub image: Option<Image>,
+    /// `None` if drawing failed (then only the plate).
+    pub logos: Option<Arc<Logos>>,
+}
+
+impl Default for BrandingState {
+    fn default() -> Self {
+        Self {
+            branding: Branding::default(),
+            image: None,
+            logos: Logos::standard(),
+        }
+    }
+}
+
+impl BrandingState {
+    /// Whether the drawn logo shows the hub's name: the initial without a
+    /// letter of its own (also the kind "image" without an image, and an
+    /// unknown kind, which draw the initial as in the web app).
+    pub fn shows_name(&self) -> bool {
+        let kind = self.branding.kind.as_str();
+        let draws_initial = match kind {
+            "standard" | "icon" => false,
+            "image" => self.image.is_none(),
+            _ => true,
+        };
+        draws_initial && self.branding.letter.trim().is_empty()
+    }
+
+    /// Draws the logos for branding and image; `name` is the hub's name
+    /// for the initial.
+    pub fn new(branding: Branding, image: Option<Image>, name: &str) -> Self {
+        let logos = Logos::render_or_warn(&branding, image.as_ref(), name);
+        Self {
+            branding,
+            image,
+            logos,
+        }
+    }
+
+    /// Address of the logo, if there is one.
+    pub fn image_path(&self) -> Option<String> {
+        self.image.as_ref().map(Image::path)
     }
 }
 
@@ -111,23 +193,40 @@ pub fn load_org(conn: &Connection) -> anyhow::Result<Org> {
     Ok(load(conn, ORG, |_| Org::default())?.unwrap_or_default())
 }
 
-/// Branding from the database; without a (readable) entry the default.
-pub fn load_branding(conn: &Connection) -> anyhow::Result<Branding> {
-    Ok(load(conn, BRANDING, |_| Branding::default())?.unwrap_or_default())
+/// Branding from the database, without a (readable) entry the default, with
+/// the logo from `assets`. If it is missing there, the branding applies
+/// without an image (with a warning) – the kind "image" then draws the
+/// initial.
+pub fn load_branding(conn: &Connection) -> anyhow::Result<(Branding, Option<Image>)> {
+    let mut branding: Branding = load(conn, BRANDING, |_| Branding::default())?.unwrap_or_default();
+    let image = match &branding.image {
+        Some(id) => {
+            let image = assets::get(conn, id)?;
+            if image.is_none() {
+                tracing::warn!("branding logo {id} missing from assets");
+                branding.image = None;
+            }
+            image
+        }
+        None => None,
+    };
+    Ok((branding, image))
 }
 
 /// The in-memory state.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Instance {
     org: RwLock<Org>,
-    branding: RwLock<Branding>,
+    branding: RwLock<Arc<BrandingState>>,
 }
 
 impl Instance {
-    /// Reads everything from the database.
+    /// Reads everything from the database and draws the logo.
     pub fn load(&self, conn: &Connection) -> anyhow::Result<()> {
-        self.set_org(load_org(conn)?);
-        self.set_branding(load_branding(conn)?);
+        let org = load_org(conn)?;
+        let (branding, image) = load_branding(conn)?;
+        self.set_branding(BrandingState::new(branding, image, org.hub_name()));
+        self.set_org(org);
         Ok(())
     }
 
@@ -142,18 +241,18 @@ impl Instance {
         *self.org.write().unwrap_or_else(PoisonError::into_inner) = org;
     }
 
-    pub fn branding(&self) -> Branding {
+    pub fn branding(&self) -> Arc<BrandingState> {
         self.branding
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
-    pub fn set_branding(&self, branding: Branding) {
+    pub fn set_branding(&self, branding: BrandingState) {
         *self
             .branding
             .write()
-            .unwrap_or_else(PoisonError::into_inner) = branding;
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(branding);
     }
 
     /// The hub's name ([`Org::hub_name`]).
@@ -181,13 +280,21 @@ mod tests {
     fn defaults_without_entries() {
         let conn = conn();
         assert_eq!(load_org(&conn).unwrap(), Org::default());
+        let (branding, image) = load_branding(&conn).unwrap();
+        assert_eq!(image, None);
         assert_eq!(
-            serde_json::to_value(load_branding(&conn).unwrap()).unwrap(),
-            serde_json::json!({ "color": "apricot", "userAccent": true })
+            serde_json::to_value(branding).unwrap(),
+            serde_json::json!({
+                "kind": "standard", "letter": "", "icon": "ti-mountain", "image": null,
+                "imageName": "", "imageMeta": "", "fit": "padded", "plate": "accent",
+                "tilt": true, "color": "apricot", "userAccent": true,
+            })
         );
         let instance = Instance::default();
         instance.load(&conn).unwrap();
         assert_eq!(instance.name(), "Roedy Hub");
+        assert_eq!(instance.branding().logos, Logos::standard());
+        assert!(!instance.branding().shows_name());
     }
 
     #[test]
@@ -197,7 +304,7 @@ mod tests {
         conn.execute(
             "INSERT INTO app_settings (key, json) VALUES \
              ('org', '{\"name\":\"Example Inc.\",\"fax\":\"0\"}'), \
-             ('branding', '{\"color\":\"sage\",\"kind\":\"image\"}')",
+             ('branding', '{\"color\":\"sage\",\"kind\":\"image\",\"image\":\"missing\",\"later\":1}')",
             [],
         )
         .unwrap();
@@ -205,13 +312,17 @@ mod tests {
         instance.load(&conn).unwrap();
         assert_eq!(instance.name(), "Example Inc.");
         assert_eq!(instance.org().email, None);
+        let state = instance.branding();
+        assert_eq!(state.branding.color, "sage");
+        assert_eq!(state.branding.kind, "image");
+        // An image missing from `assets`: the kind "image" draws the initial.
         assert_eq!(
-            instance.branding(),
-            Branding {
-                color: "sage".into(),
-                user_accent: true
-            }
+            (state.branding.image.as_deref(), state.image_path()),
+            (None, None)
         );
+        assert!(state.shows_name());
+        assert!(state.logos.is_some());
+        assert_ne!(state.logos, Logos::standard());
     }
 
     #[test]
@@ -224,6 +335,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_org(&conn).unwrap(), Org::default());
-        assert_eq!(load_branding(&conn).unwrap(), Branding::default());
+        assert_eq!(load_branding(&conn).unwrap().0, Branding::default());
+    }
+
+    #[test]
+    fn branding_with_image_from_assets() {
+        let conn = conn();
+        let image = crate::logo::upload::check(
+            crate::logo::Format::Svg,
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#.to_vec(),
+        )
+        .unwrap();
+        assets::insert(&conn, &image).unwrap();
+        let branding = Branding {
+            kind: "image".into(),
+            image: Some(image.id.clone()),
+            ..Branding::default()
+        };
+        app_settings::set(&conn, BRANDING, &branding).unwrap();
+        let instance = Instance::default();
+        instance.load(&conn).unwrap();
+        let state = instance.branding();
+        assert_eq!(state.branding, branding);
+        assert_eq!(state.image.as_ref(), Some(&image));
+        assert_eq!(
+            state.image_path().unwrap(),
+            format!("/branding/image/{}.svg", image.id)
+        );
     }
 }

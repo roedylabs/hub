@@ -6,7 +6,9 @@
 //! - `org`: details of the organization like `instance::Org` (name, website,
 //!   help, support, legal notice, privacy, terms of use, source code),
 //!   `null` = not given.
-//! - `branding`: `color` and `userAccent`.
+//! - `branding`: logo and colours with the fields of `instance::Branding`;
+//!   `image` is the URL of the uploaded logo (`/branding/image/…`) or
+//!   `null`.
 //! - `setup_required`: setup is pending (no administrator yet).
 //!
 //! Organization and branding come from `AppState::instance`, from which
@@ -14,12 +16,12 @@
 //! and web app.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/api/public.rs`) without
-//! banner, logo, maintenance mode, version and update hint.
+//! banner, maintenance mode, version and update hint.
 
 use axum::{Json, Router, extract::State, routing::get};
 use serde_json::{Value, json};
 
-use super::ApiError;
+use super::{ApiError, branding};
 use crate::{app::AppState, db, db::repo::users};
 
 pub fn routes() -> Router<AppState> {
@@ -29,10 +31,14 @@ pub fn routes() -> Router<AppState> {
 async fn config(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let setup_required = !db::call(&state.db, |conn| Ok(users::admin_exists(conn)?)).await?;
     let org = state.instance.org();
+    let mut shown = branding::view(&state.instance.branding());
+    for field in branding::ADMIN_ONLY {
+        shown.remove(field);
+    }
     Ok(Json(json!({
         "name": org.hub_name(),
         "org": org,
-        "branding": state.instance.branding(),
+        "branding": shown,
         "setup_required": setup_required,
     })))
 }

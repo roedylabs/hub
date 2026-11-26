@@ -778,7 +778,11 @@ async fn the_organization_names_the_hub() {
                 "name": null, "website": null, "help": null, "email": null,
                 "imprint": null, "privacy": null, "terms": null, "source": null,
             },
-            "branding": { "color": "apricot", "userAccent": true },
+            "branding": {
+                "kind": "standard", "letter": "", "icon": "ti-mountain", "image": null,
+                "fit": "padded", "plate": "accent", "tilt": true, "color": "apricot",
+                "userAccent": true,
+            },
             "setup_required": false,
         })
     );
@@ -848,56 +852,224 @@ async fn the_organization_names_the_hub() {
     assert_eq!(me["hub"]["name"], "Roedy Hub");
 }
 
+fn svg_data_url(svg: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(svg)
+    )
+}
+
+/// Branding: logo, plate and colours, the logo as data URL validated and
+/// sanitized, `public/config`, mail logo, manifest and mails from the same
+/// source, from the database after a restart.
 #[tokio::test]
-async fn branding_sets_the_accent() {
+async fn branding_is_checked_saved_drawn_and_public() {
     let t = team().await;
+    let put = async |body: Value| t.admin(Method::PUT, "/admin/branding", Some(body)).await;
+    let brand0 = json!({
+        "kind": "standard", "letter": "", "icon": "ti-mountain", "image": null,
+        "imageName": "", "imageMeta": "", "fit": "padded", "plate": "accent",
+        "tilt": true, "color": "apricot", "userAccent": true,
+    });
+    let get = t.admin(Method::GET, "/admin/branding", None).await;
+    assert_eq!(get.json(), brand0, "{}", get.body);
+    let (_, _, standard_logo) = t.env.file("/branding/mail-logo.png").await;
+    let standard_logos = t.env.state.brand().logos.clone().unwrap();
+
+    // Validated per field; unknown fields are 400.
+    let invalid = put(json!({ "letter": "abc", "color": "Grass", "icon": "ti-mail" })).await;
     assert_eq!(
-        t.admin(Method::GET, "/admin/branding", None).await.json(),
-        json!({ "color": "apricot", "userAccent": true })
-    );
-    let reply = t
-        .admin(
-            Method::PUT,
-            "/admin/branding",
-            Some(json!({ "color": "green" })),
-        )
-        .await;
-    assert_eq!(
-        reply.json()["fields"],
-        json!({ "color": { "code": "invalid" } })
-    );
-    let reply = t
-        .admin(Method::PUT, "/admin/branding", Some(json!({ "logo": "x" })))
-        .await;
-    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
-    let reply = t
-        .admin(
-            Method::PUT,
-            "/admin/branding",
-            Some(json!({ "color": "sage", "userAccent": false })),
-        )
-        .await;
-    assert_eq!(
-        reply.json(),
-        json!({ "color": "sage", "userAccent": false })
+        invalid.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        invalid.body
     );
     assert_eq!(
-        t.env
-            .request(Method::GET, "/public/config", None, &[])
-            .await
-            .json()["branding"],
-        json!({ "color": "sage", "userAccent": false })
+        invalid.json()["fields"],
+        json!({
+            "letter": { "code": "too_long" }, "color": { "code": "invalid" },
+            "icon": { "code": "invalid" },
+        })
     );
-    // The mails take the accent too.
-    assert_eq!(t.env.state.brand().accent.base, "#94c48d");
+    for unknown in [json!({ "name": "Post" }), json!({ "loginTitle": "Hi" })] {
+        assert_eq!(put(unknown).await.status, StatusCode::BAD_REQUEST);
+    }
+    let required = put(json!({ "kind": "image" })).await;
+    assert_eq!(required.json()["fields"]["image"]["code"], "required");
+    for (url, code) in [
+        ("data:image/gif;base64,R0lGODlh".to_owned(), "unsupported"),
+        (
+            svg_data_url(r#"<svg xmlns="http://www.w3.org/2000/svg"><text>Post</text></svg>"#),
+            "svg_text",
+        ),
+        ("/branding/image/foreign.png".to_owned(), "invalid"),
+    ] {
+        let reply = put(json!({ "kind": "image", "image": url })).await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{code}");
+        assert_eq!(reply.json()["fields"]["image"]["code"], code);
+    }
+    assert!(audit_rows(&t.env, "branding.%").await.is_empty());
+
+    // An SVG with a script is stored sanitized.
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert(1)</script><rect width="10" height="10" fill="#ff0000" onclick="alert(2)"/></svg>"##;
+    let saved = put(json!({
+        "kind": "image", "image": svg_data_url(svg), "imageName": "logo.svg",
+        "imageMeta": "SVG · 1 KB", "fit": "fill", "plate": "dark", "color": "sage",
+        "userAccent": false,
+    }))
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let saved = saved.json();
+    let image = saved["image"].as_str().unwrap().to_owned();
+    assert!(
+        image.starts_with("/branding/image/") && image.ends_with(".svg"),
+        "{image}"
+    );
+    assert_eq!(saved["imageName"], "logo.svg");
+    let (status, headers, body) = t.env.file(&image).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/svg+xml");
+    assert_eq!(
+        headers["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    assert!(
+        headers["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none'")
+    );
+    let body = String::from_utf8(body).unwrap();
+    assert!(!body.contains("alert") && body.contains("<path"), "{body}");
+    assert_eq!(
+        t.env.file("/branding/image/0000.svg").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // public/config without details of the file, mail logo drawn anew.
+    let config = t
+        .env
+        .request(Method::GET, "/public/config", None, &[])
+        .await
+        .json();
+    assert_eq!(config["branding"]["image"], image);
+    assert_eq!(config["branding"]["userAccent"], false);
+    assert_eq!(config["branding"]["plate"], "dark");
+    assert!(config["branding"].get("imageName").is_none(), "{config}");
+    let (status, _, logo) = t.env.file("/branding/mail-logo.png").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(logo, standard_logo);
+    assert_eq!(logo, t.env.state.brand().mail_logo().unwrap().bytes);
+
+    // Web manifest: name, colours and new icons with version.
+    let (status, _, manifest) = t.env.file("/manifest.webmanifest").await;
+    assert_eq!(status, StatusCode::OK);
+    let manifest: Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(manifest["name"], "Roedy Hub");
+    assert_eq!(manifest["background_color"], "#2b221c");
+    let brand = t.env.state.brand();
+    let logos = brand.logos.as_ref().unwrap();
+    assert_eq!(
+        manifest["icons"][1]["src"],
+        format!("/branding/app-icon.png?v={}", logos.icon.version)
+    );
+    assert_ne!(logos.icon, standard_logos.icon);
+    for (path, png) in [
+        ("/branding/app-icon.png", &logos.icon),
+        ("/branding/app-icon-192.png", &logos.small),
+        ("/branding/app-icon-maskable.png", &logos.maskable),
+        ("/branding/apple-touch-icon.png", &logos.touch),
+    ] {
+        let (status, _, bytes) = t.env.file(path).await;
+        assert_eq!(
+            (status, bytes.as_slice()),
+            (StatusCode::OK, png.bytes.as_ref()),
+            "{path}"
+        );
+    }
+    // The mails take the plate, the accent and the logo with its version.
+    assert_eq!(brand.accent.base, "#94c48d");
+
+    // Previous URL: the logo stays; without a change no entry.
+    let kept = put(json!({ "image": image, "tilt": false })).await.json();
+    assert_eq!(kept["image"], image);
+    assert_eq!(kept["imageName"], "logo.svg");
+    let same = put(json!({ "tilt": false })).await;
+    assert_eq!(same.status, StatusCode::OK);
+
+    // After a restart from the database, with the same logo.
+    let restarted = roedy_hub_server::app::AppState::new(
+        t.env.state.db.clone(),
+        std::sync::Arc::new(roedy_hub_server::web::static_files::WebAssets::None),
+        &roedy_hub_server::config::Config::default(),
+        url::Url::parse("https://app.example.com").unwrap(),
+        roedy_hub_server::crypto::SecretKey::random().unwrap(),
+    )
+    .unwrap();
+    let instance = restarted.instance.clone();
+    db::call(&restarted.db, move |conn| instance.load(conn))
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted.instance.branding().image_path(),
+        Some(image.clone())
+    );
+    assert_eq!(
+        restarted.brand().mail_logo(),
+        t.env.state.brand().mail_logo()
+    );
+
+    // Reset to the defaults: logo gone, also from `assets`.
+    let reset = put(brand0.clone()).await.json();
+    assert_eq!(reset, brand0);
+    assert_eq!(t.env.file(&image).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(t.env.file("/branding/mail-logo.png").await.2, standard_logo);
+    assert_eq!(t.env.count("assets").await, 0);
+
     let rows = audit_rows(&t.env, "branding.update").await;
-    assert_eq!(
-        rows,
-        [(
-            "branding.update".into(),
-            r#"{"fields":["color","userAccent"]}"#.into()
-        )]
-    );
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(rows[1].1.contains(r#""fields":["tilt"]"#), "{}", rows[1].1);
+}
+
+/// The initial of the logo is the hub's name: a new organization name draws
+/// it anew.
+#[tokio::test]
+async fn the_initial_follows_the_organization_name() {
+    let t = team().await;
+    t.admin(
+        Method::PUT,
+        "/admin/branding",
+        Some(json!({ "kind": "initial" })),
+    )
+    .await;
+    let hub = t.env.file("/branding/mail-logo.png").await.2;
+    t.admin(
+        Method::PUT,
+        "/admin/org",
+        Some(json!({ "name": "Example Org" })),
+    )
+    .await;
+    let org = t.env.file("/branding/mail-logo.png").await.2;
+    assert_ne!(hub, org, "R for Roedy Hub, E for Example Org");
+    t.admin(
+        Method::PUT,
+        "/admin/org",
+        Some(json!({ "website": "https://example.com" })),
+    )
+    .await;
+    assert_eq!(t.env.file("/branding/mail-logo.png").await.2, org);
+    // With a letter of its own, the name does not matter.
+    t.admin(
+        Method::PUT,
+        "/admin/branding",
+        Some(json!({ "letter": "Q" })),
+    )
+    .await;
+    let letter = t.env.file("/branding/mail-logo.png").await.2;
+    t.admin(Method::PUT, "/admin/org", Some(json!({ "name": "Other" })))
+        .await;
+    assert_eq!(t.env.file("/branding/mail-logo.png").await.2, letter);
 }
 
 #[tokio::test]

@@ -15,6 +15,7 @@ pub mod instance;
 pub mod jobs;
 pub mod locks;
 pub mod logging;
+pub mod logo;
 pub mod mailer;
 pub mod notices;
 pub mod random;

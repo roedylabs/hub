@@ -1,25 +1,23 @@
-//! Administration › Organization and Branding.
+//! Administration › Organization.
 //!
 //! - `GET admin/org`, `PUT admin/org`: the fields of [`Org`]; `PUT`
 //!   changes the given ones, `null` or an empty text deletes one. Links only
 //!   as `http(s)://…`, the support address only in address form – checked on
 //!   save, and the mail templates check again to be safe. The name is the
-//!   hub's name (`GET session` › `hub.name`, mails, authenticator apps).
-//! - `GET admin/branding`, `PUT admin/branding`: the fields of [`Branding`]
-//!   (`color`, `userAccent`); `PUT` changes the given ones.
+//!   hub's name (`GET session` › `hub.name`, mails, authenticator apps, the
+//!   logo's initial – a new name redraws the logo).
 //!
-//! Both live in `app_settings` and in the in-memory store
-//! (`crate::instance`), which `GET session`, `public/config` and the mails
-//! read; changes are recorded in the audit log (category settings) with the
-//! names of the changed fields.
+//! It lives in `app_settings` and in the in-memory store (`crate::instance`),
+//! which `GET session`, `public/config` and the mails read; changes are
+//! recorded in the audit log (category settings) with the names of the
+//! changed fields.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/api/instance.rs` and
-//! `api/branding.rs`) without the banner and the logo.
+//! Taken over from Roedy Mail (`crates/server/src/api/instance.rs`) without
+//! the banner.
 
 use std::collections::BTreeMap;
 
 use axum::{Json, Router, extract::State, routing::get};
-use serde::Deserialize;
 use serde_json::json;
 
 use super::{ApiError, FieldErrors, JsonBody};
@@ -34,8 +32,8 @@ use crate::{
             audit_log::{self, Category, Entry},
         },
     },
-    instance::{self, BRANDING, Branding, ORG, Org},
-    mailer::templates::{ACCENTS, is_address, is_link},
+    instance::{self, BrandingState, ORG, Org},
+    mailer::templates::{is_address, is_link},
 };
 
 /// Maximum lengths in characters: organization name, links, support address.
@@ -44,14 +42,12 @@ const MAX_LINK: usize = 2048;
 const MAX_EMAIL: usize = 254;
 
 pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/admin/org", get(get_org).put(put_org))
-        .route("/admin/branding", get(get_branding).put(put_branding))
+    Router::new().route("/admin/org", get(get_org).put(put_org))
 }
 
 /// A single-line text without control characters with at most `max`
 /// characters.
-fn text_error(value: &str, max: usize) -> Option<&'static str> {
+pub(super) fn text_error(value: &str, max: usize) -> Option<&'static str> {
     if value.chars().count() > max {
         Some("too_long")
     } else if value.chars().any(char::is_control) {
@@ -81,7 +77,7 @@ fn org_error(field: &str, value: &str) -> Option<&'static str> {
     }
 }
 
-fn entry(action: &'static str, user: &AuthUser, ip: ClientIp) -> Entry {
+pub(super) fn entry(action: &'static str, user: &AuthUser, ip: ClientIp) -> Entry {
     Entry::new(Category::Settings, action).actor(user).ip(ip.0)
 }
 
@@ -150,87 +146,20 @@ async fn put_org(
             tx.commit()?;
         }
         // Still on the connection: a later change never sets the store
-        // before this one.
+        // before this one. The initial of the logo follows the name.
+        let current = instance.branding();
+        if changed.contains(&"name") && current.shows_name() {
+            instance.set_branding(BrandingState::new(
+                current.branding.clone(),
+                current.image.clone(),
+                org.hub_name(),
+            ));
+        }
         instance.set_org(org.clone());
         Ok(org)
     })
     .await?;
     Ok(Json(org))
-}
-
-async fn get_branding(State(state): State<AppState>, _: AdminUser) -> Json<Branding> {
-    Json(state.instance.branding())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct BrandingBody {
-    color: Option<String>,
-    user_accent: Option<bool>,
-}
-
-impl BrandingBody {
-    fn check(&self) -> FieldErrors {
-        let mut errors = FieldErrors::default();
-        if self
-            .color
-            .as_deref()
-            .is_some_and(|color| !ACCENTS.iter().any(|(name, _)| *name == color))
-        {
-            errors.code("color", "invalid");
-        }
-        errors
-    }
-
-    /// The branding after the change and the names of the changed fields.
-    fn apply(&self, current: &Branding) -> (Branding, Vec<&'static str>) {
-        let mut next = current.clone();
-        let mut changed = Vec::new();
-        if let Some(color) = &self.color
-            && *color != next.color
-        {
-            next.color.clone_from(color);
-            changed.push("color");
-        }
-        if let Some(user_accent) = self.user_accent
-            && user_accent != next.user_accent
-        {
-            next.user_accent = user_accent;
-            changed.push("userAccent");
-        }
-        (next, changed)
-    }
-}
-
-/// "Save" on the Branding page (also "Reset" with the default values). The
-/// audit log records the names of the changed fields (`branding.update`).
-async fn put_branding(
-    State(state): State<AppState>,
-    AdminUser(user): AdminUser,
-    ip: ClientIp,
-    JsonBody(body): JsonBody<BrandingBody>,
-) -> Result<Json<Branding>, ApiError> {
-    let errors = body.check();
-    if !errors.is_empty() {
-        return Err(errors.into_error());
-    }
-    let instance = state.instance.clone();
-    let branding = db::call(&state.db, move |conn| {
-        let tx = conn.transaction()?;
-        let (next, changed) = body.apply(&instance::load_branding(&tx)?);
-        if !changed.is_empty() {
-            app_settings::set(&tx, BRANDING, &next)?;
-            audit_log::insert(
-                &tx,
-                &entry("branding.update", &user, ip).details(json!({ "fields": changed })),
-            )?;
-            tx.commit()?;
-        }
-        instance.set_branding(next.clone());
-        Ok(next)
-    })
-    .await?;
-    Ok(Json(branding))
 }
 
 #[cfg(test)]
@@ -282,20 +211,5 @@ mod tests {
             ]
         );
         assert!(org_changes(body(&[("fax", Some("0"))])).is_err());
-    }
-
-    #[test]
-    fn branding_checks_and_names_changes() {
-        let body =
-            |json: serde_json::Value| -> BrandingBody { serde_json::from_value(json).unwrap() };
-        assert!(body(json!({ "color": "rose" })).check().is_empty());
-        assert!(!body(json!({ "color": "Green" })).check().is_empty());
-        let (next, changed) =
-            body(json!({ "color": "sage", "userAccent": true })).apply(&Branding::default());
-        assert_eq!(changed, ["color"]);
-        assert_eq!(next.color, "sage");
-        let (_, changed) = body(json!({ "userAccent": false })).apply(&next);
-        assert_eq!(changed, ["userAccent"]);
-        assert!(serde_json::from_value::<BrandingBody>(json!({ "kind": "image" })).is_err());
     }
 }

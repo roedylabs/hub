@@ -41,13 +41,18 @@ use crate::{
     jobs,
     locks::KeyedLocks,
     logging::{self, SETUP_TARGET},
+    logo::IMAGE_PATH,
     mailer::{
         self, Mailer,
-        templates::{Accent, Brand, Plate},
+        templates::{Accent, Brand, MAIL_LOGO_PATH, Plate},
     },
     rate_limit::RateLimiter,
     setup_token,
     web::{
+        branding::{
+            self, APP_ICON_PATH, MANIFEST_PATH, MASKABLE_ICON_PATH, SMALL_ICON_PATH,
+            TOUCH_ICON_PATH,
+        },
         security_headers,
         static_files::{self, WebAssets},
     },
@@ -171,14 +176,16 @@ impl AppState {
         self.instance.name()
     }
 
-    /// Branding of the mails from organization and branding.
+    /// Branding of the mails from organization and branding, with the drawn
+    /// logos – so that a mail's `<img>` and `/branding/mail-logo.png` match.
     pub fn brand(&self) -> Brand {
         let org = self.instance.org();
         let branding = self.instance.branding();
         Brand {
             app: org.hub_name().to_owned(),
-            accent: Accent::named(&branding.color),
-            plate: Plate::Accent,
+            accent: Accent::named(&branding.branding.color),
+            plate: Plate::named(&branding.branding.plate),
+            logos: branding.logos.clone(),
             org: org.name,
             support: org.email,
             imprint: org.imprint,
@@ -193,6 +200,15 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        // Branding files for mails, the sign-in page and installed apps
+        // (`web::branding`), without sign-in.
+        .route(MAIL_LOGO_PATH, get(branding::mail_logo))
+        .route(&format!("{IMAGE_PATH}/{{file}}"), get(branding::image))
+        .route(MANIFEST_PATH, get(branding::manifest))
+        .route(SMALL_ICON_PATH, get(branding::small_icon))
+        .route(APP_ICON_PATH, get(branding::app_icon))
+        .route(MASKABLE_ICON_PATH, get(branding::maskable_icon))
+        .route(TOUCH_ICON_PATH, get(branding::touch_icon))
         .nest(api::PREFIX, api.clone())
         // `nest` does not cover `/api/v1/` (axum 0.8); the API answers there too.
         .route_service(&format!("{}/", api::PREFIX), api.with_state(state.clone()))

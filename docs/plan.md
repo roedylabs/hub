@@ -142,6 +142,7 @@ New:
 | `askama`, `jiff` (embedded time zone database) | Same as Mail: mail templates, times in the recipient's time zone |
 | `argon2`, `totp-rs`, `icu_properties` | Same as Mail: password hashes, authenticator apps, letters in display names (`icu_properties` already comes with `url`) |
 | `ulid`, `ring`, `usvg` | Same as Mail: IDs, Ed25519, sanitizing the app icons |
+| `resvg`, `roxmltree`, `imagesize`, `zune-jpeg`, `image-webp`, `skrifa` | Same as Mail: drawing the branding logo for mails and app icons, checking uploaded logos (decided on 2026-11-26) |
 
 No JWT library: the JWS is ~150 lines on top of `ring`, `base64` and
 `serde_json`, which keeps `alg` handling strict.
@@ -219,14 +220,18 @@ checks pass in every PR; every PR has tests for what it adds.
       CSV export with a limit, retention 30/90/365 days, texts in en and de
       for every key in `api::audit::texts`), `admin/org` and
       `admin/branding` (`instance`: the organization's name is `hub.name`,
-      the issuer of authenticator apps and the name in mails; accent colour
-      and `userAccent`), `public/config`, `roedy-hub reset-admin`
+      the issuer of authenticator apps, the name in mails and the logo's
+      initial; Mail's logo with kind, letter, icon, upload, fit, plate,
+      tilt, accent colour and `userAccent`, drawn by `logo` with `resvg` for
+      the mail header and the app icons, uploads checked and SVGs
+      sanitized as in Mail, stored in `assets` – migration 0004),
+      `public/config`, the public branding files (`/branding/…`,
+      `/manifest.webmanifest`), `roedy-hub reset-admin`
       (`--link` prints a reset link instead of a password; the sole-admin
       advice in mails names it again) and the jobs `session_cleanup`
-      (hourly) and `audit_retention` (daily) on Mail's small scheduler. No
-      migration was needed. Not taken over: the logo (rendering it for mails
-      needs `resvg` and fonts; upload only would need `usvg`), banner and
-      sign-in texts of Mail's branding.
+      (hourly) and `audit_retention` (daily) on Mail's small scheduler. Not
+      taken over: banner, sign-in texts and the push icon of Mail's
+      branding.
    4. [ ] **Pages** – setup, sign-in (with `?next=` and `reauth=1`),
       invitation, account and administration in the web app.
 4. **Gateway, pairing, identity** – `crates/contract`, signing keys and
