@@ -26,7 +26,8 @@ use crate::{
 pub const LIFETIME: i64 = 60;
 /// A cached token is used for this long after `iat`, not longer.
 pub const REUSE: i64 = 30;
-/// Past this many cached tokens, stale ones are dropped on the next miss.
+/// Past this many cached tokens, stale ones are dropped on a miss – at most
+/// once per [`REUSE`], so that many live tokens do not cost a scan each time.
 const PRUNE_FROM: usize = 1024;
 
 /// What the hub sends about a user to one app: the claims without issuer,
@@ -95,7 +96,14 @@ struct Cached {
 pub struct Identities {
     /// `iss`: the hub's public URL without trailing slash.
     issuer: String,
-    cache: Mutex<HashMap<(String, String), Cached>>,
+    cache: Mutex<Cache>,
+}
+
+#[derive(Default)]
+struct Cache {
+    tokens: HashMap<(String, String), Cached>,
+    /// Unix seconds of the last pruning.
+    pruned_at: Option<i64>,
 }
 
 impl Identities {
@@ -128,7 +136,7 @@ impl Identities {
         let key = (subject.sid.clone(), aud.to_owned());
         {
             let cache = self.lock();
-            if let Some(cached) = cache.get(&key)
+            if let Some(cached) = cache.tokens.get(&key)
                 && cached.kid == signer.kid()
                 && (0..REUSE).contains(&(now - cached.iat))
                 && cached.subject == *subject
@@ -139,10 +147,16 @@ impl Identities {
 
         let token: Arc<str> = signer.sign(&subject.claims(&self.issuer, aud, now))?.into();
         let mut cache = self.lock();
-        if cache.len() >= PRUNE_FROM {
-            cache.retain(|_, cached| (0..REUSE).contains(&(now - cached.iat)));
+        let due = cache
+            .pruned_at
+            .is_none_or(|at| !(0..REUSE).contains(&(now - at)));
+        if cache.tokens.len() >= PRUNE_FROM && due {
+            cache
+                .tokens
+                .retain(|_, cached| (0..REUSE).contains(&(now - cached.iat)));
+            cache.pruned_at = Some(now);
         }
-        cache.insert(
+        cache.tokens.insert(
             key,
             Cached {
                 subject: subject.clone(),
@@ -156,16 +170,21 @@ impl Identities {
 
     /// Drops the cached tokens of a session, when it is revoked.
     pub fn forget_session(&self, sid: &str) {
-        self.lock().retain(|(session, _), _| session != sid);
+        self.lock().tokens.retain(|(session, _), _| session != sid);
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), Cached>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[cfg(test)]
     fn cached(&self) -> usize {
-        self.lock().len()
+        self.lock().tokens.len()
+    }
+
+    #[cfg(test)]
+    fn pruned_at(&self) -> Option<i64> {
+        self.lock().pruned_at
     }
 }
 
@@ -394,8 +413,33 @@ mod tests {
             hub.issue("mail", &s, t0());
         }
         assert!(hub.identities.cached() >= PRUNE_FROM);
-        hub.issue("mail", &subject(), t0() + SignedDuration::from_secs(REUSE));
+        assert_eq!(hub.identities.pruned_at(), Some(t0().as_second()));
+        let pruned = t0() + SignedDuration::from_secs(REUSE);
+        hub.issue("mail", &subject(), pruned);
         assert_eq!(hub.identities.cached(), 1);
+        assert_eq!(hub.identities.pruned_at(), Some(pruned.as_second()));
+
+        // Live tokens are not scanned again on every miss: the next pruning
+        // waits REUSE.
+        for i in 0..PRUNE_FROM {
+            let s = Subject {
+                sid: format!("L{i}"),
+                ..subject()
+            };
+            hub.issue("mail", &s, pruned);
+        }
+        let soon = pruned + SignedDuration::from_secs(REUSE - 1);
+        hub.issue("contacts", &subject(), soon);
+        assert_eq!(hub.identities.pruned_at(), Some(pruned.as_second()));
+        assert_eq!(hub.identities.cached(), PRUNE_FROM + 2);
+        let due = pruned + SignedDuration::from_secs(REUSE);
+        hub.issue("calendar", &subject(), due);
+        assert_eq!(hub.identities.pruned_at(), Some(due.as_second()));
+        assert_eq!(
+            hub.identities.cached(),
+            2,
+            "only the token of `soon` and the new one"
+        );
     }
 
     #[test]

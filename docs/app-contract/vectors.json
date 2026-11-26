@@ -297,6 +297,15 @@
       "error": "malformed"
     },
     {
+      "name": "crit-null",
+      "description": "A crit header member with the value null: rejected all the same.",
+      "typ": "roedy-id+jwt",
+      "now": 1795600150,
+      "token": "eyJhbGciOiJFZERTQSIsImNyaXQiOm51bGwsImtpZCI6IjAxSkRYM004UTRWNlMyVDBSOVA3TjVLM0gxIiwidHlwIjoicm9lZHktaWQrand0In0.eyJhcHBfcm9sZSI6InVzZXIiLCJhdWQiOiJtYWlsIiwiYXV0aF90aW1lIjoxNzk1NjAwMDAwLCJlbWFpbCI6ImFsZXhAZXhhbXBsZS5jb20iLCJleHAiOjE3OTU2MDAxODMsImlhdCI6MTc5NTYwMDEyMywiaXNzIjoiaHR0cHM6Ly9hcHAuZXhhbXBsZS5jb20iLCJsb2NhbGUiOiJkZSIsIm5hbWUiOiJBbGV4IEV4YW1wbGUiLCJyb2xlIjoidXNlciIsInNpZCI6IjAxSkRYM0ExQzNFNUc3SjlLMU0zTjVQN1E5Iiwic3ViIjoiMDFKRFgyUTdCNVczWTFaOVg3VjVUM1IxUDAiLCJ1c2VybmFtZSI6ImFsZXgifQ.oVqAzXRu-ggWoZBk01t7f9gRG4tWmRDsWH5ksfe14nAWplU-0RVpuAwqH0bIrd4KOlI7jAwqXr7is2exJ2ZbBw",
+      "valid": false,
+      "error": "malformed"
+    },
+    {
       "name": "two-segments",
       "description": "Header and claims without a signature segment.",
       "typ": "roedy-id+jwt",

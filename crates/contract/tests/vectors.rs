@@ -319,6 +319,12 @@ fn cases() -> Vec<Case> {
             Error::Malformed,
         ),
         Case::identity(
+            "crit-null",
+            "A crit header member with the value null: rejected all the same.",
+            identity_header(|h| h["crit"] = Value::Null),
+            Error::Malformed,
+        ),
+        Case::identity(
             "two-segments",
             "Header and claims without a signature segment.",
             format!("{h}.{p}"),

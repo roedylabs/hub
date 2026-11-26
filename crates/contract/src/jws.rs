@@ -6,7 +6,8 @@
 //! failure:
 //!
 //! 1. at most [`MAX_TOKEN_LEN`] bytes, three segments, canonical base64url,
-//!    header a JSON object (duplicate members are an error), no `crit`;
+//!    header a JSON object without a member name twice (at any depth, as
+//!    for the claims), no `crit` member whatever its value;
 //! 2. `alg` = `EdDSA`, `typ` = the expected kind, a `kid` – `alg` is checked
 //!    before anything else, so `none` or `HS256` never get further;
 //! 3. `kid` in the JWKS ([`Error::UnknownKey`]: refresh the JWKS and retry);
@@ -14,11 +15,14 @@
 //! 5. only then the claims: a JSON object with `iss`, `aud` (a string),
 //!    `iat` and `exp`; issuer, audience, expiry, `iat` and lifetime.
 
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair as _, UnparsedPublicKey};
-use serde::{Deserialize, Serialize, de::IgnoredAny};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor},
+};
 
 use crate::{ALG, Claims, Jwk, Jwks, LEEWAY, MAX_TOKEN_LEN};
 
@@ -130,7 +134,7 @@ pub fn verify<C: Claims>(token: &str, keys: &Jwks, expected: &Expected<'_>) -> R
     if header.typ.as_deref() != Some(C::TYP.as_str()) {
         return Err(Error::Type);
     }
-    if header.crit.is_some() {
+    if header.crit {
         return Err(Error::Malformed);
     }
     let kid = header.kid.ok_or(Error::Malformed)?;
@@ -171,15 +175,79 @@ fn decode(segment: &str) -> Result<Vec<u8>, Error> {
 }
 
 /// `T` from a JSON object. serde would also read a struct from an array by
-/// position; the contract only has objects.
-fn object<T: serde::de::DeserializeOwned>(json: &[u8]) -> Option<T> {
+/// position, and would take an unknown member twice without noticing; the
+/// contract only has objects, each member name once.
+fn object<T: de::DeserializeOwned>(json: &[u8]) -> Option<T> {
     let start = json
         .iter()
         .position(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'))?;
     if json[start] != b'{' {
         return None;
     }
+    serde_json::from_slice::<Unique>(json).ok()?;
     serde_json::from_slice(json).ok()
+}
+
+/// Any JSON value in which no object has a member name twice, at any depth.
+struct Unique;
+
+impl<'de> Deserialize<'de> for Unique {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(Unique)
+    }
+}
+
+impl<'de> Visitor<'de> for Unique {
+    type Value = Unique;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_unit<E>(self) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Unique, A::Error> {
+        while seq.next_element::<Unique>()?.is_some() {}
+        Ok(Unique)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Unique, A::Error> {
+        let mut names = HashSet::new();
+        while let Some(name) = map.next_key::<String>()? {
+            if !names.insert(name) {
+                return Err(de::Error::custom("duplicate member"));
+            }
+            map.next_value::<Unique>()?;
+        }
+        Ok(Unique)
+    }
+}
+
+/// `true` for a present member, whatever its value (also `null`).
+fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    IgnoredAny::deserialize(deserializer).map(|_| true)
 }
 
 /// JOSE header as read. Other members are ignored, except `crit`: a
@@ -190,7 +258,8 @@ struct Header {
     alg: Option<String>,
     typ: Option<String>,
     kid: Option<String>,
-    crit: Option<IgnoredAny>,
+    #[serde(default, deserialize_with = "present")]
+    crit: bool,
 }
 
 /// JOSE header as written, in the contract's order.
@@ -536,6 +605,57 @@ mod tests {
                 Error::Malformed,
             ),
             (
+                "crit null",
+                with_header(|h| h["crit"] = Value::Null),
+                Error::Malformed,
+            ),
+            (
+                "crit empty",
+                with_header(|h| h["crit"] = json!([])),
+                Error::Malformed,
+            ),
+            (
+                "unknown header member twice",
+                key().sign_raw(
+                    br#"{"alg":"EdDSA","typ":"roedy-id+jwt","kid":"k1","x-future":1,"x-future":2}"#,
+                    claims_json().to_string().as_bytes(),
+                ),
+                Error::Malformed,
+            ),
+            (
+                "header member twice, once escaped",
+                key().sign_raw(
+                    br#"{"alg":"EdDSA","typ":"roedy-id+jwt","kid":"k1","x":1,"\u0078":2}"#,
+                    claims_json().to_string().as_bytes(),
+                ),
+                Error::Malformed,
+            ),
+            (
+                "unknown claim twice",
+                {
+                    let claims = claims_json().to_string();
+                    let claims =
+                        format!(r#"{},"extra":1,"extra":2}}"#, &claims[..claims.len() - 1]);
+                    key().sign_raw(
+                        header("roedy-id+jwt").to_string().as_bytes(),
+                        claims.as_bytes(),
+                    )
+                },
+                Error::Claims,
+            ),
+            (
+                "known claim twice",
+                {
+                    let claims = claims_json().to_string();
+                    let claims = format!(r#"{},"sub":"other"}}"#, &claims[..claims.len() - 1]);
+                    key().sign_raw(
+                        header("roedy-id+jwt").to_string().as_bytes(),
+                        claims.as_bytes(),
+                    )
+                },
+                Error::Claims,
+            ),
+            (
                 "unknown kid",
                 unknown_kid.sign(&identity()).unwrap(),
                 Error::UnknownKey,
@@ -718,6 +838,22 @@ mod tests {
         for (name, iat, exp, now, result) in cases {
             assert_eq!(at(iat, exp, now).map(|_| ()), result, "{name}");
         }
+    }
+
+    #[test]
+    fn rejects_a_member_twice_at_any_depth() {
+        let header = header("roedy-event+jwt").to_string();
+        let claims = serde_json::to_string(&event()).unwrap();
+        let sign = |claims: &str| key().sign_raw(header.as_bytes(), claims.as_bytes());
+        let verify_event = |token: &str| verify::<Event>(token, &jwks(), &expected()).map(|_| ());
+        assert_eq!(verify_event(&sign(&claims)), Ok(()));
+        let nested = claims.replace(r#""data":{"#, r#""data":{"sub":"x","#);
+        assert_ne!(nested, claims);
+        assert_eq!(verify_event(&sign(&nested)), Err(Error::Claims));
+        let in_array = claims.replace(r#""data":{"#, r#""data":{"list":[{"a":1,"a":2}],"#);
+        assert_eq!(verify_event(&sign(&in_array)), Err(Error::Claims));
+        let distinct = claims.replace(r#""data":{"#, r#""data":{"list":[{"a":1},{"a":2}],"#);
+        assert_eq!(verify_event(&sign(&distinct)), Ok(()));
     }
 
     #[test]

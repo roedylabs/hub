@@ -67,6 +67,14 @@ pub fn retire(conn: &Connection, kid: &str, at: Timestamp) -> rusqlite::Result<b
     )? > 0)
 }
 
+/// Sets `retired_at`, also over an earlier one.
+pub fn set_retired(conn: &Connection, kid: &str, at: Timestamp) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE signing_keys SET retired_at = ?2 WHERE kid = ?1",
+        (kid, format(at)),
+    )? > 0)
+}
+
 pub fn delete(conn: &Connection, kid: &str) -> rusqlite::Result<bool> {
     Ok(conn.execute("DELETE FROM signing_keys WHERE kid = ?1", [kid])? > 0)
 }
@@ -91,6 +99,14 @@ mod tests {
 
         assert!(retire(&conn, "A", later).unwrap());
         assert!(!retire(&conn, "A", t).unwrap(), "retired once");
+        assert!(set_retired(&conn, "B", t).unwrap());
+        assert!(set_retired(&conn, "B", later).unwrap());
+        assert!(!set_retired(&conn, "missing", t).unwrap());
+        conn.execute(
+            "UPDATE signing_keys SET retired_at = NULL WHERE kid = 'B'",
+            [],
+        )
+        .unwrap();
         let rows = all(&conn).unwrap();
         assert_eq!(
             rows,

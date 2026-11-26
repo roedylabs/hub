@@ -12,17 +12,19 @@
 //! - keys out of the JWKS are deleted.
 //!
 //! A key that cannot be decrypted (the instance key changed) can no longer
-//! sign: it is retired, and a new key signs at once. Apps that meet its
-//! unknown `kid` refresh their JWKS (contract § 4.3).
+//! sign: it is retired at once, its public key stays published for
+//! [`KEEP_AFTER`] like any other retired key, and if no other key can sign, a
+//! new key signs at once. Apps that meet its unknown `kid` refresh their
+//! JWKS (contract § 4.3).
 //!
-//! [`KeyStore`] holds the decrypted keys in memory and picks the signing key
-//! and the published ones by time, so that a new key takes over on time
-//! between two runs.
+//! [`KeyStore`] holds the keys in memory and picks the signing key and the
+//! published ones by time, so that a new key takes over on time between two
+//! runs.
 
 use std::sync::{Arc, RwLock};
 
 use jiff::{SignedDuration, Timestamp};
-use roedy_hub_contract::{Jwks, SigningKey};
+use roedy_hub_contract::{Jwk, Jwks, SigningKey};
 use rusqlite::Connection;
 
 use crate::{crypto::SecretKey, db, db::repo::signing_keys, random};
@@ -37,10 +39,14 @@ pub const KEEP_AFTER: SignedDuration = SignedDuration::from_mins(10);
 /// Purpose of the encryption (`crypto`); the row is the `kid`.
 const PURPOSE: &str = "signing_keys.private";
 
-/// A decrypted key with its times.
+/// A key with its times.
 #[derive(Debug, Clone)]
 pub struct Key {
-    pub key: Arc<SigningKey>,
+    pub kid: String,
+    pub public: [u8; 32],
+    /// The decrypted private key; `None` if it cannot be decrypted: then the
+    /// key is only published until its time is over and never signs.
+    pub signer: Option<Arc<SigningKey>>,
     pub active_from: Timestamp,
     pub retired_at: Option<Timestamp>,
 }
@@ -74,11 +80,13 @@ impl KeyStore {
     /// with a published key is better than not at all.
     pub fn signer(&self, now: Timestamp) -> Option<Arc<SigningKey>> {
         let keys = self.keys();
-        keys.iter()
+        let usable: Vec<&Key> = keys.iter().filter(|k| k.signer.is_some()).collect();
+        usable
+            .iter()
             .rev()
             .find(|k| k.active_from <= now)
-            .or_else(|| keys.first())
-            .map(|k| k.key.clone())
+            .or(usable.first())
+            .and_then(|k| k.signer.clone())
     }
 
     /// The public keys at `now` (contract § 4.4).
@@ -88,7 +96,7 @@ impl KeyStore {
                 .keys()
                 .iter()
                 .filter(|k| k.published(now))
-                .map(|k| k.key.jwk())
+                .map(|k| Jwk::ed25519(&k.kid, &k.public))
                 .collect(),
         }
     }
@@ -121,33 +129,55 @@ pub fn rotate(
             tracing::info!(kid = row.kid, "retired signing key deleted");
             continue;
         }
-        match open(secrets, &row) {
-            Ok(key) => keys.push(Key {
-                key: Arc::new(key),
-                active_from: row.active_from,
-                retired_at,
-            }),
+        let Ok(public) = <[u8; 32]>::try_from(row.public.as_slice()) else {
+            // The schema allows only 32 bytes; a broken row cannot be published.
+            signing_keys::delete(&tx, &row.kid)?;
+            tracing::warn!(
+                kid = row.kid,
+                "signing key with a broken public key deleted"
+            );
+            continue;
+        };
+        let (signer, retired_at) = match open(secrets, &row) {
+            Ok(key) => (Some(Arc::new(key)), retired_at),
             Err(error) => {
-                // Out of the JWKS after KEEP_AFTER; deleted with the next run after that.
+                // It signs no more from now on; still published for
+                // KEEP_AFTER, deleted with the next run after that.
                 if signing_keys::retire(&tx, &row.kid, now)? {
                     tracing::warn!(kid = row.kid, "signing key retired: {error:#}");
                 }
+                (None, Some(retired_at.unwrap_or(now)))
             }
-        }
+        };
+        keys.push(Key {
+            kid: row.kid,
+            public,
+            signer,
+            active_from: row.active_from,
+            retired_at,
+        });
     }
 
     // The newest key that may still sign.
     let newest = keys
         .iter()
-        .filter(|k| k.retired_at.is_none_or(|retired| now < retired))
+        .filter(|k| k.signer.is_some() && k.retired_at.is_none_or(|retired| now < retired))
         .max_by_key(|k| k.active_from);
     let rotation = match newest {
         None => Rotation::Created(create(&tx, secrets, now, &mut keys)?),
         Some(newest) if now < newest.active_from + ROTATE_AFTER => Rotation::None,
         Some(_) => {
+            // Every key that may still sign does so until the new one takes
+            // over, also one whose retirement was due earlier (its successor
+            // can no longer sign): it stays published KEEP_AFTER past that.
             let from = now + PUBLISH_BEFORE;
             for key in &mut keys {
-                if key.retired_at.is_none() && signing_keys::retire(&tx, key.key.kid(), from)? {
+                let signs = key.signer.is_some()
+                    && key
+                        .retired_at
+                        .is_none_or(|retired| now < retired && retired < from);
+                if signs {
+                    signing_keys::set_retired(&tx, &key.kid, from)?;
                     key.retired_at = Some(from);
                 }
             }
@@ -205,9 +235,12 @@ fn create(
     let seed = random::bytes::<32>()?;
     let key = SigningKey::from_seed(kid.clone(), &seed)?;
     let sealed = secrets.seal(PURPOSE, &kid, &seed)?;
-    signing_keys::insert(conn, &kid, &sealed, &key.public_key(), active_from)?;
+    let public = key.public_key();
+    signing_keys::insert(conn, &kid, &sealed, &public, active_from)?;
     keys.push(Key {
-        key: Arc::new(key),
+        kid: kid.clone(),
+        public,
+        signer: Some(Arc::new(key)),
         active_from,
         retired_at: None,
     });
@@ -320,8 +353,9 @@ mod tests {
         let (rotation, after) = rotate(&mut conn, &secrets, t0()).unwrap();
         assert_eq!(rotation, Rotation::None);
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].key.kid(), before[0].key.kid());
-        assert_eq!(after[0].key.public_key(), before[0].key.public_key());
+        assert_eq!(after[0].kid, before[0].kid);
+        assert_eq!(after[0].public, before[0].public);
+        assert!(after[0].signer.is_some());
     }
 
     #[test]
@@ -330,7 +364,7 @@ mod tests {
         let secrets = SecretKey::random().unwrap();
         let (_, keys) = rotate(&mut conn, &secrets, t0()).unwrap();
         let row = signing_keys::all(&conn).unwrap().remove(0);
-        assert_eq!(row.public, keys[0].key.public_key());
+        assert_eq!(row.public, keys[0].public);
         // Seed (32 bytes) sealed: version, nonce, ciphertext and tag.
         assert_eq!(row.private_enc.len(), 1 + 24 + 32 + 16);
         // Bound to its row: moved to another kid, it does not open.
@@ -339,17 +373,14 @@ mod tests {
             ..row.clone()
         };
         assert!(open(&secrets, &moved).is_err());
-        assert_eq!(
-            open(&secrets, &row).unwrap().public_key(),
-            keys[0].key.public_key()
-        );
+        assert_eq!(open(&secrets, &row).unwrap().public_key(), keys[0].public);
     }
 
     #[test]
     fn replaces_keys_it_cannot_decrypt() {
         let mut conn = conn();
         let (_, old) = rotate(&mut conn, &SecretKey::random().unwrap(), t0()).unwrap();
-        let old = old[0].key.kid().to_owned();
+        let old = old[0].kid.clone();
 
         // Another instance key: the old key cannot sign any more.
         let secrets = SecretKey::random().unwrap();
@@ -361,7 +392,6 @@ mod tests {
             panic!("no new key: {rotation:?}");
         };
         assert_eq!(store.signer(later).unwrap().kid(), new);
-        assert_eq!(kids(&store.jwks(later)), [new.as_str()]);
         let rows = signing_keys::all(&conn).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(
@@ -369,10 +399,64 @@ mod tests {
             Some(later)
         );
 
+        // Its public key stays published for KEEP_AFTER: tokens it signed
+        // before the change still verify.
+        let still = later + KEEP_AFTER - SignedDuration::from_millis(1);
+        assert_eq!(kids(&store.jwks(later)), [old.as_str(), new.as_str()]);
+        assert_eq!(kids(&store.jwks(still)), [old.as_str(), new.as_str()]);
+        assert_eq!(kids(&store.jwks(later + KEEP_AFTER)), [new.as_str()]);
+        // A restart in between keeps it published and does not sign with it.
+        let (rotation, keys) = rotate(&mut conn, &secrets, still).unwrap();
+        assert_eq!(rotation, Rotation::None);
+        store.replace(keys);
+        assert_eq!(kids(&store.jwks(still)), [old.as_str(), new.as_str()]);
+        assert_eq!(store.signer(still).unwrap().kid(), new);
+        assert_eq!(store.signer(t0()).unwrap().kid(), new, "even before");
+
         // Deleted once out of the JWKS's time.
-        let (rotation, _) = rotate(&mut conn, &secrets, later + KEEP_AFTER).unwrap();
+        let (rotation, keys) = rotate(&mut conn, &secrets, later + KEEP_AFTER).unwrap();
         assert_eq!(rotation, Rotation::None);
         assert_eq!(signing_keys::all(&conn).unwrap().len(), 1);
+        assert_eq!(keys.len(), 1);
+    }
+
+    /// The successor that was due cannot sign: the predecessor signs on
+    /// until the next key and stays published KEEP_AFTER past that.
+    #[test]
+    fn a_predecessor_signing_longer_stays_published_longer() {
+        let mut conn = conn();
+        let secrets = SecretKey::random().unwrap();
+        let store = KeyStore::default();
+        let (_, keys) = rotate(&mut conn, &secrets, t0()).unwrap();
+        let first = keys[0].kid.clone();
+        let rotated = t0() + ROTATE_AFTER;
+        let (Rotation::Scheduled(second), _) = rotate(&mut conn, &secrets, rotated).unwrap() else {
+            panic!("no rotation");
+        };
+        conn.execute(
+            "UPDATE signing_keys SET private_enc = x'00' WHERE kid = ?1",
+            [&second],
+        )
+        .unwrap();
+
+        // Shortly before the second key would sign.
+        let now = rotated + PUBLISH_BEFORE - SignedDuration::from_secs(1);
+        let (rotation, keys) = rotate(&mut conn, &secrets, now).unwrap();
+        store.replace(keys);
+        let Rotation::Scheduled(third) = rotation else {
+            panic!("no successor: {rotation:?}");
+        };
+        let switch = now + PUBLISH_BEFORE;
+        let last = switch - SignedDuration::from_millis(1);
+        assert_eq!(store.signer(last).unwrap().kid(), first);
+        assert_eq!(store.signer(switch).unwrap().kid(), third);
+        let still = switch + KEEP_AFTER - SignedDuration::from_millis(1);
+        assert!(kids(&store.jwks(still)).contains(&first));
+        assert_eq!(kids(&store.jwks(switch + KEEP_AFTER)), [third.as_str()]);
+        let stored = signing_keys::all(&conn).unwrap();
+        let retired = |kid: &str| stored.iter().find(|r| r.kid == kid).unwrap().retired_at;
+        assert_eq!(retired(&first), Some(switch));
+        assert_eq!(retired(&second), Some(now));
     }
 
     #[test]
