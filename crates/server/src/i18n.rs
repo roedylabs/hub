@@ -6,8 +6,8 @@
 //! A key missing in a language falls back to English, a key missing in
 //! English to the key itself; tests keep both files in step.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/i18n.rs`) without plurals,
-//! which follow with the mails.
+//! Taken over from Roedy Mail (`crates/server/src/i18n.rs`) without plurals:
+//! the hub's mails need none.
 
 use std::{
     collections::HashMap,

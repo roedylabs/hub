@@ -1,11 +1,11 @@
-//! Own account: `GET auth/me`, `PATCH auth/me` (Account › Profile),
-//! `DELETE auth/me` (delete account) and `PUT auth/password`, plus the check
-//! of password and code in an existing session ([`Reauth`]), which
-//! Account › Security also uses for authenticator apps and recovery codes
-//! (`api::mfa`).
+//! Own account: `GET auth/me`, `PATCH auth/me` (Account › Profile, with the
+//! email change of `api::email`), `DELETE auth/me` (delete account) and
+//! `PUT auth/password`, plus the check of password and code in an existing
+//! session ([`Reauth`]), which Account › Security also uses for
+//! authenticator apps and recovery codes (`api::mfa`), as does the email
+//! address change.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/api/me.rs`) without the
-//! email change, which follows with the system mails, and without mail
+//! Taken over from Roedy Mail (`crates/server/src/api/me.rs`) without mail
 //! accounts and notifications.
 
 use std::{net::IpAddr, time::Duration};
@@ -15,7 +15,7 @@ use anyhow::Context as _;
 use axum::{
     Json, Router,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, put},
 };
@@ -29,7 +29,8 @@ use serde_json::{Value, json};
 
 use super::{
     ApiError, FieldErrors, JsonBody,
-    auth::{MAX_PASSWORD, code_used, invalid_code, user_json},
+    auth::{self, MAX_PASSWORD, code_used, invalid_code, user_json},
+    email::{self as email_change, email_taken, open_json},
 };
 use crate::{
     app::AppState,
@@ -38,11 +39,14 @@ use crate::{
     db::{
         self,
         repo::{
+            self,
             audit_log::{self, Category, Entry},
-            sessions, totp_devices,
+            email_changes, sessions, totp_devices,
             users::{self, Since},
         },
     },
+    mailer::system_mail,
+    notices::{self, Outbox, Security},
     rate_limit::{Key, Policy, Reservation},
 };
 
@@ -73,7 +77,8 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/password", put(change_password))
 }
 
-/// Checks an email address the same way as the web app (setup, profile).
+/// Checks an email address the same way as the web app (setup, profile,
+/// "Forgot password", invitations).
 pub fn check_email(errors: &mut FieldErrors, field: &str, address: &str) {
     if address.is_empty() {
         errors.code(field, "required");
@@ -321,28 +326,40 @@ pub async fn mfa_enabled(state: &AppState, user: &AuthUser) -> Result<bool, ApiE
 }
 
 /// The own account: profile, role, whether an authenticator app is set up,
-/// when the password was changed and `sole_admin` – the only active
-/// administrator, who cannot delete their account (`DELETE auth/me` would
-/// answer 409 `last_admin`); always `false` for users.
+/// when the password was changed, the pending email change (`email_change`:
+/// new address and expiry of the last link sent, even if expired – the page
+/// shows "confirmation pending" until it is confirmed, discarded or
+/// replaced) and `sole_admin` – the only active administrator, who cannot
+/// delete their account (`DELETE auth/me` would answer 409 `last_admin`);
+/// always `false` for users. For administrators also
+/// `system_mail_configured` (a sending account is stored).
 async fn me(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
 ) -> Result<Json<Value>, ApiError> {
     let id = user.id.clone();
     let admin = user.is_admin();
-    let (changed_at, mfa, sole_admin) = db::call(&state.db, move |conn| {
+    let (changed_at, mfa, open, system_mail, sole_admin) = db::call(&state.db, move |conn| {
         let changed_at = users::credentials_by_id(conn, &id)?
             .map(|c| c.password_changed_at)
             .unwrap_or_default();
         let mfa = totp_devices::has_confirmed(conn, &id)?;
+        let open = email_changes::open(conn, &id)?;
+        let system_mail = admin
+            .then(|| system_mail::is_configured(conn))
+            .transpose()?;
         let sole_admin = admin && users::sole_admin(conn, &id)?;
-        Ok((changed_at, mfa, sole_admin))
+        Ok((changed_at, mfa, open, system_mail, sole_admin))
     })
     .await?;
     let mut body = user_json(&user);
     body["mfa_enabled"] = mfa.into();
     body["password_changed_at"] = changed_at.into();
+    body["email_change"] = open.as_ref().map_or(Value::Null, open_json);
     body["sole_admin"] = sole_admin.into();
+    if let Some(configured) = system_mail {
+        body["system_mail_configured"] = configured.into();
+    }
     Ok(Json(body))
 }
 
@@ -351,15 +368,33 @@ async fn me(
 struct ProfileBody {
     display_name: Option<String>,
     username: Option<String>,
+    email: Option<String>,
+    /// Current password for a new email address (second step).
+    password: Option<String>,
+    /// Required in the second step with an authenticator app.
+    code: Option<String>,
 }
 
-/// Account › Profile: display name and username apply immediately. A taken
-/// username is 422 `invalid` with `fields.username.code` = `taken`; on an
-/// error nothing is saved.
+/// Account › Profile: display name and username apply immediately, a new
+/// email address only after confirmation – in two steps (save the name, then
+/// confirm the address change):
+///
+/// 1. Without `password`: all fields by format, username and address also
+///    for "taken" – the address only among the active users. Otherwise name
+///    and username are saved and the address waits (`status:
+///    reauth_required`).
+/// 2. With `password` (and `code`): the full check, then `security_email`
+///    and `email_confirm` go out (`status: email_sent` with
+///    `email_change`); see `api::email::request`. Name and username from the
+///    same request apply only with the link.
+///
+/// Without a new address `status: ok`. A taken username is 422 `invalid`
+/// with `fields.username.code` = `taken`; on an error nothing is saved.
 async fn update(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     ip: ClientIp,
+    headers: HeaderMap,
     JsonBody(body): JsonBody<ProfileBody>,
 ) -> Result<Json<Value>, ApiError> {
     let mut errors = FieldErrors::default();
@@ -376,20 +411,81 @@ async fn update(
         };
         errors.code("username", code);
     }
+    // A different letter case is a new address as well.
+    let new_email = body
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| *e != user.email);
+    if let Some(new_email) = new_email {
+        check_email(&mut errors, "email", new_email);
+    }
+    let second_step = new_email.is_some() && body.password.is_some();
+    let mut code = None;
+    if second_step {
+        let password = body.password.as_deref().unwrap_or_default();
+        check_current_password(&mut errors, "password", password);
+        let mfa = mfa_enabled(&state, &user).await?;
+        code = check_code(&mut errors, mfa, body.code.as_deref());
+    }
     if !errors.is_empty() {
         return Err(errors.into_error());
+    }
+
+    let (id, login, address) = (
+        user.id.clone(),
+        username.filter(|u| *u != user.username).map(str::to_owned),
+        new_email.map(str::to_owned),
+    );
+    let (login_taken, address_taken) = db::call(&state.db, move |conn| {
+        let login_taken = match &login {
+            Some(login) => users::username_taken(conn, login, &id)?,
+            None => false,
+        };
+        let address_taken = match &address {
+            Some(address) => users::email_taken(conn, address, &id, true)?,
+            None => false,
+        };
+        Ok((login_taken, address_taken))
+    })
+    .await?;
+    if login_taken {
+        return Err(username_taken());
+    }
+    if address_taken {
+        return Err(email_taken());
     }
 
     let change = ProfileChange {
         display_name: name.filter(|n| *n != user.display_name).map(str::to_owned),
         username: username.filter(|u| *u != user.username).map(str::to_owned),
     };
-    let updated = if change.is_some() {
-        save_profile(&state, &user, change, ip).await?
-    } else {
-        user
+    let change = change.is_some().then_some(change);
+    let (Some(new_email), Some(password)) = (new_email, body.password.as_deref()) else {
+        // Without a new address or without a password: name and username
+        // right away, the address waits for the second step.
+        let updated = match change {
+            Some(change) => save_profile(&state, &user, change, ip).await?,
+            None => user,
+        };
+        let status = if new_email.is_some() {
+            "reauth_required"
+        } else {
+            "ok"
+        };
+        return Ok(Json(
+            json!({ "status": status, "user": user_json(&updated) }),
+        ));
     };
-    Ok(Json(json!({ "status": "ok", "user": user_json(&updated) })))
+    let origin = auth::origin(&state, &headers, ip);
+    let credentials = email_change::Credentials { password, code };
+    let (open, updated) =
+        email_change::request(&state, &user, new_email, credentials, change, origin).await?;
+    Ok(Json(json!({
+        "status": "email_sent",
+        "user": user_json(&updated),
+        "email_change": open_json(&open),
+    })))
 }
 
 /// Display name and username from `PATCH auth/me`; `None` = unchanged.
@@ -487,11 +583,13 @@ struct PasswordBody {
 /// authenticator app, new password per the policy. All other sessions end –
 /// an attacker's too; the own one stays. The response states their number
 /// (`sessions_ended`): only if there were others does the page report that
-/// other devices were signed out.
+/// other devices were signed out. Pending links from mails become invalid,
+/// and "Password changed" goes out.
 async fn change_password(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     ip: ClientIp,
+    headers: HeaderMap,
     JsonBody(body): JsonBody<PasswordBody>,
 ) -> Result<Json<Value>, ApiError> {
     let mfa = mfa_enabled(&state, &user).await?;
@@ -507,6 +605,7 @@ async fn change_password(
     // Before the code: if hashing fails (`busy`), the code is not used up.
     let hash = state.hasher.hash(&body.new_password).await?;
     let with_code = code.is_some();
+    let device = auth::device(&headers);
     let guard = match code {
         Some(code) => reauth.totp(&state, &user, code).await?,
         None => reauth.guard(),
@@ -524,6 +623,15 @@ async fn change_password(
         }
         let changed_at = users::set_password(&tx, &user.id, &hash)?;
         let ended = sessions::delete_for_user(&tx, &user.id, Some(&user.session_id))?;
+        // Pending links from mails no longer apply (one of the steps
+        // `security_email` advises).
+        repo::discard_links(&tx, &user.id)?;
+        let mut outbox = Outbox::default();
+        let event = Security::PasswordChanged {
+            device,
+            reset: false,
+        };
+        notices::security(&tx, &mut outbox, (&user).into(), event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.password_change")
@@ -533,10 +641,11 @@ async fn change_password(
                 .details(json!({ "sessions_ended": ended })),
         )?;
         tx.commit()?;
-        Ok(Ok((changed_at, ended)))
+        Ok(Ok((changed_at, ended, outbox)))
     })
     .await?;
-    let (changed_at, ended) = changed?;
+    let (changed_at, ended, outbox) = changed?;
+    outbox.send(&state);
     Ok(Json(
         json!({ "password_changed_at": changed_at, "sessions_ended": ended }),
     ))

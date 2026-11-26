@@ -17,7 +17,10 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
-use crate::db::repo::{user_settings, users};
+use crate::{
+    db::repo::{user_settings, users},
+    mailer::format::Format,
+};
 
 /// A setting with a fixed choice, serialized as a stable identifier.
 macro_rules! choice {
@@ -320,6 +323,12 @@ pub fn save(
 /// A user's language for the server's texts ([`Stored::lang`]).
 pub fn lang_of(conn: &Connection, user_id: &str) -> anyhow::Result<Language> {
     Ok(load(conn, user_id)?.lang)
+}
+
+/// Time zone and language of a user's mails: their language in the default
+/// time zone, until the settings offer one.
+pub fn format_of(conn: &Connection, user_id: &str) -> anyhow::Result<Format> {
+    Ok(Format::default().with_lang(lang_of(conn, user_id)?))
 }
 
 #[cfg(test)]

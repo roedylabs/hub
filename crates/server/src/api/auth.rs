@@ -21,9 +21,12 @@
 //! Fresh sign-in) keeps the session and its ID and only renews `auth_time`,
 //! so the apps keep what they bound to the session.
 //!
+//! A sign-in from a device the account has not used before sends "New
+//! sign-in" (`security_login`), one with a recovery code "Recovery code
+//! used" (`security_recovery_used`, which then also names a new device).
+//!
 //! Taken over from Roedy Mail (`crates/server/src/api/auth.rs`) without
-//! maintenance mode, known devices and security notices, which follow with
-//! the system mails.
+//! maintenance mode.
 
 use std::time::Duration;
 
@@ -44,6 +47,7 @@ use crate::{
     auth::{
         AuthUser, CurrentUser,
         challenge::{self, Challenge, Claim},
+        device::Device,
         recovery::{self, Redeem},
         session::{self, Origin},
         totp::{self, Check},
@@ -53,10 +57,11 @@ use crate::{
         self,
         repo::{
             audit_log::{self, Category, Entry},
-            sessions, totp_devices,
+            known_devices, recovery_codes, sessions, totp_devices,
             users::{self, Credentials, Profile, Since},
         },
     },
+    notices::{self, Outbox, Security},
     rate_limit::{Key, Policy},
 };
 
@@ -112,6 +117,16 @@ pub fn user_json(user: &AuthUser) -> Value {
         "display_name": user.display_name,
         "role": user.role.as_str(),
     })
+}
+
+/// Origin of the request with the ID of the device ([`Device::hash`]).
+pub fn origin(state: &AppState, headers: &HeaderMap, ip: ClientIp) -> Origin {
+    Origin::new(headers, ip.0, &state.secrets)
+}
+
+/// Device of the request, for the security notices.
+pub fn device(headers: &HeaderMap) -> Device {
+    Device::parse(session::user_agent(headers).as_deref())
 }
 
 fn rejected(code: &'static str) -> ApiError {
@@ -209,8 +224,13 @@ impl Method {
 /// (otherwise [`Started::Expired`]: it was removed after the code was
 /// checked), both checked in the same transaction. The session carries the
 /// current profile, not the one from the check.
+///
+/// The device is remembered (`known_devices`); an unknown one adds "New
+/// sign-in" to `outbox`, a recovery code "Recovery code used" instead.
+#[allow(clippy::too_many_arguments, reason = "all parts of one sign-in")]
 fn start_session(
     conn: &mut Connection,
+    outbox: &mut Outbox,
     user_id: &str,
     checked_at: &str,
     origin: &Origin,
@@ -238,6 +258,7 @@ fn start_session(
     };
     if let Some((session_id, auth_time)) = renewed {
         let user = AuthUser::new(profile, session_id, auth_time);
+        notice(&tx, outbox, &user, origin, method)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.reauth")
@@ -254,6 +275,7 @@ fn start_session(
     }
     let started = session::start(&tx, user_id, &client, persistent)?;
     let user = AuthUser::new(profile, started.id.clone(), started.auth_time);
+    notice(&tx, outbox, &user, origin, method)?;
     audit_log::insert(
         &tx,
         &Entry::new(Category::Login, "auth.login")
@@ -264,6 +286,32 @@ fn start_session(
     )?;
     tx.commit()?;
     Ok(Started::Done(user, Some(started.cookie)))
+}
+
+/// Remembers the device of a sign-in and reports "New sign-in" or "Recovery
+/// code used" in the sign-in's transaction.
+fn notice(
+    conn: &Connection,
+    outbox: &mut Outbox,
+    user: &AuthUser,
+    origin: &Origin,
+    method: &Method,
+) -> anyhow::Result<()> {
+    let new_device = known_devices::remember(conn, &user.id, &origin.device_hash)?;
+    let event = match method {
+        Method::Recovery { .. } => {
+            let codes = recovery_codes::summary(conn, &user.id)?;
+            Security::RecoveryUsed {
+                remaining: codes.as_ref().map_or(0, |c| c.unused),
+                total: codes.map_or(0, |c| c.total),
+                new_device,
+                at: origin.into(),
+            }
+        }
+        _ if new_device => Security::Login { at: origin.into() },
+        _ => return Ok(()),
+    };
+    notices::security(conn, outbox, user.into(), event)
 }
 
 /// Result of [`start_session`].
@@ -288,19 +336,23 @@ async fn sign_in(
     previous: Option<CurrentUser>,
     method: Method,
 ) -> Result<Option<(AuthUser, Option<HeaderValue>)>, ApiError> {
-    let started = db::call(&state.db, move |conn| {
+    let (started, outbox) = db::call(&state.db, move |conn| {
         let previous = previous.map(|CurrentUser(user)| user);
-        start_session(
+        let mut outbox = Outbox::default();
+        let started = start_session(
             conn,
+            &mut outbox,
             &user_id,
             &checked_at,
             &origin,
             persistent,
             previous.as_ref(),
             &method,
-        )
+        )?;
+        Ok((started, outbox))
     })
     .await?;
+    outbox.send(state);
     match started {
         Started::Done(user, cookie) => {
             tracing::info!(user = %user.id, "signed in");
@@ -412,7 +464,7 @@ async fn login(
         &state,
         profile.id.clone(),
         password_changed_at.clone(),
-        Origin::new(&headers, ip.0),
+        origin(&state, &headers, ip),
         remember,
         previous,
         Method::Password,
@@ -500,7 +552,7 @@ async fn complete(
         state,
         profile.id,
         challenge.password_changed_at,
-        Origin::new(headers, ip.0),
+        origin(state, headers, ip),
         challenge.remember,
         previous,
         method,
@@ -651,6 +703,7 @@ mod tests {
             user_agent: Some("Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0".into()),
             ip: "198.51.100.56".parse().unwrap(),
             lang: None,
+            device_hash: [7; 32],
         }
     }
 
@@ -661,7 +714,53 @@ mod tests {
         previous: Option<&AuthUser>,
         method: &Method,
     ) -> Started {
-        start_session(conn, id, checked_at, &origin(), true, previous, method).unwrap()
+        start_with(conn, id, checked_at, previous, method).0
+    }
+
+    /// Like [`start`], plus the templates of the notices.
+    fn start_with(
+        conn: &mut Connection,
+        id: &str,
+        checked_at: &str,
+        previous: Option<&AuthUser>,
+        method: &Method,
+    ) -> (Started, Vec<&'static str>) {
+        let mut outbox = Outbox::default();
+        let started = start_session(
+            conn,
+            &mut outbox,
+            id,
+            checked_at,
+            &origin(),
+            true,
+            previous,
+            method,
+        )
+        .unwrap();
+        (started, outbox.templates())
+    }
+
+    /// The first sign-in from a device sends "New sign-in", the next ones
+    /// nothing; a recovery code always sends its own notice, which then names
+    /// a new device.
+    #[test]
+    fn unknown_devices_and_recovery_codes_send_notices() {
+        let mut conn = conn();
+        let id = add(&conn, "max", "max@example.com", Role::User);
+        let at = checked_at(&conn, &id);
+        let (_, sent) = start_with(&mut conn, &id, &at, None, &Method::Password);
+        assert_eq!(sent, ["security_login"]);
+        let (_, sent) = start_with(&mut conn, &id, &at, None, &Method::Password);
+        assert!(sent.is_empty(), "{sent:?}");
+
+        let other = add(&conn, "eva", "eva@example.com", Role::User);
+        let at = checked_at(&conn, &other);
+        known_devices::remember(&conn, &other, &[7; 32]).unwrap();
+        totp_devices::insert_pending(&conn, "d2", &other, b"secret").unwrap();
+        totp_devices::confirm(&conn, "d2", "Phone", 0).unwrap();
+        let method = Method::Recovery { remaining: 9 };
+        let (_, sent) = start_with(&mut conn, &other, &at, None, &method);
+        assert_eq!(sent, ["security_recovery_used"]);
     }
 
     fn count(conn: &Connection, table: &str) -> i64 {

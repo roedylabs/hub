@@ -44,17 +44,13 @@ use serde_json::{Value, json};
 use super::{ApiError, FieldErrors, JsonBody, auth, me};
 use crate::{
     app::AppState,
-    auth::{
-        AuthUser, recovery,
-        session::{self, Origin},
-        totp,
-    },
+    auth::{AuthUser, recovery, session, totp},
     client_ip::ClientIp,
     db::{
         self,
         repo::{
             audit_log::{self, Category, Entry},
-            totp_devices,
+            known_devices, totp_devices,
             users::{self, NewUser, Role},
         },
     },
@@ -367,7 +363,7 @@ async fn complete(
     let device_secret = state
         .secrets
         .seal(totp::SECRET_PURPOSE, &device_id, &opened.secret)?;
-    let origin = Origin::new(&headers, ip.0);
+    let origin = auth::origin(&state, &headers, ip);
 
     let outcome = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
@@ -406,6 +402,8 @@ async fn complete(
         recovery::store(&tx, &user_id, &opened.codes)?;
         let client = origin.client();
         let started = session::start(&tx, &user_id, &client, true)?;
+        // The account's first device: known, without a notice.
+        known_devices::remember(&tx, &user_id, &origin.device_hash)?;
         setup_token::delete(&tx)?;
         setup_totp::delete(&tx)?;
         let admin = AuthUser {

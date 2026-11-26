@@ -33,6 +33,7 @@ use crate::{
     db::{
         self,
         repo::{
+            self,
             audit_log::{self, Category, Entry},
             sessions,
         },
@@ -128,7 +129,9 @@ async fn revoke(
     Ok(response)
 }
 
-/// "Sign out all others": ends all sessions except the own one. If the own
+/// "Sign out all others": ends all sessions except the own one and discards
+/// open links from mails (password reset, email change – one of the steps
+/// `security_email` advises). If the own
 /// one has ended in the meantime (e.g. through a password change on another
 /// device), the request is rejected (401).
 async fn revoke_others(
@@ -142,6 +145,7 @@ async fn revoke_others(
             return Ok(None);
         }
         let ended = sessions::delete_for_user(&tx, &user.id, Some(&user.session_id))?;
+        repo::discard_links(&tx, &user.id)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.sessions_revoke")

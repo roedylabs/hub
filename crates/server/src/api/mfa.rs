@@ -14,13 +14,15 @@
 //! Responses with devices carry the whole state (`devices`, `recovery`), so
 //! the page can render without another request.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/api/mfa.rs`) without the
-//! security notices, which follow with the system mails.
+//! Each change sends its security notice (`security_totp_add`,
+//! `security_totp_remove`, `security_recovery_codes`).
+//!
+//! Taken over from Roedy Mail (`crates/server/src/api/mfa.rs`).
 
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{delete, get, post},
 };
 use rusqlite::Connection;
@@ -28,7 +30,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    ApiError, FieldErrors, JsonBody,
+    ApiError, FieldErrors, JsonBody, auth,
     me::{
         CodeResult, Guard, Reauth, Stale, check_code, check_current_password, is_invisible,
         mfa_enabled,
@@ -48,6 +50,7 @@ use crate::{
             recovery_codes, totp_devices,
         },
     },
+    notices::{self, Outbox, Security},
 };
 
 /// Longest name of an app (like the column).
@@ -132,7 +135,7 @@ fn check_name(errors: &mut FieldErrors, name: Option<&str>) -> Option<String> {
 
 /// Result of the transaction in [`confirm`].
 enum Confirmed {
-    Done(Value),
+    Done(Value, Outbox),
     Invalid,
     NotFound,
     /// Session ended or password changed (see `me::Guard`).
@@ -146,6 +149,7 @@ async fn confirm(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     ip: ClientIp,
+    headers: HeaderMap,
     JsonBody(body): JsonBody<ConfirmBody>,
 ) -> Result<Json<Value>, ApiError> {
     let mut errors = FieldErrors::default();
@@ -160,8 +164,10 @@ async fn confirm(
     let guard = reauth.guard();
     let secrets = state.secrets.clone();
     let device_id = body.id;
-    // Device, with the first one the recovery codes, and audit log in one
-    // transaction: never multi-factor without codes.
+    // Device and address of the request for the security notice.
+    let origin = auth::origin(&state, &headers, ip);
+    // Device, with the first one the recovery codes, notice and audit log in
+    // one transaction: never multi-factor without codes.
     let outcome = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         // Before the code: an ended session does not use it up.
@@ -186,6 +192,13 @@ async fn confirm(
         let codes = first
             .then(|| recovery::replace(&tx, &user.id))
             .transpose()?;
+        let mut outbox = Outbox::default();
+        let event = Security::TotpAdded {
+            name: &name,
+            first,
+            at: (&origin).into(),
+        };
+        notices::security(&tx, &mut outbox, (&user).into(), event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.totp_add")
@@ -197,11 +210,12 @@ async fn confirm(
         let mut overview = overview(&tx, &user.id)?;
         tx.commit()?;
         overview["recovery_codes"] = json!(codes);
-        Ok(Confirmed::Done(overview))
+        Ok(Confirmed::Done(overview, outbox))
     })
     .await?;
     match outcome {
-        Confirmed::Done(overview) => {
+        Confirmed::Done(overview, outbox) => {
+            outbox.send(&state);
             reauth.finish(CodeResult::Accepted)?;
             Ok(Json(overview))
         }
@@ -240,6 +254,7 @@ async fn remove(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     ip: ClientIp,
+    headers: HeaderMap,
     Path(id): Path<String>,
     JsonBody(body): JsonBody<VerifyBody>,
 ) -> Result<Json<Value>, ApiError> {
@@ -253,6 +268,7 @@ async fn remove(
     }
     let guard = verify(&state, &user, body).await?;
     let owner = user.id.clone();
+    let origin = auth::origin(&state, &headers, ip);
     let result = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
@@ -266,6 +282,13 @@ async fn remove(
         if last {
             recovery_codes::delete_all(&tx, &user.id)?;
         }
+        let mut outbox = Outbox::default();
+        let event = Security::TotpRemoved {
+            name: &name,
+            last,
+            at: (&origin).into(),
+        };
+        notices::security(&tx, &mut outbox, (&user).into(), event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.totp_remove")
@@ -276,10 +299,11 @@ async fn remove(
         )?;
         let overview = overview(&tx, &user.id)?;
         tx.commit()?;
-        Ok(Ok((overview, last)))
+        Ok(Ok((overview, outbox, last)))
     })
     .await?;
-    let (overview, last) = result?;
+    let (overview, outbox, last) = result?;
+    outbox.send(&state);
     // Without an app no pending sign-in step applies any more; otherwise one
     // would come back to life as soon as a new app is confirmed within five
     // minutes (like `reset-mfa`).
@@ -292,18 +316,21 @@ async fn remove(
 /// "Generate new codes": replaces the set; the codes exist only in this
 /// response. Without an authenticator app there are no codes (409
 /// `mfa_disabled`) – checked up front and again in the transaction, in case
-/// the last app was removed meanwhile. The previous codes no longer work,
-/// including those the person kept.
+/// the last app was removed meanwhile. Reports "New recovery codes
+/// generated" with a mail: the previous codes no longer work, including those
+/// the person kept.
 async fn regenerate(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     ip: ClientIp,
+    headers: HeaderMap,
     JsonBody(body): JsonBody<VerifyBody>,
 ) -> Result<Json<Value>, ApiError> {
     if !mfa_enabled(&state, &user).await? {
         return Err(mfa_disabled());
     }
     let guard = verify(&state, &user, body).await?;
+    let origin = auth::origin(&state, &headers, ip);
     let result = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
@@ -313,6 +340,11 @@ async fn regenerate(
             return Ok(Err(mfa_disabled()));
         }
         let codes = recovery::replace(&tx, &user.id)?;
+        let mut outbox = Outbox::default();
+        let event = Security::RecoveryCodesRenewed {
+            at: (&origin).into(),
+        };
+        notices::security(&tx, &mut outbox, (&user).into(), event)?;
         audit_log::insert(
             &tx,
             &Entry::new(Category::Login, "auth.recovery_codes")
@@ -323,10 +355,12 @@ async fn regenerate(
         let mut overview = overview(&tx, &user.id)?;
         tx.commit()?;
         overview["recovery_codes"] = json!(codes);
-        Ok(Ok(overview))
+        Ok(Ok((overview, outbox)))
     })
     .await?;
-    Ok(Json(result?))
+    let (overview, outbox) = result?;
+    outbox.send(&state);
+    Ok(Json(overview))
 }
 
 pub(super) fn mfa_disabled() -> ApiError {

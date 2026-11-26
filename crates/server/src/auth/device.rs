@@ -1,12 +1,15 @@
 //! Device detection: browser, operating system and kind of device from the
 //! user agent, using the same rules as the web app for the current device,
-//! extended by the browsers on iOS and ChromeOS. From that comes the name
-//! shown in the session list ("Firefox on Linux").
+//! extended by the browsers on iOS and ChromeOS. From that come the name
+//! shown in the session list and in security notices ("Firefox on Linux")
+//! and, with the client IP's network, the ID of known devices
+//! ([`Device::hash`]).
 //!
-//! Taken over from Roedy Mail (`crates/server/src/auth/device.rs`) without
-//! the ID of known devices, which follows with the security notices.
+//! Taken over from Roedy Mail (`crates/server/src/auth/device.rs`).
 
-use crate::{i18n, settings::Language};
+use std::net::IpAddr;
+
+use crate::{crypto::SecretKey, i18n, settings::Language};
 
 /// Kind of device for the icon (`ti-device-desktop`, `-mobile`, `-tablet`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,43 @@ impl Device {
     /// other or "Unknown device".
     pub fn label(&self, lang: Language) -> String {
         label(self.browser, self.os, lang)
+    }
+
+    /// ID for `known_devices`: HMAC over browser, operating system, kind
+    /// and the client IP's network (IPv4 /24, IPv6 /48) with the instance's
+    /// key – the same device in the same network is known, another device
+    /// or network is not. Without a key the networks could be
+    /// recovered from a copy of the database (there are only 2²⁴ IPv4 networks).
+    pub fn hash(&self, secrets: &SecretKey, ip: IpAddr) -> [u8; 32] {
+        secrets.mac(
+            HASH_PURPOSE,
+            &[
+                self.browser.unwrap_or_default().as_bytes(),
+                self.os.unwrap_or_default().as_bytes(),
+                self.kind.as_str().as_bytes(),
+                network(ip).as_bytes(),
+            ],
+        )
+    }
+}
+
+/// Purpose of the HMAC (`crypto::SecretKey::mac`).
+const HASH_PURPOSE: &str = "known_devices.device_hash";
+
+/// Network of an address as text, e.g. "203.0.113.0/24".
+fn network(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            format!("{a}.{b}.{c}.0/24")
+        }
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(ip) => network(IpAddr::V4(ip)),
+            None => {
+                let [a, b, c, ..] = ip.segments();
+                format!("{a:x}:{b:x}:{c:x}::/48")
+            }
+        },
     }
 }
 
@@ -209,5 +249,30 @@ mod tests {
             i18n::tf(de, "device.browser_on", &[("os", &"Windows")])
         );
         assert_eq!(Device::parse(None).label(de), i18n::t(de, "device.unknown"));
+    }
+
+    #[test]
+    fn hash_ignores_versions_and_host_part() {
+        let key = SecretKey::random().unwrap();
+        let ip = |s: &str| s.parse().unwrap();
+        let old = Device::parse(Some("Mozilla/5.0 (X11; Linux x86_64) Firefox/139.0"));
+        let new = Device::parse(Some("Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0"));
+        let hash = |device: &Device, addr: &str| device.hash(&key, ip(addr));
+        assert_eq!(hash(&old, "203.0.113.7"), hash(&new, "203.0.113.200"));
+        assert_eq!(hash(&old, "::ffff:203.0.113.7"), hash(&old, "203.0.113.9"));
+        assert_ne!(hash(&old, "203.0.113.7"), hash(&old, "203.0.114.7"));
+        assert_eq!(
+            hash(&old, "2001:db8:1:2::1"),
+            hash(&old, "2001:db8:1:ffff::9")
+        );
+        assert_ne!(hash(&old, "2001:db8:1::1"), hash(&old, "2001:db8:2::1"));
+        let chrome = Device::parse(Some("Mozilla/5.0 (X11; Linux x86_64) Chrome/141.0"));
+        assert_ne!(hash(&old, "203.0.113.7"), hash(&chrome, "203.0.113.7"));
+        // A different key gives a different ID.
+        let other = SecretKey::random().unwrap();
+        assert_ne!(
+            hash(&old, "203.0.113.7"),
+            old.hash(&other, ip("203.0.113.7"))
+        );
     }
 }

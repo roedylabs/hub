@@ -6,14 +6,18 @@
 //! middleware order and CSRF rules, without maintenance mode.
 
 pub mod auth;
+pub mod email;
 pub mod error;
 pub mod health;
+pub mod invites;
 pub mod me;
 pub mod mfa;
+pub mod password;
 pub mod session;
 pub mod sessions;
 pub mod settings;
 pub mod setup;
+pub mod system_mail;
 
 use axum::{
     Router,
@@ -22,7 +26,7 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse as _, Response},
 };
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use error::{ApiError, FieldErrors};
@@ -41,6 +45,10 @@ pub const CSRF_HEADER: &str = "x-requested-with";
 pub fn router(state: AppState) -> Router<AppState> {
     let routes = setup::routes()
         .merge(auth::routes())
+        .merge(password::routes())
+        .merge(email::routes())
+        .merge(invites::routes())
+        .merge(system_mail::routes())
         .merge(session::routes())
         .merge(me::routes())
         .merge(mfa::routes())
@@ -129,6 +137,17 @@ fn is_subresource(headers: &HeaderMap) -> bool {
         .get("sec-fetch-dest")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|dest| SUBRESOURCES.iter().any(|d| dest.eq_ignore_ascii_case(d)))
+}
+
+/// For `PATCH` fields that can be missing (`None`), `null` (`Some(None)`) or
+/// have a value: `#[serde(default, deserialize_with = "nullable")]`. Taken
+/// over from Roedy Mail (`api::nullable`).
+pub fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// JSON body of a request. If it does not fit, the API answers with 400

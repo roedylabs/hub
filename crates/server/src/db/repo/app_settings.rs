@@ -5,6 +5,9 @@ use anyhow::Context as _;
 use rusqlite::{Connection, OptionalExtension as _};
 use serde::{Serialize, de::DeserializeOwned};
 
+/// Sending account of the system mails (`mailer::system_mail`).
+pub const SYSTEM_MAIL: &str = "system_mail";
+
 pub fn get<T: DeserializeOwned>(conn: &Connection, key: &str) -> anyhow::Result<Option<T>> {
     let json: Option<String> = conn
         .query_row(
