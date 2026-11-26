@@ -1582,6 +1582,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "roedy-hub-contract"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "roedy-hub-server"
 version = "0.1.0"
 dependencies = [
@@ -1604,6 +1614,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "resvg",
+ "roedy-hub-contract",
  "roedy-jmap",
  "roxmltree",
  "rusqlite",

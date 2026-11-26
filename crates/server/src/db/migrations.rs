@@ -34,6 +34,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "branding",
         sql: include_str!("migrations/0004_branding.sql"),
     },
+    Migration {
+        version: 5,
+        name: "signing_keys",
+        sql: include_str!("migrations/0005_signing_keys.sql"),
+    },
 ];
 
 /// Applies all pending migrations and returns the schema version.
@@ -151,6 +156,7 @@ mod tests {
                 "recovery_codes",
                 "schema_migrations",
                 "sessions",
+                "signing_keys",
                 "totp_devices",
                 "user_settings",
                 "users"
@@ -257,6 +263,31 @@ mod tests {
             count("SELECT COUNT(*) FROM audit_log WHERE actor_id IS NULL"),
             5
         );
+    }
+
+    #[test]
+    fn signing_keys_hold_32_byte_public_keys() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run(&mut conn).unwrap();
+        let insert = |kid: &str, public: &[u8]| {
+            conn.execute(
+                "INSERT INTO signing_keys (kid, private_enc, public, active_from) \
+                 VALUES (?1, x'01', ?2, '2026-11-26T12:00:00.000Z')",
+                (kid, public),
+            )
+        };
+        insert("K1", &[1; 32]).unwrap();
+        assert!(insert("K2", &[1; 31]).is_err(), "too short");
+        assert!(insert("K1", &[2; 32]).is_err(), "kid is unique");
+        let (created, retired): (String, Option<String>) = conn
+            .query_row(
+                "SELECT created_at, retired_at FROM signing_keys WHERE kid = 'K1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(created.len(), "2026-11-26T12:00:00.000Z".len());
+        assert_eq!(retired, None);
     }
 
     #[test]
