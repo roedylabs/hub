@@ -6,7 +6,7 @@
 //! from its `mkLogo`: plate in the brand colour or light or
 //! dark (`PLATES`) with corners 24 of 80, containing
 //!
-//! - the standard mark at 64 %,
+//! - the standard mark (four app tiles) at 64 %,
 //! - an icon from `BRAND_ICONS` at 56 % (Tabler Icons as SVG instead of the
 //!   web font, horizontally in the field, vertically centred by the ink like the
 //!   text on the canvas),
@@ -17,7 +17,8 @@
 //! The tilt (`tilt`) applies only in the web app.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/logo/mod.rs`) without the
-//! push notification icon; the initial comes from the hub's name (the
+//! push notification icon and with the hub's own standard mark instead of
+//! Mail's envelopes; the initial comes from the hub's name (the
 //! organization's), which the caller passes in.
 
 pub mod upload;
@@ -360,16 +361,23 @@ fn initial_text(branding: &Branding, name: &str) -> String {
         .map_or_else(|| "A".to_owned(), |first| first.to_uppercase().collect())
 }
 
-/// The standard mark (letter on letter, as in the web app) at
-/// 64 % (51.2 px), centred.
+/// The standard mark (four app tiles, the first at full ink, as in the web
+/// app's `Logo.svelte`) at 64 % (51.2 px), centred.
 fn mark(ink: &str) -> String {
-    const BACK: &str = "M18 6h20a4 4 0 0 1 4 4v15a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z";
-    const FRONT: &str =
-        "M10 17h22a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V21a4 4 0 0 1 4-4z";
-    const WHITE: &str = r##"<rect x="-12" y="-12" width="72" height="72" fill="#fff"/>"##;
-    format!(
-        r##"<mask id="a">{WHITE}<path d="{FRONT}" fill="#000" stroke="#000" stroke-width="3" stroke-linejoin="round"/></mask><mask id="b">{WHITE}<path d="M8.5 20 21 29.5 33.5 20" fill="none" stroke="#000" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></mask><g transform="translate(14.4 14.4) scale(1.0666667)"><path d="{BACK}" mask="url(#a)" fill="{ink}" opacity=".55"/><path d="{FRONT}" mask="url(#b)" fill="{ink}"/></g>"##
-    )
+    const TILES: [(u8, u8, &str); 4] = [
+        (8, 8, ""),
+        (26, 8, r#" opacity=".55""#),
+        (8, 26, r#" opacity=".55""#),
+        (26, 26, r#" opacity=".55""#),
+    ];
+    let mut tiles = String::new();
+    for (x, y, opacity) in TILES {
+        let _ = write!(
+            tiles,
+            r#"<rect x="{x}" y="{y}" width="14" height="14" rx="4"{opacity}/>"#
+        );
+    }
+    format!(r#"<g transform="translate(14.4 14.4) scale(1.0666667)" fill="{ink}">{tiles}</g>"#)
 }
 
 /// An icon at 56 % (44.8 px): horizontally in the middle of the field like
@@ -619,21 +627,37 @@ mod tests {
     }
 
     #[test]
-    fn standard_logo_like_the_previous_png() {
+    fn standard_logo_like_the_fixture() {
         let logos = Logos::standard().unwrap();
         let (width, height, _) = pixels(&logos.mail.bytes);
         assert_eq!((width, height), (80, 80));
         assert_eq!(pixels(&logos.small.bytes).0, 192);
-        // Corners transparent, plate apricot, mark in the ink colour.
+        // Corners transparent, plate apricot, the first tile in the ink
+        // colour and the other three at 55 % of it.
         assert_eq!(pixel(&logos.mail.bytes, 0, 0)[3], 0);
         assert_eq!(pixel(&logos.mail.bytes, 40, 4), [0xf5, 0xa0, 0x6e, 255]);
+        assert_eq!(pixel(&logos.mail.bytes, 30, 30)[..3], rgb("#3a1b06"));
+        for (x, y) in [(50, 30), (30, 50), (50, 50)] {
+            let tile = pixel(&logos.mail.bytes, x, y);
+            assert!(
+                tile[..3]
+                    .iter()
+                    .zip(rgb("#8e5735"))
+                    .all(|(a, b)| a.abs_diff(b) <= 2),
+                "{x} {y}: {tile:?}"
+            );
+        }
         let ink = share(&logos.mail.bytes, rgb("#3a1b06"));
-        assert!((0.08..0.3).contains(&ink), "{ink}");
-        // The same drawing as the previous PNG in the binary (resvg 0.45.1).
-        let previous = include_bytes!("../../tests/fixtures/mail-logo-0.45.png");
-        let (_, _, before) = pixels(previous);
+        assert!((0.025..0.04).contains(&ink), "{ink}");
+        let faded = share(&logos.mail.bytes, rgb("#8e5735"));
+        assert!((0.08..0.12).contains(&faded), "{faded}");
+        // The same drawing as librsvg makes of it (`rsvg-convert` 2.63, plate
+        // with corners 24 and the mark in the default colours), so the
+        // geometry is not only checked against resvg itself.
+        let fixture = include_bytes!("../../tests/fixtures/standard-logo.png");
+        let (_, _, expected) = pixels(fixture);
         let (_, _, now) = pixels(&logos.mail.bytes);
-        let differing = before
+        let differing = expected
             .chunks(4)
             .zip(now.chunks(4))
             .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 24))
@@ -659,7 +683,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(pixel(&logos.mail.bytes, 40, 4)[..3], rgb(bg), "{plate}");
-            assert!(share(&logos.mail.bytes, rgb(ink)) > 0.08, "{plate}");
+            assert!(share(&logos.mail.bytes, rgb(ink)) > 0.025, "{plate}");
             assert_ne!(logos, *Logos::standard().unwrap(), "{plate}");
         }
     }
