@@ -772,3 +772,46 @@ async fn unreachable_server_does_not_block_sign_in() {
     env.add_user("max", "max@example.com", Role::User).await;
     assert_eq!(env.login("max", PASSWORD).await.status, StatusCode::OK);
 }
+
+/// 50 invitation mails per administrator per hour count every mail that goes
+/// out – also those of a request that was cancelled while sending.
+#[tokio::test]
+async fn invitation_mails_count_even_when_the_request_is_cancelled() {
+    let (env, fake) = with_mail().await;
+    env.add_user("anna", "anna@example.com", Role::Admin).await;
+    let admin = env.session_for("anna").await;
+    let emails: Vec<String> = (0..50).map(|i| format!("u{i}@example.com")).collect();
+    let request = env.as_user(
+        &admin,
+        Method::POST,
+        "/invites",
+        Some(json!({ "emails": emails, "role": "user" })),
+    );
+    // Drop the request as soon as the first mail is out.
+    let first_out = async {
+        while fake.mail().sent_to("u0@example.com").is_empty() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    tokio::select! {
+        reply = request => panic!("request finished before it was cancelled: {}", reply.body),
+        () = first_out => {}
+    }
+    // The worker keeps its reservations: right away no further mail fits,
+    // while it is still sending the rest.
+    let reply = env
+        .as_user(
+            &admin,
+            Method::POST,
+            "/invites",
+            Some(json!({ "emails": ["late@example.com"], "role": "user" })),
+        )
+        .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        reply.body
+    );
+    assert_eq!(env.count("invitations").await, 50);
+}
