@@ -2,7 +2,8 @@
   App icon in four kinds (default mark, initial, Tabler icon, image). Fills
   the surrounding frame and inherits its colors from there.
 
-  Taken over from Roedy Mail (`apps/web/src/lib/components/Logo.svelte`).
+  Taken over from Roedy Mail (`apps/web/src/lib/components/Logo.svelte`) with
+  the hub's own default mark (four app tiles) in place of Mail's letters.
 -->
 <script lang="ts">
   import Icon from '#lib/components/Icon.svelte';
@@ -11,45 +12,17 @@
 
   let { logo = { isMark: true, text: 'R', fs: '50cqmin' } }: { logo?: LogoValues } = $props();
 
-  const id = $props.id();
   const icon = $derived(logo.icon && isIconName(logo.icon) ? logo.icon : undefined);
 </script>
 
 <div class="logo">
   {#if logo.isMark}
-    <svg viewBox="0 0 48 48" aria-hidden="true">
-      <mask id="{id}-a">
-        <rect x="-12" y="-12" width="72" height="72" fill="#fff" />
-        <path
-          d="M10 17h22a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V21a4 4 0 0 1 4-4z"
-          fill="#000"
-          stroke="#000"
-          stroke-width="3"
-          stroke-linejoin="round"
-        />
-      </mask>
-      <mask id="{id}-b">
-        <rect x="-12" y="-12" width="72" height="72" fill="#fff" />
-        <path
-          d="M8.5 20 21 29.5 33.5 20"
-          fill="none"
-          stroke="#000"
-          stroke-width="2.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </mask>
-      <path
-        d="M18 6h20a4 4 0 0 1 4 4v15a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z"
-        mask="url(#{id}-a)"
-        fill="currentColor"
-        opacity=".55"
-      />
-      <path
-        d="M10 17h22a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V21a4 4 0 0 1 4-4z"
-        mask="url(#{id}-b)"
-        fill="currentColor"
-      />
+    <!-- The hub's own mark: four app tiles, the first in full ink, the others at 55 % -->
+    <svg class="mark" viewBox="0 0 48 48" fill="currentColor" aria-hidden="true">
+      <rect x="8" y="8" width="14" height="14" rx="4" />
+      <rect x="26" y="8" width="14" height="14" rx="4" opacity=".55" />
+      <rect x="8" y="26" width="14" height="14" rx="4" opacity=".55" />
+      <rect x="26" y="26" width="14" height="14" rx="4" opacity=".55" />
     </svg>
   {/if}
   {#if logo.isInit}

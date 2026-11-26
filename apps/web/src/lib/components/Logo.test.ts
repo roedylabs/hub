@@ -4,15 +4,21 @@ import { describe, expect, it } from 'vitest';
 import Logo from './Logo.svelte';
 
 describe('Logo', () => {
-  it('shows the mark by default with unique masks per instance', () => {
-    const first = render(Logo).container;
-    const second = render(Logo).container;
-    const ids = [first, second].flatMap((c) => [...c.querySelectorAll('mask')].map((mask) => mask.id));
-    expect(ids).toHaveLength(4);
-    expect(new Set(ids).size).toBe(4);
-    const paths = first.querySelectorAll('svg > path');
-    expect(paths[0]).toHaveAttribute('mask', `url(#${ids[0]})`);
-    expect(paths[1]).toHaveAttribute('mask', `url(#${ids[1]})`);
+  it('shows the hub’s mark by default: four tiles in the ink colour, the first one in full', () => {
+    const { container } = render(Logo);
+    const svg = container.querySelector('svg.mark');
+    expect(svg).toHaveAttribute('viewBox', '0 0 48 48');
+    expect(svg).toHaveAttribute('fill', 'currentColor');
+    expect(svg).toHaveAttribute('aria-hidden', 'true');
+    const tiles = [...container.querySelectorAll('svg.mark > rect')];
+    expect(tiles.map((t) => [t.getAttribute('x'), t.getAttribute('y'), t.getAttribute('opacity')])).toEqual([
+      ['8', '8', null],
+      ['26', '8', '.55'],
+      ['8', '26', '.55'],
+      ['26', '26', '.55'],
+    ]);
+    // Mail's letters with their masks are gone.
+    expect(container.querySelector('mask')).toBeNull();
   });
 
   it('shows the initial in the given size', () => {
