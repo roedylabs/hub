@@ -31,7 +31,7 @@ url = "2.5.8"
 # A WebSocket client for the echo test: the crate axum's `ws` brings anyway.
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 http-body-util = "0.1"
-tokio-tungstenite = "0.29.0"
+tokio-tungstenite = "0.30.0"
 tower = { version = "0.5", features = ["util"] }
 
 [lints]
