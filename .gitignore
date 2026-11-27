@@ -32,3 +32,5 @@ playwright-report/
 test-results/
 # Lock of deploy/restore.sh while a restore runs
 .roedy-restore.lock/
+# Test certificate of scripts/test-cert.sh for deploy/compose.test.yml
+/deploy/.test-tls/

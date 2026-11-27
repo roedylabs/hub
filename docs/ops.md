@@ -1,41 +1,35 @@
 # Operating Roedy Hub
 
-> Installation with Docker Compose and Caddy, configuration, built-in TLS, data directory, backup and restore, updates,
+> Installation with Docker Compose, configuration, built-in TLS, data directory, backup and restore, updates,
 > pairing an app, the gateway, events, health and the resource budgets. Installation, backup and update steps are
 > taken over from Roedy Mail's `docs/ops.md` and adapted.
 
-Roedy Hub is a single process with an embedded web app and an SQLite database. It listens on two ports: the
-**public** one, which the reverse proxy forwards to, and the **internal** one, which only the apps reach over the
-private network ([app contract › Internal API](app-contract.md#7-internal-api)). It is shipped as the Docker image
+Roedy Hub is a single process with an embedded web app and an SQLite database. It needs no reverse proxy: it
+terminates TLS itself and gets its certificate from an ACME CA such as Let's Encrypt on its own ([TLS](#tls)). It
+listens on three ports: the **public** HTTPS port, a plain **HTTP** port that only answers ACME challenges and
+redirects to HTTPS, and the **internal** one, which only the apps reach over the private network
+([app contract › Internal API](app-contract.md#7-internal-api)). It is shipped as the Docker image
 `ghcr.io/roedylabs/hub` for `linux/amd64` and `linux/arm64`.
-
-```
-Browser ──HTTPS──► Caddy :443 ──HTTP──► roedy-hub :8080 (public)   ──► /data (SQLite, key)
-                   (network edge)          │ /mail/… ──► roedy-mail :8080
-                     apps (network apps) ──HTTP──► roedy-hub :8081 (internal, never published)
-```
-
-The hub can also terminate TLS itself and get its certificate from an ACME CA such as Let's Encrypt, without a proxy
-in front ([TLS](#tls), `ROEDY_TLS`). Its public port then speaks HTTPS, and a plain **HTTP** port only answers ACME
-challenges and redirects to HTTPS:
 
 ```
 Browser ──HTTPS──► roedy-hub :8443 (public, published as 443) ──► /data (SQLite, key, certificate)
         ──HTTP───► roedy-hub :8080 (ACME HTTP-01 and redirect, published as 80)
-                     apps (private network) ──HTTP──► roedy-hub :8081 (internal, never published)
+                          │ /mail/… ──► roedy-mail :8080
+        apps (network apps) ──HTTP──► roedy-hub :8081 (internal, never published)
 ```
 
-`deploy/compose.yml` still uses Caddy (`ROEDY_TLS=off`, the default); a Compose setup with the built-in TLS follows
-with the next delivery step ([`plan.md`](plan.md) › milestone 6).
+Only the hub and the Roedy apps run as containers; there is no proxy or other infrastructure image. A proxy of your
+own still works with `ROEDY_TLS=off` ([Behind your own proxy](#behind-your-own-proxy)).
 
 ## Requirements
 
 - **Host:** Linux with Docker and Compose v2 (2.24 or later for the test override), `linux/amd64` or `linux/arm64`.
   The hub needs about 15 MB of memory when idle (budget: 40 MB); the image is about 12 MB (budget: 25 MB), see
   [Budgets](#budgets).
-- **Own host name with HTTPS**, such as `app.example.com`, whose DNS points at the host, and ports 80 and 443 open
-  for Caddy (certificates from Let's Encrypt). The hub needs the root `/` of its origin; the apps live under
-  `/<slug>/` of the same origin, a sub-path for the hub does not work.
+- **Own host name**, such as `app.example.com`, whose DNS (`A`, and `AAAA` if the host has IPv6) points at the host,
+  and port 443 open to the internet – port 80 as well for the redirect from `http://` and as a fallback for the
+  certificate ([TLS](#tls)). Nothing else may use these ports on the host. The hub needs the root `/` of its origin;
+  the apps live under `/<slug>/` of the same origin, a sub-path for the hub does not work.
 - **Outgoing connections:** HTTPS to the JMAP server for the hub's system mails (Administration › Email) and whatever
   the apps need (Roedy Mail: its Stalwart servers).
 - **Time:** an accurate clock (NTP); authenticator app codes, sessions and the identities for the apps depend on it.
@@ -44,24 +38,25 @@ with the next delivery step ([`plan.md`](plan.md) › milestone 6).
 
 ### With Docker Compose
 
-The basis is [`deploy/compose.yml`](../deploy/compose.yml): Caddy, the hub and, with the profile `mail`, Roedy Mail.
-Only Caddy publishes ports (80, 443 and 443/udp). The containers talk over two private networks:
+The basis is [`deploy/compose.yml`](../deploy/compose.yml): the hub and, with the profile `mail`, Roedy Mail. Only
+the hub publishes ports: `443` (HTTPS, its port `8443`) and `80` (HTTP, its port `8080`), TCP only. It runs with
+`ROEDY_TLS=acme` and gets its certificate from Let's Encrypt by itself ([TLS](#tls)). The hub and the apps share one
+private network:
 
 | Network | Members | What for |
 |---|---|---|
-| `edge` | Caddy, hub | Caddy forwards every request to the hub's public port `8080`. |
 | `apps` | hub, apps | The hub reaches the apps at `http://<container>:8080`; the apps reach the hub's internal listener at `http://roedy-hub:8081`. |
 
 The hub's internal listener binds to the hub's fixed address in `apps` (`ROEDY_INTERNAL_LISTEN`, default
-`172.30.240.2:8081`), so Caddy cannot reach it, and the apps are not in `edge`, so only the hub reaches them. Every
-container runs with a read-only file system (except Caddy), no capabilities (Caddy only `NET_BIND_SERVICE`) and
-`no-new-privileges`.
+`172.30.240.2:8081`) and is never published; the apps publish nothing either, so only the hub reaches them. Every
+container runs as an unprivileged user with a read-only file system, no capabilities and `no-new-privileges` – the
+hub listens on the unprivileged ports 8443 and 8080 in its container, Docker publishes them as 443 and 80.
 
-1. Put `compose.yml` and [`Caddyfile`](../deploy/Caddyfile) into one directory, such as `/opt/roedy`, and create a
-   `.env` file next to them from the template [`deploy/.env.example`](../deploy/.env.example):
+1. Put `compose.yml` into a directory, such as `/opt/roedy`, and create a `.env` file next to it from the template
+   [`deploy/.env.example`](../deploy/.env.example):
 
    ```sh
-   for f in compose.yml Caddyfile .env.example; do
+   for f in compose.yml .env.example; do
      curl -fsSLO "https://raw.githubusercontent.com/roedylabs/hub/main/deploy/$f"
    done
    cp .env.example .env && chmod 600 .env
@@ -71,22 +66,30 @@ container runs with a read-only file system (except Caddy), no capabilities (Cad
 
    ```sh
    ROEDY_PUBLIC_URL=https://app.example.com
+   ROEDY_ACME_AGREE_TOS=true
    ROEDY_IMAGE_TAG=0.1
    ```
 
-   `ROEDY_PUBLIC_URL` is required: Caddy takes it as its site address and obtains the certificate for it, the hub
-   uses it for links in mails and as the issuer of the identities. A fixed version in the tag (`0.1` follows the
-   patches of 0.1.x, `0.1.0` is exactly that version) makes updates predictable; `latest` is the default. Pre-releases
-   such as `0.2.0-rc.1` are only available under their own name.
+   `ROEDY_PUBLIC_URL` is required: the hub gets the certificate for its host and uses it for links in mails and as
+   the issuer of the identities. `ROEDY_ACME_AGREE_TOS=true` accepts the terms of service of the CA (Let's Encrypt's
+   Subscriber Agreement); without it the hub does not start. For a first try, set Let's Encrypt's staging directory
+   as `ROEDY_ACME_DIRECTORY` (see `.env.example` and [TLS](#tls)). A fixed version in the tag (`0.1` follows the
+   patches of 0.1.x, `0.1.0` is exactly that version) makes updates predictable; `latest` is the default.
+   Pre-releases such as `0.2.0-rc.1` are only available under their own name.
 
-2. Start and check the health (the image is public, no `docker login` needed):
+2. Make sure the DNS name points at the host and ports 443 and 80 reach it from the internet (firewall, cloud
+   security group), then start and check the health (the image is public, no `docker login` needed):
 
    ```sh
    docker compose up -d
+   docker compose logs -f roedy-hub                 # … TLS certificate issued
    docker compose ps                                # roedy-hub: healthy
    curl -fsS https://app.example.com/readyz         # {"status":"ok"}
    docker compose logs roedy-hub | grep Setup-Token
    ```
+
+   The certificate usually arrives within a minute; until then the container is `starting` (up to 3 minutes) and
+   HTTPS only answers the CA. If it fails, the log says why ([TLS](#tls) › First start).
 
 3. Open `https://app.example.com/setup` and enter the setup token to create the first administrator. Then pair the
    apps ([Pairing an app](#pairing-an-app)).
@@ -133,40 +136,48 @@ one), then `just image` or `docker buildx build --platform linux/amd64,linux/arm
 the binaries from `dist/`. `just smoke` runs the image's smoke test, `just smoke-compose` the one of the Compose setup
 (with `just dist-example` and `just image-example` for the example app).
 
-### Reverse proxy
+### Migrating from a setup with Caddy
 
-[`deploy/Caddyfile`](../deploy/Caddyfile) is all Caddy needs:
+Setups made from an earlier `deploy/compose.yml` ran Caddy in front of the hub. To switch to the built-in TLS:
 
+1. [Back up](#backup-and-restore) the hub's volume and replace `compose.yml` with the current one (keep your changes,
+   such as a bind mount). Remove `Caddyfile`.
+2. In `.env`: add `ROEDY_ACME_AGREE_TOS=true` (and `ROEDY_ACME_EMAIL` if you like), remove `CADDY_IMAGE_TAG`,
+   `CADDY_SITE` and `ROEDY_TRUST_PROXY` (the hub is exposed directly now), and `ROEDY_MAIL_TRUST_PROXY` unless it is
+   `1`. Compare with the current `.env.example`.
+3. Remove the Caddy container, which frees ports 80 and 443 for the hub, and recreate the containers (the site is
+   down for a moment):
+
+   ```sh
+   docker rm -f roedy-caddy
+   docker compose up -d --remove-orphans
+   docker compose logs -f roedy-hub                 # … TLS certificate issued
+   ```
+
+The hub gets a new certificate for the same name; Caddy's certificates are not taken over. Afterwards, remove Caddy's
+volumes and network, which are no longer used:
+
+```sh
+docker volume rm roedy_caddy-data roedy_caddy-config
+docker network rm roedy_edge
 ```
-{$CADDY_SITE} {
-	encode {
-		zstd
-		gzip
-		match {
-			header Content-Type text/html*
-			# … CSS, JavaScript, JSON, SVG; never text/event-stream
-		}
-	}
-	reverse_proxy roedy-hub:8080
-}
-```
 
-`CADDY_SITE` is `ROEDY_PUBLIC_URL`. Caddy obtains and renews the certificate, redirects HTTP to HTTPS and speaks
-HTTP/2 and HTTP/3 to the browser. Its certificates live in the volume `caddy-data`; keep it, otherwise every new
-container requests new certificates and may run into Let's Encrypt's limits.
+### Behind your own proxy
 
-Another reverse proxy works as well, as long as it:
+If a reverse proxy of your own (or a load balancer) must terminate TLS, set `ROEDY_TLS=off`: the hub then serves plain
+HTTP on its port `8080` (`ROEDY_LISTEN`) and has no HTTP-only port. In `compose.yml`, replace the two `ports` with
+one that only the proxy reaches, e.g. `"127.0.0.1:8080:8080"`, and set `ROEDY_TRUST_PROXY`. The proxy must:
 
-- **appends `X-Forwarded-For`** and the hub's port is reachable only through it. `compose.yml` sets
-  `ROEDY_TRUST_PROXY=true` (one proxy); the hub takes the client IP for rate limits, sessions and the audit log from
-  the entry the proxy appended. With another proxy in front (such as a CDN), use `2` and let the rear proxy trust the
-  front one; the apps then use `3` (`ROEDY_MAIL_TRUST_PROXY`).
-- **passes request and response headers through unchanged**, in particular `Cookie`, `Origin`, `Sec-Fetch-*`, the
+- **append `X-Forwarded-For`**, and the hub's port must be reachable only through it. `ROEDY_TRUST_PROXY=true` (one
+  proxy) makes the hub take the client IP for rate limits, sessions and the audit log from the entry the proxy
+  appended, and send HSTS. With another proxy in front (such as a CDN), use `2` and let the rear proxy trust the
+  front one. The apps use the hub's value plus one (`ROEDY_MAIL_TRUST_PROXY`).
+- **pass request and response headers through unchanged**, in particular `Cookie`, `Origin`, `Sec-Fetch-*`, the
   hub's Content Security Policy and the apps' headers.
-- **streams** request and response bodies, Server-Sent Events and WebSockets (`Upgrade`) without buffering, without
+- **stream** request and response bodies, Server-Sent Events and WebSockets (`Upgrade`) without buffering, without
   a body size limit (uploads to the apps) and with a read timeout of at least 300 seconds (the hub's own limit for an
-  app's response, [Gateway](#gateway)); it does not compress `text/event-stream`.
-- forwards **every path** of the origin to the hub, never the internal port `8081`.
+  app's response, [Gateway](#gateway)); it must not compress `text/event-stream`.
+- forward **every path** of the origin to the hub, never the internal port `8081`.
 
 ## Pairing an app
 
@@ -181,7 +192,7 @@ Mail with `deploy/compose.yml` (needs a Roedy Mail version with hub mode):
 3. Administration › Apps shows the app as connected once its health check answers. Remove the code from `.env`
    afterwards; it is used up.
 
-Another app: add a service like `roedy-mail` in the network `apps` only (never in `edge`, never with `ports`), with
+Another app: add a service like `roedy-mail` in the network `apps` only (never with `ports`), with
 `ROEDY_PUBLIC_URL=<hub public URL>/<slug>`, `ROEDY_TRUST_PROXY` the hub's value plus one, the hub's internal address
 `http://roedy-hub:8081` and the code, and choose the same slug in the hub. "New pairing code" pairs an app again, for
 example after its data was lost.
@@ -248,10 +259,11 @@ every subdomain speaks HTTPS, so this policy is not eligible for the browsers' p
 the gateway's WebSockets use HTTP/1.1's `Upgrade`.
 
 **Ports and firewall.** In the container the hub runs as an unprivileged user and listens on `8443` (HTTPS) and `8080`
-(HTTP); publish them as `443` and `80`, e.g. `ports: ["443:8443", "80:8080"]` in Compose. Open both in the firewall.
-Port 80 is optional: the hub validates with TLS-ALPN-01 on port 443 first and falls back to HTTP-01 on port 80 only if
-that fails; without port 80 there is no redirect from `http://` either. With `ROEDY_ACME_CHALLENGE=dns-01` the CA does
-not connect at all, and port 80 only serves the redirect. Never publish the internal port `8081`.
+(HTTP); publish them as `443` and `80`, as `deploy/compose.yml` does (`ports: ["443:8443", "80:8080"]`, TCP; the hub
+speaks no HTTP/3). Open both in the firewall. Port 80 is optional: the hub validates with TLS-ALPN-01 on port 443
+first and falls back to HTTP-01 on port 80 only if that fails; without port 80 there is no redirect from `http://`
+either (remove `"80:8080"` from `compose.yml` then). With `ROEDY_ACME_CHALLENGE=dns-01` the CA does not connect at
+all, and port 80 only serves the redirect. Never publish the internal port `8081`.
 
 **DNS.** Before the first start, the host of `ROEDY_PUBLIC_URL` must resolve (`A`, and `AAAA` if the server has IPv6)
 to the server, and ports 443 (and 80) must reach the hub from the internet: the CA connects to them to validate
@@ -280,12 +292,14 @@ far higher rate limits, and its certificates are not trusted by browsers. Remove
 works; the hub then gets a certificate from production.
 
 **Certificate from files.** With `ROEDY_TLS=files` the hub serves the certificate in `ROEDY_TLS_CERT_FILE` and
-`ROEDY_TLS_KEY_FILE`, e.g. from your own CA or another ACME client, and reloads it when the files change. It must
+`ROEDY_TLS_KEY_FILE`, e.g. from your own CA or another ACME client, and reloads it when the files change. In
+`compose.yml`, mount their directory read-only, e.g. `- /etc/roedy-tls:/run/roedy-tls:ro` under `volumes`, and set the
+paths in `.env`; the files must be readable by the container's user (65532 or `ROEDY_UID`). It must
 contain the host of `ROEDY_PUBLIC_URL` (a wildcard covers one label; an IP address as host needs it as an IP address
 name) and be valid now; the start fails otherwise. The HTTP port only redirects then.
 
-**Behind your own proxy.** Keep `ROEDY_TLS=off`, let the proxy terminate TLS and forward to `ROEDY_LISTEN`, and set
-`ROEDY_TRUST_PROXY`.
+**Behind your own proxy.** Set `ROEDY_TLS=off`, let the proxy terminate TLS and forward to `ROEDY_LISTEN`, and set
+`ROEDY_TRUST_PROXY` ([Behind your own proxy](#behind-your-own-proxy)).
 
 ### DNS-01 with deSEC
 
@@ -381,7 +395,7 @@ account and certificate. There is no command to change the key.
 ## Backup and restore
 
 The hub has no backups of its own yet ([`plan.md`](plan.md) › Open points). Back up the data volume with the hub
-stopped for a few seconds; Caddy answers `502` meanwhile. Without `secret.key`, which you keep separately:
+stopped for a few seconds; the hub's address does not answer meanwhile. Without `secret.key`, which you keep separately:
 
 ```sh
 docker compose stop roedy-hub

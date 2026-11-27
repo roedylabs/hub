@@ -1,35 +1,48 @@
-# Test override for deploy/compose.yml: the locally built hub image, the
-# example app (crates/example-app) at <ROEDY_PUBLIC_URL>/example, and Caddy on
-# plain HTTP at 127.0.0.1:8080 instead of 80/443. For the smoke test in CI
+# Test override for deploy/compose.yml: the locally built hub image with the
+# built-in TLS from files (ROEDY_TLS=files, a self-signed certificate for
+# localhost) on 127.0.0.1:8443 (HTTPS) and 127.0.0.1:8080 (HTTP: redirect and
+# ACME HTTP-01 only) instead of 443/80, and the example app (crates/example-app)
+# at <ROEDY_PUBLIC_URL>/example. For the smoke test in CI
 # (scripts/compose-smoke.sh) and the end-to-end tests; never for production.
 #
 #   just dist x86_64-unknown-linux-musl && just dist-example x86_64-unknown-linux-musl
 #   just image && just image-example
-#   ROEDY_PUBLIC_URL=http://localhost:8080 \
-#     docker compose -f deploy/compose.yml -f deploy/compose.test.yml up -d --wait
+#   scripts/test-cert.sh "$PWD/deploy/.test-tls" localhost
+#   export ROEDY_TEST_TLS_DIR="$PWD/deploy/.test-tls" ROEDY_PUBLIC_URL=https://localhost:8443
+#   docker compose -f deploy/compose.yml -f deploy/compose.test.yml up -d --wait
+#   curl --cacert deploy/.test-tls/cert.pem https://localhost:8443/readyz
 #
+# Every later Compose command needs both variables as well (exported above).
 # Pairing the example app: Administration › Apps › Add, slug `example`,
 # internal address http://roedy-hub-example:8080, then
 #   ROEDY_EXAMPLE_PAIRING_CODE=rhp_… docker compose -f … -f … up -d roedy-hub-example
 # The example keeps its pairing in memory only: every restart needs a new code.
+#
+# Why files and not ACME: no CA is needed, so the test runs offline, starts at
+# once and still covers HTTPS, SNI, the redirect, HSTS and the healthcheck
+# over TLS end to end. The ACME client itself is tested against an in-process
+# fake CA (crates/server/tests/tls.rs).
 
 services:
-  caddy:
-    ports: !override
-      - "127.0.0.1:8080:80"
-    environment:
-      CADDY_SITE: "http://:80"
-
   roedy-hub:
     image: ${ROEDY_HUB_IMAGE:-roedy-hub:dev}
+    ports: !override
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8080:8080"
     environment:
+      ROEDY_TLS: files
+      ROEDY_TLS_CERT_FILE: /run/roedy-tls/cert.pem
+      ROEDY_TLS_KEY_FILE: /run/roedy-tls/key.pem
       ROEDY_LOG_FORMAT: ${ROEDY_LOG_FORMAT:-text}
+    volumes:
+      # cert.pem and key.pem from scripts/test-cert.sh.
+      - ${ROEDY_TEST_TLS_DIR:?set ROEDY_TEST_TLS_DIR to the directory of scripts/test-cert.sh}:/run/roedy-tls:ro
 
   roedy-hub-example:
     image: ${ROEDY_EXAMPLE_IMAGE:-roedy-hub-example:dev}
     container_name: roedy-hub-example
     environment:
-      ROEDY_PUBLIC_URL: ${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL, e.g. http://localhost:8080}/example
+      ROEDY_PUBLIC_URL: ${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL, e.g. https://localhost:8443}/example
       ROEDY_HUB_INTERNAL_URL: http://roedy-hub:8081
       ROEDY_PAIRING_CODE: ${ROEDY_EXAMPLE_PAIRING_CODE:-}
     networks:

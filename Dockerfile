@@ -41,11 +41,16 @@ ENV PATH=/usr/local/bin \
     MIMALLOC_ALLOW_THP=0
 USER 65532:65532
 VOLUME /data
-# Only the public port. The internal listener (ROEDY_INTERNAL_LISTEN, default
+# Only the public ports: 8080 is HTTP (with ROEDY_TLS=off the hub itself,
+# with TLS on ACME HTTP-01 and the redirect to HTTPS), 8443 is HTTPS with TLS
+# on (docs/ops.md › TLS). The internal listener (ROEDY_INTERNAL_LISTEN, default
 # 0.0.0.0:8081) is for the apps on the private network and is deliberately not
 # exposed, so that `docker run -P` never publishes it (docs/ops.md).
-EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --start-interval=1s --retries=3 \
+EXPOSE 8080 8443
+# With ROEDY_TLS=acme the check fails until the first certificate exists,
+# usually within a minute: a start period of 3 minutes, checked every second
+# within it, so a container is healthy as soon as it serves.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=3m --start-interval=1s --retries=3 \
   CMD ["roedy-hub", "healthcheck"]
 ENTRYPOINT ["roedy-hub"]
 CMD ["serve"]
