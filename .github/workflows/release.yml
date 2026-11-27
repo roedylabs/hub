@@ -8,11 +8,11 @@ name: Release
 #   provenance → cosign signature and build attestations → check the published
 #   image → GitHub release with notes (git-cliff, cliff.toml) and binaries.
 # - Manually (workflow_dispatch): build and check only, publish nothing – a
-#   dry run of the release build for both platforms. Pull requests check the
-#   amd64 image in ci.yml (job "Image").
+#   dry run of the release build for both platforms, also when started on a
+#   tag. Pull requests check the amd64 image in ci.yml (job "Image").
 #
-# Jobs: "Build and check" (read-only) → "Publish" (tags only; the only job
-# with write permissions).
+# Jobs: "Build and check" (read-only) → "Publish" (pushed tags only; the only
+# job with write permissions; one at a time across all tags).
 
 on:
   push:
@@ -142,10 +142,10 @@ jobs:
           exit-code: "1"
 
       - name: Release notes (git-cliff)
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         run: pnpm exec git-cliff --latest --strip all >dist/release-notes.md
       - name: Binary archives
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -157,7 +157,7 @@ jobs:
           (cd dist/assets && sha256sum -- *.tar.gz >SHA256SUMS)
           cat dist/assets/SHA256SUMS
       - name: Upload release files
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -172,7 +172,13 @@ jobs:
   publish:
     name: Publish
     needs: build
-    if: github.ref_type == 'tag'
+    # Only a pushed tag publishes; a manual run stays a dry run even on a tag.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    # One release at a time, so that two tags cannot move x.y and latest at
+    # once (the step "Shared tags" decides which release owns them).
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -188,6 +194,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0 # all tags for "Shared tags"
           persist-credentials: false
       - name: Download release files
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -237,6 +244,26 @@ jobs:
             exit 1
           fi
           echo "$IMAGE:$VERSION is not published yet"
+      # x.y and latest belong to the newest stable release, whatever order the
+      # releases publish in: a release older than another stable tag of its
+      # x.y (or of the repository) leaves x.y (or latest) where they are and
+      # only publishes its full version. Decided from the Git tags, so a
+      # delayed or rerun older release cannot move them back.
+      - name: Shared tags
+        id: shared
+        run: |
+          newest() { git tag --list 'v*' | grep -Ex "v$1[0-9]+(\.[0-9]+)*" | sed 's/^v//' | sort -V | tail -n 1; }
+          minor=false
+          latest=false
+          if [ "$PRERELEASE" != true ]; then
+            series=$(printf '%s\n' "$VERSION" | cut -d. -f1-2)
+            series_re=$(printf '%s' "$series" | sed 's/\./\\./g')
+            [ "$(newest "$series_re\\.")" = "$VERSION" ] && minor=true
+            [ "$(newest '')" = "$VERSION" ] && latest=true
+          fi
+          echo "x.y: $minor, latest: $latest" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "minor=$minor" >>"$GITHUB_OUTPUT"
+          echo "latest=$latest" >>"$GITHUB_OUTPUT"
       - name: Tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -244,10 +271,12 @@ jobs:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ${{ env.IMAGE }}
-          # Pre-releases only get {{version}} and no "latest".
+          # Pre-releases only get {{version}}; x.y and latest per "Shared tags".
+          flavor: |
+            latest=${{ steps.shared.outputs.latest }}
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.shared.outputs.minor }}
           labels: |
             org.opencontainers.image.title=Roedy Hub
             org.opencontainers.image.description=Gateway, sign-in and home page for the Roedy apps
@@ -301,6 +330,17 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
           docker pull "$IMAGE:$VERSION"
           scripts/image-smoke.sh "$IMAGE:$VERSION" "$VERSION"
+      # docs/ops.md promises an anonymous pull. GHCR creates a new package as
+      # private, and GITHUB_TOKEN cannot change that: after the first release a
+      # maintainer makes the package public once (CONTRIBUTING.md › Releases).
+      - name: Image pullable without login
+        run: |
+          docker logout ghcr.io
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "$IMAGE:$VERSION is public"
+          else
+            echo "::warning::$IMAGE:$VERSION cannot be pulled without login: make the package public (CONTRIBUTING.md › Releases)"
+          fi
 
       - name: GitHub release
         env:

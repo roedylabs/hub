@@ -62,6 +62,10 @@ version_re=${version//./\\.}
 if ! git diff --quiet || ! git diff --cached --quiet; then
   die "working tree has uncommitted changes"
 fi
+# The rollback of `prepare` removes the release files it may have created
+# (`git reset --hard`); an untracked one from before would be lost with them.
+untracked=$(git ls-files --others --exclude-standard -- package.json Cargo.toml Cargo.lock CHANGELOG.md)
+[[ -z $untracked ]] || die "untracked release files would be overwritten: $untracked – move them away first"
 git fetch --quiet origin main --tags
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists"
 

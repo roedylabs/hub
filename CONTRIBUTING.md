@@ -52,6 +52,18 @@ CI also runs Clippy and the tests with `--all-features`, which embeds `apps/web/
 
 While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vitest run <file>` or `cargo test -p roedy-hub-server <filter>`.
 
+## Releases
+
+`just release <version>` opens the release PR (version, `CHANGELOG.md` with git-cliff); after the maintainer merged it,
+`just release-tag <version>` sets the tag on `main`, and [`release.yml`](.github/workflows/release.yml) builds, checks,
+signs and publishes `ghcr.io/roedylabs/hub`. Only a pushed tag publishes; a manual run of the workflow is a dry run.
+`x.y` and `latest` move only to the newest stable version, whatever order releases publish in.
+
+**After the first release:** GitHub creates the package `hub` as private, and the workflow cannot change that. A
+maintainer makes it public once (the package's settings › Danger Zone › Change visibility), so that `docker compose
+pull` works without login as `docs/ops.md` describes; until then the workflow's step "Image pullable without login"
+warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibility`.
+
 ## Project layout
 
 | Path | Content |

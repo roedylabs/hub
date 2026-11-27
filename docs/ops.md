@@ -260,10 +260,12 @@ The apps back up their own data; for Roedy Mail see its `docs/ops.md`.
 **Restore** (same key; the volume's content is replaced by the archive's):
 
 ```sh
+file=roedy-hub-20261127T030000Z.tar.gz
+uid=65532 gid=65532   # or ROEDY_UID / ROEDY_GID from .env
 docker compose stop roedy-hub
 docker run --rm -v roedy_roedy-hub-data:/data -v "$PWD":/backup:ro alpine:3.24 sh -c \
-  'find /data -mindepth 1 -maxdepth 1 ! -name secret.key -exec rm -rf {} + &&
-   tar -xzf /backup/roedy-hub-20261127T030000Z.tar.gz -C /data && chown -R 65532:65532 /data'
+  "find /data -mindepth 1 -maxdepth 1 ! -name secret.key -exec rm -rf {} + &&
+   tar -xzf /backup/$file -C /data && chown -R $uid:$gid /data"
 docker compose start roedy-hub
 ```
 

@@ -23,8 +23,11 @@ alpine=$(sed -n 's/^FROM --platform=$BUILDPLATFORM \(alpine:[^ ]*\) AS rootfs$/\
 }
 
 export ROEDY_PUBLIC_URL=http://localhost:8080
-export COMPOSE_PROJECT_NAME=roedy
-compose() { docker compose -f deploy/compose.yml -f deploy/compose.test.yml "$@"; }
+# A project of its own: its volumes and networks never touch a deployment's
+# (project roedy). The fixed container names would collide, so the test
+# refuses to run next to one (see below) instead of replacing it.
+project=roedy-smoke
+compose() { docker compose -p "$project" -f deploy/compose.yml -f deploy/compose.test.yml "$@"; }
 
 fail() {
   echo "Smoke test failed: $*" >&2
@@ -48,6 +51,13 @@ published=$(env ROEDY_PUBLIC_URL=https://app.example.com docker compose -f deplo
   config --format json | jq -r '.services | to_entries[] | select(.value.ports) | .key')
 check "only Caddy publishes ports (actual: $published)" [ "$published" = caddy ]
 
+for container in roedy-caddy roedy-hub roedy-hub-example roedy-mail; do
+  if docker container inspect "$container" >/dev/null 2>&1 &&
+    [ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" != "$project" ]; then
+    echo "Smoke test not run: container $container exists outside this test; remove it or run the test elsewhere" >&2
+    exit 1
+  fi
+done
 trap cleanup EXIT
 cleanup
 compose up -d --wait --wait-timeout 60 || fail "the services did not start"
@@ -75,11 +85,13 @@ done
 # listener nor the apps.
 check "Caddy reaches the hub's public port" docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub:8080/healthz
 check "Caddy does not reach the internal listener" sh -c "! docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub:8081/internal/v1/jwks"
-check "Caddy does not reach the example app" sh -c "! docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub-example:8080/"
+check "the apps' network reaches the example app" \
+  docker run --rm --network "${project}_apps" "$alpine" wget -q -T 5 -O /dev/null http://roedy-hub-example:8080/example/healthz
+check "Caddy does not reach the example app" sh -c "! docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub-example:8080/example/healthz"
 
 # An app on the network apps reaches the internal listener.
 check "the apps' network reaches the internal listener" sh -c \
-  "docker run --rm --network roedy_apps '$alpine' wget -q -T 5 -O - http://roedy-hub:8081/internal/v1/jwks | grep -q '\"keys\"'"
+  "docker run --rm --network '${project}_apps' '$alpine' wget -q -T 5 -O - http://roedy-hub:8081/internal/v1/jwks | grep -q '\"keys\"'"
 check "the example app is running" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub-example)" = true ]
 
 echo "Compose smoke test passed"
