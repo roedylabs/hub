@@ -209,29 +209,33 @@ test('SSE and WebSocket through the browser', async ({ browser }) => {
   await page.goto('/example/');
   await expect(page.getByText(`Signed in as ${admin.name}`)).toBeVisible();
 
-  // Three events, each as it is sent (one every 300 ms), not buffered to the end.
-  const sse = await page.evaluate(
-    () =>
-      new Promise<{ data: string[]; gaps: number[] }>((resolve, reject) => {
-        const source = new EventSource('/example/sse?count=3&interval_ms=300');
-        const data: string[] = [];
-        const times: number[] = [];
-        source.addEventListener('tick', (e) => {
-          data.push(e.data as string);
-          times.push(performance.now());
-          if (data.length === 3) {
+  /** The `tick` events of `/example/sse?<query>` until `count` arrived (or the stream fails). */
+  const ticks = (query: string, count: number) =>
+    page.evaluate(
+      ([query, count]) =>
+        new Promise<string[]>((resolve, reject) => {
+          const source = new EventSource(`/example/sse?${query}`);
+          const data: string[] = [];
+          source.addEventListener('tick', (e) => {
+            data.push(e.data as string);
+            if (data.length === count) {
+              source.close();
+              resolve(data);
+            }
+          });
+          source.onerror = () => {
             source.close();
-            resolve({ data, gaps: times.slice(1).map((t, i) => t - (times[i] ?? t)) });
-          }
-        });
-        source.onerror = () => {
-          source.close();
-          reject(new Error(`EventSource failed after ${data.length} events`));
-        };
-      }),
-  );
-  expect(sse.data).toEqual(['tick 0', 'tick 1', 'tick 2']);
-  for (const gap of sse.gaps) expect(gap).toBeGreaterThan(150);
+            reject(new Error(`EventSource failed after ${data.length} events`));
+          };
+        }),
+      [query, count] as const,
+    );
+  // Not buffered: the first event of an endless stream (the next one would follow after a minute) arrives at once.
+  const started = Date.now();
+  expect(await ticks('count=0&interval_ms=60000', 1)).toEqual(['tick 0']);
+  expect(Date.now() - started).toBeLessThan(10_000);
+  // A finite stream arrives complete and in order.
+  expect(await ticks('count=3&interval_ms=100', 3)).toEqual(['tick 0', 'tick 1', 'tick 2']);
 
   // WebSocket echo through the gateway, text and binary, and a clean close.
   const ws = await page.evaluate(
@@ -348,16 +352,18 @@ test('sign-out closes the streams and clears the site data', async ({ browser })
   await app.evaluate(
     () =>
       new Promise<void>((resolve) => {
-        const ended = { sse: false, ws: false };
-        (window as unknown as { ended: typeof ended }).ended = ended;
+        // The phase in which each stream ended: only an end after the sign-out started counts.
+        const w = window as unknown as { phase: string; ended: { sse: string; ws: string } };
+        w.phase = 'before sign-out';
+        w.ended = { sse: 'open', ws: 'open' };
         // An endless stream; the first end counts (EventSource would connect again, then without identity).
         const sse = new EventSource('/example/sse?count=0&interval_ms=500');
         sse.onerror = () => {
-          ended.sse = true;
+          w.ended.sse = w.phase;
           sse.close();
         };
         const ws = new WebSocket(`wss://${location.host}/example/ws`);
-        ws.onclose = () => (ended.ws = true);
+        ws.onclose = () => (w.ended.ws = w.phase);
         let open = 0;
         const opened = () => ++open === 2 && resolve();
         sse.addEventListener('tick', opened, { once: true });
@@ -371,6 +377,12 @@ test('sign-out closes the streams and clears the site data', async ({ browser })
   await state(hub, 'Hello, Alex');
   await hub.getByRole('banner').getByRole('button', { name: admin.name }).click();
   await expectAccessible(hub, 'account menu');
+  // Both streams still open right before the sign-out.
+  expect(await app.evaluate(() => (window as unknown as { ended: unknown }).ended)).toEqual({
+    sse: 'open',
+    ws: 'open',
+  });
+  await app.evaluate(() => ((window as unknown as { phase: string }).phase = 'sign-out'));
   const loggedOut = hub.waitForResponse((r) => r.url().endsWith('/api/v1/auth/logout'));
   await hub.getByRole('button', { name: 'Sign out' }).click();
   const response = await loggedOut;
@@ -383,10 +395,8 @@ test('sign-out closes the streams and clears the site data', async ({ browser })
 
   // The hub ended the session's stream and WebSocket to the app at once.
   await expect
-    .poll(() => app.evaluate(() => (window as unknown as { ended: { sse: boolean; ws: boolean } }).ended), {
-      timeout: 5000,
-    })
-    .toEqual({ sse: true, ws: true });
+    .poll(() => app.evaluate(() => (window as unknown as { ended: unknown }).ended), { timeout: 5000 })
+    .toEqual({ sse: 'sign-out', ws: 'sign-out' });
   // The app gets no identity any more: its page is public, `whoami` is not (contract § 5.1).
   await app.reload();
   await expect(app.getByText('Not signed in')).toBeVisible();

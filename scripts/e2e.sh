@@ -181,9 +181,16 @@ fi
 [ -n "$ROEDY_E2E_SETUP_TOKEN" ] || fail "no setup token"
 export ROEDY_E2E_SETUP_TOKEN
 
+# The browser of scripts/dev/browser.sh install, but only if it holds the
+# complete revision this Playwright needs; otherwise Playwright's default.
 dev_browsers="${TMPDIR:-/tmp}/roedy-hub-dev/ms-playwright"
 if [ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && [ -d "$dev_browsers" ]; then
-  export PLAYWRIGHT_BROWSERS_PATH="$dev_browsers"
+  needed=$(PLAYWRIGHT_BROWSERS_PATH="$dev_browsers" pnpm --silent --filter @roedy/hub-e2e exec \
+    playwright install --dry-run --only-shell chromium 2>/dev/null |
+    sed -n 's/^ *Install location: *\(.*\/chromium_headless_shell-[0-9]*\)$/\1/p' | head -n 1) || true
+  if [ -n "$needed" ] && [ -f "$needed/INSTALLATION_COMPLETE" ]; then
+    export PLAYWRIGHT_BROWSERS_PATH="$dev_browsers"
+  fi
 fi
 
 pnpm --filter @roedy/hub-e2e exec playwright test "$@"

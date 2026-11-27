@@ -87,7 +87,7 @@ with the code (no shell), which recreates its container or restarts the binary, 
 `apps/e2e/test-results/` holds a trace, a screenshot and the page's accessibility snapshot per failed test plus the
 hub's and the example's log (`compose.log` or `host.log`); CI uploads it as the artifact `e2e-results`. Open a trace
 with `pnpm --filter @roedy/hub-e2e exec playwright show-trace <trace.zip>`; add `--headed` or `--debug` to watch a
-run locally. The tests build on each other against one fresh hub: with `-g`, also select the ones a test needs (as in
+run locally (these need the full browser once: `pnpm --filter @roedy/hub-e2e exec playwright install chromium`). The tests build on each other against one fresh hub: with `-g`, also select the ones a test needs (as in
 the example above for the sign-out).
 
 ## Releases
