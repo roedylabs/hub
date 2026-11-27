@@ -379,11 +379,14 @@ pub async fn serve(State(state): State<AppState>, request: Request) -> Response 
         Some(app) if !is_reserved_app_path(request.uri().path()) => app,
         _ => return error_response(&state, page_load, GatewayError::NotFound).await,
     };
+    // Before the session is read: a revocation from here on until the
+    // stream is registered makes `forward` check the session again.
+    let generation = state.gateway.sessions.generation();
     let session = match session(&state, request.headers()).await {
         Ok(session) => session,
         Err(error) => return error_response(&state, page_load, error).await,
     };
-    let mut response = match forward(&state, &app, &session, request).await {
+    let mut response = match forward(&state, &app, &session, generation, request).await {
         Ok(response) => response,
         Err(error) => error_response(&state, page_load, error).await,
     };
@@ -392,11 +395,13 @@ pub async fn serve(State(state): State<AppState>, request: Request) -> Response 
 }
 
 /// Everything after the session: the decision, the request to the app and
-/// its response.
+/// its response. `generation`: the session cache's, taken before the
+/// session was read.
 async fn forward(
     state: &AppState,
     app: &App,
     session: &Session,
+    generation: u64,
     mut request: Request,
 ) -> Result<Response, GatewayError> {
     let slug = app.slug.as_str();
@@ -470,9 +475,6 @@ async fn forward(
     *to_app.version_mut() = Version::HTTP_11;
     *to_app.headers_mut() = outgoing;
 
-    // A revocation while the app answers: checked once the stream is
-    // registered (below).
-    let generation = gateway.sessions.generation();
     let answer = client::respond(
         gateway.client.request(to_app),
         sent,
@@ -513,6 +515,8 @@ async fn forward(
     let watch = gateway
         .streams
         .watch(signed.map(|signed| (signed.user.session_id.as_str(), signed.user.id.as_str())));
+    // A session that ended since it was read (while the app answered) had
+    // no stream to close yet.
     if let Some(signed) = signed
         && gateway.sessions.generation() != generation
     {
