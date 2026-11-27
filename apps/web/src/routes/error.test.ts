@@ -31,7 +31,8 @@ describe('error page of the router and the gateway', () => {
   });
 
   it.each([
-    ['no_app_access', 'Access denied'],
+    ['no_app_access', 'No access to this app'],
+    ['origin_mismatch', 'Access denied'],
     ['app_unreachable', 'App not reachable'],
     ['app_not_ready', 'App not ready yet'],
     ['app_timeout', 'The app took too long'],

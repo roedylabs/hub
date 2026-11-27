@@ -1,6 +1,9 @@
-// Administration › Users: the list, an expanded user with devices and recovery codes, an expired invitation the
-// invitee asked to renew, the invitation form with marked addresses, the result notice after inviting, the
-// selection with "Change role" open, no system mail, an empty search and a failed first load.
+// Administration › Users: the list, an expanded user with devices, recovery codes and app access, an expired
+// invitation the invitee asked to renew, the invitation form with marked addresses and app access, the result
+// notice after inviting, the selection with "Change role" open and with "App access", no system mail, an empty
+// search and a failed first load.
+import { ADMIN_APPS, ICONS } from '../apps-data.mjs';
+
 export default ({ mock, button, USER }) => {
   const at = (hoursAgo) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
   const base = { mfa: false, created_at: at(500), last_seen_at: at(2) };
@@ -15,6 +18,7 @@ export default ({ mock, button, USER }) => {
       username: 'jordan',
       role: 'admin',
       mfa: true,
+      apps: { mail: 'admin', notes: 'user' },
     },
     {
       ...base,
@@ -83,6 +87,8 @@ export default ({ mock, button, USER }) => {
         'GET users': { body: { users } },
         'GET admin/system-mail': { body: { status: mail } },
         'GET users/u1': details,
+        'GET admin/apps': { body: { apps: ADMIN_APPS } },
+        ...ICONS,
         ...routes,
       },
     });
@@ -106,6 +112,7 @@ export default ({ mock, button, USER }) => {
       prepare: async (page) => {
         await expand(page, /Jordan Hale/);
         await page.getByText('8 of 10 recovery codes left').first().waitFor();
+        await page.getByRole('radiogroup', { name: 'Access to Mail' }).first().waitFor();
       },
     },
     {
@@ -130,6 +137,7 @@ export default ({ mock, button, USER }) => {
       prepare: async (page) => {
         await openInvite(page);
         await page.getByLabel('Email addresses').first().fill('jordan@example.com new@example.com broken@ ');
+        await page.getByRole('radiogroup', { name: 'Access to Mail' }).first().waitFor();
       },
     },
     {
@@ -161,6 +169,17 @@ export default ({ mock, button, USER }) => {
           .first()
           .dispatchEvent('click');
         await page.getByText('Role for 1 person').first().waitFor();
+      },
+    },
+    {
+      id: 'users selection app access',
+      path,
+      opts: api(),
+      prepare: async (page) => {
+        await loaded(page);
+        await page.getByRole('checkbox', { name: 'Select Robin Park' }).first().dispatchEvent('click');
+        await page.getByRole('button', { name: 'App access' }).first().dispatchEvent('click');
+        await page.getByText('App access for 1 person').first().waitFor();
       },
     },
     {

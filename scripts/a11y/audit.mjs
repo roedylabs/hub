@@ -95,9 +95,9 @@ const INVITE = {
 const PASSWORD = 'Example-Password-2026!';
 
 /**
- * Answers of the API per scenario: `METHOD path` → `{ status, body }`, a
- * function of the request, or a list of them (one per request, the last one
- * repeats). Everything else gets 404 `not_found`.
+ * Answers of the API per scenario: `METHOD path` → `{ status, body }` (or
+ * `{ raw, contentType }`), a function of the request, or a list of them (one
+ * per request, the last one repeats). Everything else gets 404 `not_found`.
  */
 function mock({ setup = false, signedIn = false, routes = {} } = {}) {
   return {
@@ -291,14 +291,14 @@ const SCENARIOS = [
       await page.getByText('Email address confirmed').first().waitFor();
     },
   },
-  { id: 'home', path: '/', opts: mock({ signedIn: true }) },
   { id: 'not found', path: '/does-not-exist/', opts: mock() },
   gateway('no_app_access'),
   gateway('app_unreachable'),
   gateway('app_not_ready'),
   gateway('app_timeout'),
   { id: 'offline', path: '/', opts: { offline: true } },
-  // Account and administration: one module per page in `scenarios/`, each a function of the shared helpers.
+  // The home page, account and administration: one module per page in `scenarios/`, each a function of the
+  // shared helpers.
   ...(await pageScenarios()),
 ];
 
@@ -402,10 +402,11 @@ async function route(page, opts) {
       answer = answer[Math.min(n, answer.length - 1)];
     }
     if (typeof answer === 'function') answer = await answer(req.request());
+    // `raw` with `contentType`: sent as it is (an app's icon), otherwise `body` as JSON.
     await req.fulfill({
       status: answer.status ?? 200,
-      contentType: 'application/json',
-      body: answer.body === undefined ? '' : JSON.stringify(answer.body),
+      contentType: answer.contentType ?? 'application/json',
+      body: answer.raw ?? (answer.body === undefined ? '' : JSON.stringify(answer.body)),
     });
   });
   // Branding files of the server: none in the audit. Matched on the path's start only: Vite serves the page

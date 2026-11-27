@@ -28,7 +28,7 @@ describe('ERRS', () => {
 
 describe('errors of the gateway', () => {
   it('maps the codes of docs/app-contract.md › Errors to their pages', () => {
-    expect(gatewayErrorOf('no_app_access')).toBe('403');
+    expect(gatewayErrorOf('no_app_access')).toBe('app');
     expect(gatewayErrorOf('origin_mismatch')).toBe('403');
     expect(gatewayErrorOf('not_found')).toBe('404');
     expect(gatewayErrorOf('app_unreachable')).toBe('502');

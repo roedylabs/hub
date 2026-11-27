@@ -257,20 +257,38 @@ describe('shell of settings and administration (desktop)', () => {
     expect(nav.goto).not.toHaveBeenCalled();
   });
 
-  it('keeps the guest page "Confirm email" and the home page without the shell', async () => {
-    for (const path of ['/account/confirm-email/tok', '/']) {
-      page.url = new URL(`http://localhost${path}`);
-      mockApi({
-        'GET public/config': [{ body: CONFIG }],
-        'GET session': [{ body: SESSION }],
-        'GET settings': [{ body: { version: 1, settings: { lang: 'en', mode: 'light', accent: null } } }],
-      });
-      const view = render(Layout, { children: content });
-      expect(await view.findByText('Page content')).toBeInTheDocument();
-      expect(view.queryByRole('banner')).toBeNull();
-      expect(view.queryByRole('main')).toBeNull();
-      view.unmount();
-    }
+  it('keeps the guest page "Confirm email" without the shell', async () => {
+    page.url = new URL('http://localhost/account/confirm-email/tok');
+    mockApi({
+      'GET public/config': [{ body: CONFIG }],
+      'GET session': [{ body: SESSION }],
+      'GET settings': [{ body: { version: 1, settings: { lang: 'en', mode: 'light', accent: null } } }],
+    });
+    const view = render(Layout, { children: content });
+    expect(await view.findByText('Page content')).toBeInTheDocument();
+    expect(view.queryByRole('banner')).toBeNull();
+    expect(view.queryByRole('main')).toBeNull();
+  });
+
+  it('puts the header above the home page, without navigation, with one main', async () => {
+    page.url = new URL('http://localhost/');
+    mockApi({
+      'GET public/config': [{ body: CONFIG }],
+      'GET session': [{ body: SESSION }],
+      'GET settings': [{ body: { version: 1, settings: { lang: 'en', mode: 'light', accent: null } } }],
+    });
+    const view = render(Layout, { children: content });
+    expect(await view.findByText('Page content')).toBeInTheDocument();
+    expect(view.getByRole('banner')).toBeInTheDocument();
+    expect(view.getAllByRole('main')).toHaveLength(1);
+    expect(view.getByRole('main')).toHaveTextContent('Page content');
+    expect(view.queryByRole('navigation')).toBeNull();
+    // A user: settings, no administration.
+    expect(view.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    expect(view.queryByRole('button', { name: 'Administration' })).toBeNull();
+    // The account menu with "Sign out" opens from the avatar.
+    await fireEvent.click(view.getByRole('button', { name: 'Alex Example' }));
+    expect(view.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
   });
 
   it('opens the account menu below the avatar; Escape and a click outside close it', async () => {

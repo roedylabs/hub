@@ -451,7 +451,7 @@ checks pass in every PR; every PR has tests for what it adds.
       long-lived events at the example; removal). `access.changed` with
       `access: false` has no path yet: access per user comes with
       milestone 5.
-5. **Home page and permissions** – home page tiles, browser API
+5. [x] **Home page and permissions** – home page tiles, browser API
    (`/api/v1/session`, `/api/v1/apps`, icons), administration of apps (add,
    pairing code, status, order, access default, remove), access and roles per
    user and in the invitation form, 403 page.
@@ -508,9 +508,47 @@ checks pass in every PR; every PR has tests for what it adds.
       `tests/gateway.rs` (grant, role change and removal at once, streams
       closed) and `tests/events.rs` (role change and removal delivered to the
       example app).
-   2. **Pages** – home page tiles, Administration › Apps (list with status,
+   2. [x] **Pages** – home page tiles, Administration › Apps (list with status,
       order, add, pairing code, access default, the app's users), access and
-      roles in the user and invitation forms, the 403 page.
+      roles in the user and invitation forms, the 403 page. Done: the home
+      page (`#lib/home.svelte.ts`) gets the shell's header (brand,
+      administration, settings, account menu) without navigation and card;
+      greeting, the apps from `GET /api/v1/apps` as tiles (icon, name,
+      description, "Offline"; the name is the link and covers the tile),
+      loading again when the tab becomes visible, an empty state (for
+      administrators "add your first app" or "give yourself access", with the
+      way to Administration › Apps) and, for administrators, a hint while
+      apps wait for pairing (from `admin/apps`, as `GET /api/v1/apps` never
+      lists them). Administration › Apps (`#lib/admin-apps.svelte.ts`, new
+      entry in the navigation): the list in the home page's order with
+      status (online, offline, not checked, waiting with the code's
+      validity), users and failing event delivery; "Move up/down" buttons
+      (keyboard and screen reader, the new position announced, focus kept;
+      `PATCH admin/apps` one after another, a 422 reloads); "Add app" with
+      slug and internal address checked like the server, field errors at
+      the fields, the pairing code shown once with "Copy". The app's page
+      `/admin/apps/[slug]`: status, addresses, version, app ID, event
+      delivery, "New pairing code", the access default as a radio group
+      (saved at once; "applies to new users only"), the roles with "Default"
+      and "Full control", who has access (users and invitations, those
+      without folded), "Remove app" with confirmation; "App not found" for
+      an unknown slug. Access in Administration › Users
+      (`#lib/users.svelte.ts`, `AccessPicker.svelte`): per paired app a radio
+      group "No access" / roles in the expanded row (at once, for
+      invitations through `PATCH invites/:id`, shown over lists loaded
+      meanwhile, a later change wins), in the invitation form (preset from
+      each app's default; only changed apps are sent, errors
+      `apps.<slug>` at the app) and as the bulk action "App access"
+      ("Unchanged" per app, one `users/bulk` per changed app); `app_pending`,
+      a role or app gone reload the apps and the list. The gateway's 403
+      `no_app_access` has its own text ("No access to this app"); the other
+      gateway pages are unchanged. Tests: state modules (`home`, `apps`,
+      `admin-apps`, access in `users`), component tests per page, axe per
+      page state in light and dark (`a11y.test.ts` next to each page) and
+      the Chromium audit (`scripts/a11y/scenarios/home.mjs`, `apps.mjs`, the
+      access states in `users.mjs`). Open: the home page has no design yet –
+      it is built plainly with the tokens (greeting, tiles in a grid, a list
+      on mobile) and is finished once there is a draft.
 6. **Delivery, docs, end-to-end** – Dockerfile, release workflow, image size
    and smoke test, `deploy/compose.yml` (Caddy + hub + Mail, only Caddy
    published; the example app in a test override), `.env.example`,

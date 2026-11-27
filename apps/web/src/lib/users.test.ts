@@ -5,6 +5,7 @@ import { mockApi, type Call } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
 import { session } from '#lib/state/session.svelte.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
+import { offlineApp, pairedApp, pendingApp } from '#lib/test/apps.ts';
 import { signIn, TEST_USER } from '#lib/test/signed-in.ts';
 import { UsersPage, rowsValues, usersValues, type ListedUser } from './users.svelte.ts';
 
@@ -120,7 +121,7 @@ describe('List', () => {
       ['Suspended', 1, false],
     ]);
     expect(v()).toMatchObject({ uHasRows: true, uNoMail: false });
-    expect(sent(calls)).toEqual(['GET users', 'GET admin/system-mail']);
+    expect(sent(calls)).toEqual(['GET users', 'GET admin/system-mail', 'GET admin/apps']);
   });
 
   it('shows the own account with "You", without selection and actions', async () => {
@@ -1381,5 +1382,171 @@ describe('Actions per row', () => {
   it('rows derive without the form or the menu', async () => {
     const { p } = await loaded();
     expect(rowsValues(p, ctx, NOW)).toHaveLength(6);
+  });
+});
+
+describe('App access', () => {
+  const APPS_ROUTE = (apps = [pairedApp(), pendingApp(), offlineApp()]) => always({ body: { apps } }, 5);
+  const withApps = (u: ListedUser, apps: Record<string, string>): ListedUser => ({ ...u, apps });
+  const ACCESS_USERS = USERS.map((u) =>
+    u.id === 'u2' ? withApps(u, { mail: 'user' }) : u.id === 'i1' ? withApps(u, { notes: 'user' }) : u,
+  );
+
+  async function withAccess(routes: Parameters<typeof mockApi>[0] = {}) {
+    const ready = await loaded({ 'GET admin/apps': APPS_ROUTE(), ...routes }, ACCESS_USERS);
+    await vi.waitFor(() => expect(ready.p.paired.map((a) => a.slug)).toEqual(['mail', 'notes']));
+    return ready;
+  }
+
+  it('offers "No access" or a role per paired app in the expanded row', async () => {
+    const { p, v } = await withAccess({ 'GET users/u2': [{ body: { user: { sessions: [] } } }] });
+    expect(row(v(), 'Luke Walker').access).toEqual([]);
+    p.toggleOpen('u2');
+    const access = row(v(), 'Luke Walker').access;
+    expect(access.map((a) => [a.name, a.label, a.options.filter((o) => o.on).map((o) => o.label)])).toEqual([
+      ['Mail', 'Access to Mail', ['User']],
+      ['Notes', 'Access to Notes', ['No access']],
+    ]);
+  });
+
+  it('changes a user’s role and access at once, and keeps the choice over a list loaded meanwhile', async () => {
+    const put = held();
+    const { p, v, calls, server } = await withAccess({
+      'GET users/u2': always({ body: { user: { sessions: [] } } }),
+      'PUT users/u2/apps/mail': [put.reply],
+      'DELETE users/u2/apps/notes': [{ body: { user: withApps(USERS[2] as ListedUser, { mail: 'admin' }) } }],
+    });
+    p.toggleOpen('u2');
+    row(v(), 'Luke Walker').access[0]?.pick('admin');
+    expect(listed(p, 'u2')?.apps).toEqual({ mail: 'admin' });
+    // A list from before the response does not take it back.
+    await p.load();
+    expect(listed(p, 'u2')?.apps).toEqual({ mail: 'admin' });
+    put.release({ body: { user: withApps(USERS[2] as ListedUser, { mail: 'admin' }) } });
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Access to Mail changed'));
+    expect(calls.find((c) => c.method === 'PUT')).toMatchObject({
+      path: 'users/u2/apps/mail',
+      body: { app_role: 'admin' },
+    });
+    // Nothing to do for the same value.
+    row(v(), 'Luke Walker').access[0]?.pick('admin');
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1);
+    server.users = ACCESS_USERS;
+    p.setAccess(listed(p, 'u2') as ListedUser, 'notes', 'user');
+    row(v(), 'Luke Walker').access[1]?.pick(null);
+    expect(calls.at(-1)).toMatchObject({ method: 'DELETE', path: 'users/u2/apps/notes' });
+  });
+
+  it('changes an invitation’s access through the invitation', async () => {
+    const { p, calls } = await withAccess({
+      'PATCH invites/i1': [{ body: { invite: withApps(USERS[4] as ListedUser, {}) } }],
+    });
+    p.setAccess(listed(p, 'i1') as ListedUser, 'notes', null);
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Access to Notes removed'));
+    expect(calls.at(-1)).toMatchObject({ method: 'PATCH', path: 'invites/i1', body: { apps: { notes: null } } });
+    expect(listed(p, 'i1')?.apps).toEqual({});
+  });
+
+  it('goes back and reloads the apps when the app is pending, the role gone, or the request failed', async () => {
+    const { p, calls } = await withAccess({
+      'PUT users/u1/apps/mail': [
+        { status: 409, body: { error: 'app_pending' } },
+        { status: 422, body: { error: 'invalid', fields: { app_role: { code: 'invalid' } } } },
+        { status: 500, body: { error: 'internal' } },
+      ],
+    });
+    const appsLoads = () => calls.filter((c) => c.path === 'admin/apps').length;
+    const anna = () => listed(p, 'u1') as ListedUser;
+    p.setAccess(anna(), 'mail', 'user');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('This app isn’t paired yet. The list was updated.'));
+    expect(anna().apps ?? {}).toEqual({});
+    expect(appsLoads()).toBe(2);
+    p.setAccess(anna(), 'mail', 'admin');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('This role no longer exists in the app. The list was updated.'));
+    p.setAccess(anna(), 'mail', 'admin');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Access wasn’t changed. Please try again.'));
+    expect(anna().apps ?? {}).toEqual({});
+  });
+
+  it('a later change of the same app wins over an earlier response', async () => {
+    const first = held();
+    const { p } = await withAccess({
+      'PUT users/u1/apps/mail': [first.reply, { body: { user: withApps(USERS[1] as ListedUser, { mail: 'admin' }) } }],
+    });
+    p.setAccess(listed(p, 'u1') as ListedUser, 'mail', 'user');
+    p.setAccess(listed(p, 'u1') as ListedUser, 'mail', 'admin');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Access to Mail changed'));
+    first.release({ status: 500, body: { error: 'internal' } });
+    await tick();
+    expect(listed(p, 'u1')?.apps).toEqual({ mail: 'admin' });
+    // The earlier failure reports nothing: the later change decided.
+    expect(ui.toast?.text).toBe('Access to Mail changed');
+  });
+
+  it('presets the invitation form from each app’s default and sends only the changed apps', async () => {
+    const { p, v, calls } = await withAccess({
+      'POST invites': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { 'apps.notes': { code: 'invalid' } } },
+        },
+        { status: 201, body: { invites: [{ id: 'i9', email: 'tim@example.com', sent: true }], system_mail: true } },
+      ],
+    });
+    p.openInvite();
+    expect(v().invApps.map((a) => [a.slug, a.options.find((o) => o.on)?.value])).toEqual([
+      ['mail', 'user'],
+      ['notes', null],
+    ]);
+    p.inviteInput('tim@example.com ');
+    await p.sendInvites();
+    expect(calls.filter((c) => c.method === 'POST').at(-1)?.body).not.toHaveProperty('apps');
+    // The first send failed on the role in Notes: shown at the app, sending locked until it changes.
+    expect(v().invApps[1]?.err).toBe('This role no longer exists in the app. Choose another one.');
+    expect(v().invErr).toBe('Please check the app access.');
+    v().invApps[1]?.pick('admin');
+    expect(v().invApps[1]?.err).toBe('');
+    v().invApps[0]?.pick(null);
+    await p.sendInvites();
+    expect(calls.filter((c) => c.method === 'POST').at(-1)?.body).toMatchObject({
+      emails: ['tim@example.com'],
+      apps: { mail: null, notes: 'admin' },
+    });
+  });
+
+  it('gives access to the selection per app, leaving unchanged apps alone', async () => {
+    const { p, v, calls } = await withAccess({
+      'POST users/bulk': [{ body: { changed: ['u2', 'u3'] } }, { body: { changed: ['u3'] } }],
+    });
+    p.toggleSelect('u2');
+    p.toggleSelect('u3');
+    expect(v().uCanBulkAccess).toBe(true);
+    v().uBulkAccessToggle();
+    const b = () => v().uBulkAccess;
+    expect(b()?.title).toBe('App access for 2 people');
+    expect(b()?.rows.map((r) => r.unchanged.on)).toEqual([true, true]);
+    expect(b()?.canApply).toBe(false);
+    b()?.rows[0]?.pick('admin');
+    b()?.rows[1]?.pick(null);
+    expect(b()?.canApply).toBe(true);
+    b()?.rows[1]?.unchanged.pick();
+    b()?.rows[1]?.pick(null);
+    b()?.apply();
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('App access changed for 2 people'));
+    expect(calls.filter((c) => c.path === 'users/bulk').map((c) => c.body)).toEqual([
+      { action: 'access', ids: ['u2', 'u3'], slug: 'mail', access: true, app_role: 'admin' },
+      { action: 'access', ids: ['u2', 'u3'], slug: 'notes', access: false },
+    ]);
+    expect(v().uBulkAccessOpen).toBe(false);
+  });
+
+  it('closes the bulk action with the selection and offers it only with paired apps', async () => {
+    const { p, v } = await withAccess();
+    p.toggleSelect('u2');
+    p.openBulkAccess();
+    p.toggleSelect('u2');
+    expect(p.bulkAccess).toBeNull();
+    p.apps = [pendingApp()];
+    expect(v().uCanBulkAccess).toBe(false);
   });
 });

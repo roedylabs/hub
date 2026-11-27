@@ -28,11 +28,12 @@ describe('settings navigation', () => {
       ],
     ]);
     expect(panelGroups('admin').map((g) => [g.label, g.pages.map((p) => p.id)])).toEqual([
-      [null, ['users', 'organization', 'branding']],
+      [null, ['users', 'apps', 'organization', 'branding']],
       ['System', ['email', 'audit-log']],
     ]);
     expect(panelGroups('admin').flatMap((g) => g.pages.map((p) => p.icon))).toEqual([
       'ti-users',
+      'ti-apps',
       'ti-building',
       'ti-brush',
       'ti-mail',
