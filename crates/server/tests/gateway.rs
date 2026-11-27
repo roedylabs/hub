@@ -40,7 +40,10 @@ use roedy_hub_server::{
     web::static_files::WebAssets,
 };
 use serde_json::{Value, json};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::{TcpListener, TcpStream},
+};
 use tokio_tungstenite::tungstenite::{self, Message, client::IntoClientRequest as _};
 
 const ORIGIN: &str = "https://app.example.com";
@@ -1146,40 +1149,43 @@ async fn ending_a_session_closes_its_streams() {
         );
     }
 
-    // The same for a WebSocket whose upgrade the app delays: nothing is
-    // relayed after the sign-out.
+    // The same for a WebSocket whose upgrade the app delays, with a frame
+    // the browser sent right after its request – buffered at the hub until
+    // the upgrade: the app never receives it.
     let late = hub.env.session_for("max").await;
-    let mut request = format!("ws://{}/example/ws?delay_ms=800", hub.public)
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert(header::COOKIE, cookie(&late).parse().unwrap());
-    let stream = TcpStream::connect(hub.public).await.unwrap();
-    let (socket, reply) = tokio::join!(tokio_tungstenite::client_async(request, stream), async {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        hub.env
-            .as_user(&late, Method::POST, "/auth/logout", None)
-            .await
-    });
+    let mut tcp = TcpStream::connect(hub.public).await.unwrap();
+    let mut handshake = format!(
+        "GET /example/ws?delay_ms=800 HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\n\
+         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: {}\r\n\r\n",
+        hub.public,
+        cookie(&late)
+    )
+    .into_bytes();
+    // A masked text frame "hi" (RFC 6455 § 5.2).
+    let mask = [1u8, 2, 3, 4];
+    handshake.extend_from_slice(&[0x81, 0x80 | 2]);
+    handshake.extend_from_slice(&mask);
+    handshake.extend(b"hi".iter().zip(mask).map(|(byte, m)| byte ^ m));
+    tcp.write_all(&handshake).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let reply = hub
+        .env
+        .as_user(&late, Method::POST, "/auth/logout", None)
+        .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    if let Ok((mut socket, _)) = socket {
-        // Sending may already fail; an echo must never come back.
-        let _ = socket.send(Message::text("after sign-out")).await;
-        let echoed = tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(message) = socket.next().await {
-                match message {
-                    Ok(Message::Text(_) | Message::Binary(_)) => return true,
-                    Ok(_) => {}
-                    Err(_) => return false,
-                }
-            }
-            false
-        })
+    // The hub answers the upgrade (or not) and closes the connection.
+    let mut received = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), tcp.read_to_end(&mut received))
         .await
-        .expect("WebSocket still open");
-        assert!(!echoed, "relayed after the sign-out");
-    }
+        .expect("connection still open")
+        .ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        hub.example.websocket_messages(),
+        0,
+        "relayed after the sign-out"
+    );
 
     // Locked by an administrator: every session of the user.
     let max = hub.env.session_for("max").await;

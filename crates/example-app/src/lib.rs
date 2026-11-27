@@ -31,7 +31,7 @@ use std::{
     convert::Infallible,
     sync::{
         Arc, Mutex, PoisonError, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -172,6 +172,8 @@ struct Inner {
     connection: RwLock<Option<Connection>>,
     jwks_refreshed: Mutex<Option<Instant>>,
     ready: AtomicBool,
+    /// Text and binary messages the WebSocket echo received.
+    websocket_messages: AtomicUsize,
     events: Mutex<Events>,
 }
 
@@ -215,6 +217,7 @@ impl Example {
             connection: RwLock::new(None),
             jwks_refreshed: Mutex::new(None),
             ready: AtomicBool::new(true),
+            websocket_messages: AtomicUsize::new(0),
             events: Mutex::new(Events::default()),
         })))
     }
@@ -247,6 +250,11 @@ impl Example {
     }
 
     /// Whether `readyz` answers `200` (once paired).
+    /// How many text and binary messages the WebSocket echo received.
+    pub fn websocket_messages(&self) -> usize {
+        self.0.websocket_messages.load(Ordering::SeqCst)
+    }
+
     pub fn set_ready(&self, ready: bool) {
         self.0.ready.store(ready, Ordering::SeqCst);
     }
@@ -645,13 +653,16 @@ async fn ws(
     {
         return json_error(StatusCode::FORBIDDEN, "origin_mismatch");
     }
-    upgrade.on_upgrade(echo_socket)
+    upgrade.on_upgrade(move |socket| echo_socket(socket, example))
 }
 
-async fn echo_socket(mut socket: WebSocket) {
+async fn echo_socket(mut socket: WebSocket, example: Example) {
     while let Some(Ok(message)) = socket.recv().await {
         let reply = match message {
-            Message::Text(_) | Message::Binary(_) => message,
+            Message::Text(_) | Message::Binary(_) => {
+                example.0.websocket_messages.fetch_add(1, Ordering::SeqCst);
+                message
+            }
             Message::Close(frame) => {
                 let _ = socket.send(Message::Close(frame)).await;
                 return;

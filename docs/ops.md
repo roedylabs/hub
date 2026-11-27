@@ -69,7 +69,7 @@ when:
 | `431` | `headers_too_large` | More than 64 KiB of request headers; always JSON, also for page loads |
 | `502` | `app_unreachable` | No connection to the app within 5 seconds (name lookup, TCP and TLS), or the app breaks it off before its response |
 | `503` | `app_not_ready` | The app waits for pairing and the user is no hub administrator |
-| `504` | `app_timeout` | No response headers from the app within 300 seconds after the request body (an upload has no time limit) |
+| `504` | `app_timeout` | No response headers from the app within 300 seconds after the hub took the request body's last part to send it (an upload has no time limit; an app that stops reading its last bytes counts as not answering) |
 
 Every `502` and `504` is logged as a warning with the slug and the request's `X-Roedy-Request-Id`, which the app
 receives as well. A session is checked at most every 10 seconds per cookie; signing out, revoking a device, locking or

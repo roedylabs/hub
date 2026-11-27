@@ -240,13 +240,40 @@ fn is_page_load(headers: &HeaderMap) -> bool {
         None => headers
             .get_all(header::ACCEPT)
             .iter()
-            .flat_map(|accept| accept.as_bytes().split(|&b| b == b','))
-            .any(|range| {
-                // The media type without its parameters.
-                let media = range.split(|&b| b == b';').next().unwrap_or_default();
-                media.trim_ascii().eq_ignore_ascii_case(b"text/html")
-            }),
+            .flat_map(|accept| media_types(accept.as_bytes()))
+            .any(|media| media.eq_ignore_ascii_case(b"text/html")),
     }
+}
+
+/// The media types of an `Accept` value, without their parameters: the
+/// list is split at commas outside quoted parameter values (RFC 9110
+/// § 5.6.4), each range at its first `;`.
+fn media_types(accept: &[u8]) -> Vec<&[u8]> {
+    let mut types = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    for (at, &byte) in accept.iter().enumerate() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' if quoted => escaped = true,
+            b'"' => quoted = !quoted,
+            b',' if !quoted => {
+                types.push(&accept[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    types.push(&accept[start..]);
+    types
+        .into_iter()
+        .map(|range| {
+            range
+                .split(|&b| b == b';')
+                .next()
+                .unwrap_or_default()
+                .trim_ascii()
+        })
+        .collect()
 }
 
 /// The gateway's own error: the web app's page for page loads, else JSON.
@@ -739,6 +766,22 @@ mod tests {
                 false,
             ),
             (&[("accept", "text/html-fragment")], false),
+            // A comma inside a quoted parameter does not start a new type.
+            (
+                &[("accept", "application/json;profile=\"foo,text/html;bar\"")],
+                false,
+            ),
+            (
+                &[(
+                    "accept",
+                    "application/json;p=\"a\\\",text/html\", text/html",
+                )],
+                true,
+            ),
+            (
+                &[("accept", "application/json;p=\"a\\\",text/html\"")],
+                false,
+            ),
             (&[], false),
         ];
         for (pairs, expected) in table {

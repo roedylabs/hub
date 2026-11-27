@@ -125,7 +125,7 @@ stricter.
 | Limit | Value |
 |---|---|
 | Connect to the app (name lookup, TCP, TLS) | 5 s, then 502 `app_unreachable` |
-| Until the app's response headers | 300 s after the request body is sent (an earlier response counts at once), then 504 `app_timeout` |
+| Until the app's response headers | 300 s after the hub has taken the request body's last part to send it (an earlier response counts at once), then 504 `app_timeout`. The upload itself has no time limit; an app that stops reading the last bytes counts as not answering. |
 | Response and request bodies | Streamed in both directions without buffering; no total time limit, no size limit at the hub |
 | Request headers | 64 KiB in total, then 431 `headers_too_large` |
 | Protocol to the app | HTTP/1.1 (the hub does not speak h2c to apps) |
