@@ -6,8 +6,8 @@ import { expect, type Browser, type BrowserContext, type Page } from '@playwrigh
 import axe from 'axe-core';
 import { execFile } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { env } from '../env.ts';
 
 /** Signed-in session (cookies), in memory only. */
 export type Session = Awaited<ReturnType<BrowserContext['storageState']>>;
@@ -171,12 +171,17 @@ export function password(): string {
   return `Rh-${randomBytes(12).toString('base64url')}-aZ7`;
 }
 
+/** scripts/e2e.sh of this checkout. */
+const E2E_SCRIPT = fileURLToPath(new URL('../../../scripts/e2e.sh', import.meta.url));
+
 /**
- * (Re)starts the example app paired with `code` (scripts/e2e.sh: `docker
- * compose up` with the code, or the binary on the host).
+ * (Re)starts the example app paired with `code`: `scripts/e2e.sh --pair`
+ * recreates its container with the code, or restarts the binary on the host,
+ * as the running scripts/e2e.sh started it. No shell: the code is passed in
+ * the environment only.
  */
 export async function pairExample(code: string): Promise<void> {
-  await promisify(execFile)('bash', ['-c', env.pair], {
+  await promisify(execFile)(E2E_SCRIPT, ['--pair'], {
     env: { ...process.env, ROEDY_EXAMPLE_PAIRING_CODE: code },
     timeout: 90_000,
   });

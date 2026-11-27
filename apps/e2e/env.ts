@@ -1,5 +1,6 @@
 // What scripts/e2e.sh passes to the suite: where the hub runs, the test
-// certificate it serves, the setup token and how to pair the example app.
+// certificate it serves, the setup token and where the hub reaches the
+// example app (pairing goes through `scripts/e2e.sh --pair`, helpers.ts).
 // The suite never starts anything itself, so that the same tests run against
 // the Compose setup and against the binaries on the host.
 import { readFileSync } from 'node:fs';
@@ -26,10 +27,6 @@ export const env = {
   /** The setup token of the fresh hub. */
   get setupToken(): string {
     return need('ROEDY_E2E_SETUP_TOKEN');
-  },
-  /** Shell command that (re)starts the example app paired with `ROEDY_EXAMPLE_PAIRING_CODE`. */
-  get pair(): string {
-    return need('ROEDY_E2E_PAIR');
   },
   /** Where the hub reaches the example app, entered in Administration › Apps. */
   get exampleInternal(): string {

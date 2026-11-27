@@ -22,8 +22,9 @@
 # must be free. Needs curl and openssl.
 #
 # The suite gets the setup and the hub through environment variables
-# (apps/e2e/env.ts); ROEDY_E2E_PAIR is the command that (re)starts the
-# example app paired with the code in ROEDY_EXAMPLE_PAIRING_CODE.
+# (apps/e2e/env.ts). To pair the example app it calls `scripts/e2e.sh --pair`
+# with the code in ROEDY_EXAMPLE_PAIRING_CODE, which (re)starts the example app
+# the way this run started it (ROEDY_E2E_MODE).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,12 +41,27 @@ fail() {
 # proxy from the environment (not every client honours NO_PROXY=*).
 local_env=(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY)
 
-# Host mode, called by the suite through ROEDY_E2E_PAIR: restarts the example
-# app with the pairing code and waits until it is paired (its readyz answers
-# 200 only then).
-if [ "${1:-}" = --pair-host ]; then
-  run=${ROEDY_E2E_RUN:?}
+# The Compose command of compose mode: a project of its own, as in
+# scripts/compose-smoke.sh; the fixed container names (roedy-hub,
+# roedy-hub-example) refuse a run next to another one.
+read -r -a engine <<<"${ROEDY_E2E_COMPOSE:-docker compose}"
+compose=("${engine[@]}" -p roedy-e2e -f "$REPO/deploy/compose.yml" -f "$REPO/deploy/compose.test.yml")
+
+# Called by the suite while it runs: restarts the example app with the pairing
+# code in ROEDY_EXAMPLE_PAIRING_CODE – in compose mode by recreating its
+# container, in host mode by restarting the binary and waiting until it is
+# paired (its readyz answers 200 only then).
+if [ "${1:-}" = --pair ]; then
   code=${ROEDY_EXAMPLE_PAIRING_CODE:?}
+  case "${ROEDY_E2E_MODE:?only while scripts/e2e.sh runs the suite}" in
+    compose)
+      ROEDY_EXAMPLE_PAIRING_CODE="$code" "${compose[@]}" up -d --wait --wait-timeout 60 roedy-hub-example
+      exit
+      ;;
+    host) ;;
+    *) fail "unknown ROEDY_E2E_MODE $ROEDY_E2E_MODE" ;;
+  esac
+  run=${ROEDY_E2E_RUN:?}
   kill -INT "$(cat "$run/example.pid")" 2>/dev/null || true
   for _ in $(seq 1 50); do
     curl -s -o /dev/null --max-time 1 http://127.0.0.1:8090/example/healthz || break
@@ -75,6 +91,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ "$mode" = host ] || [ -n "$build" ] || fail "--no-build only with --host (compose takes the images as they are)"
+export ROEDY_E2E_MODE="$mode"
 
 run=$(mktemp -d)
 export ROEDY_E2E_RUN="$run"
@@ -97,13 +114,7 @@ wait_ready() {
 }
 
 if [ "$mode" = compose ]; then
-  read -r -a engine <<<"${ROEDY_E2E_COMPOSE:-docker compose}"
-  # A project of its own, as in scripts/compose-smoke.sh; the fixed container
-  # names (roedy-hub, roedy-hub-example) refuse a run next to another one.
-  compose=("${engine[@]}" -p roedy-e2e -f "$REPO/deploy/compose.yml" -f "$REPO/deploy/compose.test.yml")
   export ROEDY_PUBLIC_URL="$ROEDY_E2E_URL" ROEDY_TEST_TLS_DIR="$run/tls"
-  printf -v ROEDY_E2E_PAIR '%q ' "${compose[@]}" up -d --wait --wait-timeout 60 roedy-hub-example
-  export ROEDY_E2E_PAIR
   export ROEDY_E2E_EXAMPLE_INTERNAL=http://roedy-hub-example:8080
   # shellcheck disable=SC2329 # invoked by the EXIT trap
   cleanup() {
@@ -141,7 +152,7 @@ else
   mkdir -p "$run/data"
   "${local_env[@]}" "${hub_env[@]}" "$bin/roedy-hub" serve >"$run/hub.log" 2>&1 &
   echo $! >"$run/hub.pid"
-  # The example app unpaired, as in the Compose setup; --pair-host restarts it.
+  # The example app unpaired, as in the Compose setup; --pair restarts it.
   "${local_env[@]}" ROEDY_PUBLIC_URL="$ROEDY_E2E_URL/example" ROEDY_HUB_INTERNAL_URL=http://127.0.0.1:8081 \
     ROEDY_LISTEN=127.0.0.1:8090 "$bin/roedy-hub-example" >"$run/example.log" 2>&1 &
   echo $! >"$run/example.pid"
@@ -165,7 +176,6 @@ else
     fail "no /readyz over HTTPS after 60 s"
   }
   ROEDY_E2E_SETUP_TOKEN=$(env "${hub_env[@]}" "$bin/roedy-hub" setup-token | sed -n 's/^Setup-Token: //p')
-  export ROEDY_E2E_PAIR="'$REPO/scripts/e2e.sh' --pair-host"
   export ROEDY_E2E_EXAMPLE_INTERNAL=http://127.0.0.1:8090
 fi
 [ -n "$ROEDY_E2E_SETUP_TOKEN" ] || fail "no setup token"

@@ -82,8 +82,8 @@ scripts/e2e.sh --host --no-build -g 'setup|sign-in|pairing|sign-out'   # reuse t
 ```
 
 The browser trusts the test certificate only (`--ignore-certificate-errors-spki-list` with its key's hash) and Node
-gets it as `NODE_EXTRA_CA_CERTS`; TLS checks stay on. The example app pairs through `ROEDY_E2E_PAIR`, a command
-the script sets (`docker compose up` with the code, or a restart of the binary). On a failure,
+gets it as `NODE_EXTRA_CA_CERTS`; TLS checks stay on. To pair the example app the suite calls `scripts/e2e.sh --pair`
+with the code (no shell), which recreates its container or restarts the binary, as the run started it. On a failure,
 `apps/e2e/test-results/` holds a trace, a screenshot and the page's accessibility snapshot per failed test plus the
 hub's and the example's log (`compose.log` or `host.log`); CI uploads it as the artifact `e2e-results`. Open a trace
 with `pnpm --filter @roedy/hub-e2e exec playwright show-trace <trace.zip>`; add `--headed` or `--debug` to watch a

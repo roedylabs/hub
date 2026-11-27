@@ -714,9 +714,9 @@ checks pass in every PR; every PR has tests for what it adds.
       run with the Chromium audit's rule set, TOTP and the authenticator from
       Mail's suite) and `scripts/e2e.sh`, which starts `deploy/compose.yml`
       with `compose.test.yml` (or, with `--host`, debug binaries without
-      containers), makes the test certificate, hands the suite the setup token
-      and `ROEDY_E2E_PAIR` (the command that restarts the example app with a
-      pairing code) and stops everything again. The browser trusts only the
+      containers), makes the test certificate, hands the suite the setup token,
+      restarts the example app with a pairing code when the suite calls
+      `scripts/e2e.sh --pair` and stops everything again. The browser trusts only the
       test certificate (`--ignore-certificate-errors-spki-list`), Node gets it
       as `NODE_EXTRA_CA_CERTS`; no TLS check is switched off. One serial flow:
       `308` from plain HTTP and HSTS; the setup's seven steps with the code
