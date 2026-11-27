@@ -10,6 +10,7 @@ pub mod client_ip;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod gateway;
 pub mod healthcheck;
 pub mod i18n;
 pub mod identity;

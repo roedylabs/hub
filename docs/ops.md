@@ -23,13 +23,13 @@ Roedy Mail.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ROEDY_PUBLIC_URL` | – | **Required.** Public address of the hub, e.g. `https://app.example.com`: scheme, host and optionally a port, without path, credentials, query or fragment. The hub owns the root of its origin; the apps live under `/<slug>/`. Without it, `serve` exits with `error: ROEDY_PUBLIC_URL is not set – …` before it creates anything. |
-| `ROEDY_LISTEN` | `0.0.0.0:8080` | Address and port of the public HTTP server: web app, `/api/v1`, `/healthz`, `/readyz` and later the apps. The reverse proxy handles TLS. |
+| `ROEDY_LISTEN` | `0.0.0.0:8080` | Address and port of the public HTTP server: web app, `/api/v1`, `/healthz`, `/readyz` and the apps under `/<slug>/` ([Gateway](#gateway)). The reverse proxy handles TLS. |
 | `ROEDY_INTERNAL_LISTEN` | `0.0.0.0:8081` | Address and port of the internal HTTP server for the apps (`/internal/v1/…`). **Never publish this port** and never forward it through the reverse proxy. Set to empty to turn it off; then no app can pair. It must not overlap with `ROEDY_LISTEN`. Apps pair, send their manifest and read users and keys here (docs/app-contract.md › Internal API); every other path answers `404`. |
 | `ROEDY_DATA_DIR` | `data` relative to the working directory | Directory with the database `roedy.sqlite3` and the key `secret.key`; created with `0700`, files `0600`. Must be on a local file system (SQLite in WAL mode). |
 | `ROEDY_LOG` | `info` | Log filter in the format of [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html), e.g. `warn` or `info,roedy_hub_server=debug`. `info,tower_http=debug` logs every request (method and path, tokens in paths replaced by `***`, never the query). The setup token always appears. |
 | `ROEDY_LOG_FORMAT` | `json` | `json` (one line per event) or `text`. Logs go to stderr. |
 | `ROEDY_WEB_DIR` | – | Directory with the web app build (e.g. `apps/web/build`). Takes precedence over the embedded web app; for development. |
-| `ROEDY_TRUST_PROXY` | `false` | Reverse proxies in front of the server: `true` for one, otherwise their number (at most 10). The client IP is then the entry in `X-Forwarded-For` appended by the front-most proxy, and the server sends HSTS. Only set it when the public port is reachable exclusively via the proxy and every proxy appends to `X-Forwarded-For` instead of passing it through. |
+| `ROEDY_TRUST_PROXY` | `false` | Reverse proxies in front of the server: `true` for one, otherwise their number (at most 10). The client IP is then the entry in `X-Forwarded-For` appended by the front-most proxy, and the server sends HSTS. Only set it when the public port is reachable exclusively via the proxy and every proxy appends to `X-Forwarded-For` instead of passing it through. The apps receive the trusted entries plus the hub's own peer; set their `ROEDY_TRUST_PROXY` to this value plus one. |
 | `ROEDY_SECRET_KEY` | – | Instance key for secrets in the database: 32 bytes as 64 hex characters (`openssl rand -hex 32`) or Base64 (`openssl rand -base64 32`). If it is missing as well as `ROEDY_SECRET_KEY_FILE`, the first start creates `<ROEDY_DATA_DIR>/secret.key` (`0600`) and uses it afterwards. Without the key the encrypted values can no longer be read; keep a copy outside the data directory. The keys that sign the identities for the apps are encrypted with it as well: with another instance key the hub replaces them at the next start, and paired apps fetch the new one on their own. |
 | `ROEDY_SECRET_KEY_FILE` | – | File with this key, e.g. a Docker secret (`/run/secrets/roedy_secret_key`). Not together with `ROEDY_SECRET_KEY`. |
 
@@ -39,7 +39,7 @@ Roedy Mail.
 **Commands:** `roedy-hub serve` starts the server, `roedy-hub healthcheck` checks it ([Health](#health)),
 `roedy-hub migrate` applies pending database migrations (`serve` does that as well) and `roedy-hub setup-token` shows
 the setup token. All of them read the same variables. On `SIGTERM` or `SIGINT` the server stops accepting connections
-on both ports and gives open requests 8 seconds to finish.
+on both ports, closes the open streams and WebSockets to the apps and gives open requests 8 seconds to finish.
 
 **Lost administrator access:** `roedy-hub reset-admin` restores an administrator's access – for example when the only
 administrator lost both password and authenticator app. It sets a new random password and prints it, removes the
@@ -51,6 +51,30 @@ operator never learns it; the old password stops working right away. Run it next
 
 **Cleanup:** the server deletes expired sessions and links from mails every hour, and audit log entries older than the
 retention chosen under Administration › Audit log (30, 90 or 365 days, default 90) once a day.
+
+## Gateway
+
+Every path whose first segment is an app's slug goes to that app's internal address, path and query unchanged
+([app contract › Routing](app-contract.md#3-routing)); the hub's own paths and every reserved name stay with the hub.
+The hub speaks HTTP/1.1 to the apps (TLS for an `https` internal address, verified against the system's roots), keeps
+idle connections for a minute and passes bodies through as they arrive, in both directions, without a size or total
+time limit. It answers itself with JSON `{"error": "<code>"}` – for page loads with the web app showing the error –
+when:
+
+| Status | `error` | When |
+|---|---|---|
+| `404` | `not_found` | No app with this slug, or `/<slug>/_roedy/…` from outside |
+| `403` | `no_app_access` | Signed in, but without access to the app |
+| `403` | `origin_mismatch` | A WebSocket upgrade from another origin |
+| `431` | `headers_too_large` | More than 64 KiB of request headers |
+| `502` | `app_unreachable` | The app does not accept the connection within 5 seconds, or breaks it off before its response |
+| `503` | `app_not_ready` | The app waits for pairing and the user is no hub administrator |
+| `504` | `app_timeout` | No response headers from the app within 300 seconds |
+
+Every `502` and `504` is logged as a warning with the slug and the request's `X-Roedy-Request-Id`, which the app
+receives as well. A session is checked at most every 10 seconds per cookie; signing out, revoking a device, locking or
+removing a user and changing the password take effect at once and close the session's open streams and WebSockets.
+Sessions that end otherwise (expired, signed out by `roedy-hub reset-admin`) lose them within 5 seconds.
 
 ## Health
 

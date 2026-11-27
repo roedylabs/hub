@@ -199,6 +199,23 @@ pub fn is_valid(conn: &Connection, user_id: &str, session_id: &str) -> rusqlite:
     )
 }
 
+/// The sessions among `ids` that are still valid: not expired, their user
+/// active (as [`authenticate`] checks).
+pub fn valid_among(
+    conn: &Connection,
+    ids: &[String],
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let ids = serde_json::to_string(ids).unwrap_or_else(|_| "[]".to_owned());
+    conn.prepare(
+        "SELECT s.id FROM sessions s JOIN users u ON u.id = s.user_id \
+         WHERE s.id IN (SELECT value FROM json_each(?1)) \
+           AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+           AND u.status = 'active'",
+    )?
+    .query_map([ids], |row| row.get(0))?
+    .collect()
+}
+
 /// Ends the user's sessions beyond `max`, least recently used first (so
 /// expired ones not yet cleaned up go before all valid ones); `newest` always
 /// stays. Returns the number deleted. No audit log entry: the sign-in that

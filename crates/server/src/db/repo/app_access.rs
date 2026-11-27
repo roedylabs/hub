@@ -135,6 +135,13 @@ pub fn member_of(
     .optional()
 }
 
+/// The user's roles by app ID (the gateway's session cache).
+pub fn roles(conn: &Connection, user_id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    conn.prepare("SELECT app_id, app_role FROM app_access WHERE user_id = ?1")?
+        .query_map([user_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+
 /// The user's role in the app, `None` without access.
 pub fn role_of(conn: &Connection, user_id: &str, app_id: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(

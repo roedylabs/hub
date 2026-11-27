@@ -631,6 +631,7 @@ async fn change_password(
         None => reauth.guard(),
     };
     let worker = state.clone();
+    let (user_id, kept) = (user.id.clone(), user.session_id.clone());
     let changed = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(stale) = guard.check(&tx, &user)? {
@@ -668,6 +669,7 @@ async fn change_password(
     })
     .await?;
     let (changed_at, ended) = changed?;
+    state.end_user_sessions(&user_id, Some(&kept));
     Ok(Json(
         json!({ "password_changed_at": changed_at, "sessions_ended": ended }),
     ))
@@ -744,6 +746,7 @@ async fn delete_me(
     .await?;
     deleted?;
     state.challenges.discard_user(&removed);
+    state.end_user_sessions(&removed, None);
     tracing::info!(user = %removed, "account deleted");
     Ok((
         StatusCode::NO_CONTENT,

@@ -93,6 +93,7 @@ async fn revoke(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let current = id == user.session_id;
+    let ended = id.clone();
     let revoked = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         // As with "Sign out all others": only from a still valid session
@@ -120,6 +121,7 @@ async fn revoke(
     })
     .await?;
     revoked?;
+    state.end_session(&ended);
     let mut response = StatusCode::NO_CONTENT.into_response();
     if current {
         response
@@ -139,6 +141,7 @@ async fn revoke_others(
     CurrentUser(user): CurrentUser,
     ip: ClientIp,
 ) -> Result<Json<Value>, ApiError> {
+    let (user_id, kept) = (user.id.clone(), user.session_id.clone());
     let ended = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if !sessions::is_valid(&tx, &user.id, &user.session_id)? {
@@ -159,6 +162,7 @@ async fn revoke_others(
     })
     .await?
     .ok_or(ApiError::Unauthorized)?;
+    state.end_user_sessions(&user_id, Some(&kept));
     Ok(Json(json!({ "sessions_ended": ended })))
 }
 

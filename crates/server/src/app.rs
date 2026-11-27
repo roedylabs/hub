@@ -3,7 +3,8 @@
 //! Two listeners (docs/plan.md › Server design):
 //!
 //! - **public** (`ROEDY_LISTEN`): the web app, `/api/v1`, `/healthz` and
-//!   `/readyz`, later the gateway. `/internal/…` is 404 here.
+//!   `/readyz`, and the gateway for every app's path (`gateway`).
+//!   `/internal/…` is 404 here.
 //! - **internal** (`ROEDY_INTERNAL_LISTEN`, off when empty): only
 //!   `/internal/…` for the apps (docs/app-contract.md › Internal API,
 //!   [`internal`]); everything else is 404 there.
@@ -38,6 +39,8 @@ use crate::{
     config::{Config, TrustProxy},
     crypto::SecretKey,
     db::{self, Db},
+    gateway,
+    gateway::Gateway,
     identity::Identities,
     instance::Instance,
     internal, jobs,
@@ -57,7 +60,7 @@ use crate::{
             TOUCH_ICON_PATH,
         },
         security_headers,
-        static_files::{self, WebAssets},
+        static_files::WebAssets,
     },
 };
 
@@ -99,6 +102,8 @@ pub struct AppState {
     pub apps: Arc<AppTable>,
     /// HTTP client for the apps' health checks (`apps::check_health`).
     pub probe: reqwest::Client,
+    /// The gateway's client, session cache and open streams (`gateway`).
+    pub gateway: Arc<Gateway>,
     pub background: Background,
 }
 
@@ -170,6 +175,7 @@ impl AppState {
             challenges: Arc::new(Challenges::default()),
             trust_proxy: config.trust_proxy,
             identities: Arc::new(Identities::new(&public_url)),
+            gateway: Arc::new(Gateway::new(&public_url)?),
             keys: Arc::new(KeyStore::default()),
             public_url: Arc::new(public_url),
             secrets: Arc::new(secrets),
@@ -185,6 +191,20 @@ impl AppState {
 }
 
 impl AppState {
+    /// A session ended (sign-out, revoked): the gateway forgets it and
+    /// closes its streams, its identity tokens go. Call after the commit.
+    pub fn end_session(&self, sid: &str) {
+        self.gateway.end_session(sid);
+        self.identities.forget_session(sid);
+    }
+
+    /// The sessions of a user ended (locked, removed, password changed,
+    /// "Sign out all others"), except `keep`. Call after the commit.
+    pub fn end_user_sessions(&self, user_id: &str, keep: Option<&str>) {
+        self.gateway.end_user(user_id, keep);
+        self.identities.forget_user(user_id, keep);
+    }
+
     /// Issuer of the authenticator apps (the name the app shows): the hub's
     /// name from the organization.
     pub fn issuer(&self) -> String {
@@ -231,8 +251,9 @@ pub fn router(state: AppState) -> Router {
         .route(INTERNAL, any(internal_not_found))
         .route(&format!("{INTERNAL}/"), any(internal_not_found))
         .route(&format!("{INTERNAL}/{{*path}}"), any(internal_not_found))
-        // Everything else is the web app (SPA fallback).
-        .fallback(static_files::serve)
+        // The apps' paths go to the gateway, everything else is the web app
+        // (SPA fallback).
+        .fallback(gateway::serve)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security_headers::apply,
@@ -384,6 +405,7 @@ pub async fn run_http(
     )
     .with_graceful_shutdown(graceful(stopped.clone()))
     .into_future();
+    let gateway = state.gateway.clone();
     let internal_router = internal_router(state);
     let internal_stopped = stopped.clone();
     let internal_server = async move {
@@ -413,6 +435,8 @@ pub async fn run_http(
     let deadline = async move {
         shutdown.await;
         let _ = stopping.send(true);
+        // Open streams and WebSockets would hold the graceful shutdown up.
+        gateway.shutdown();
         tokio::time::sleep(SHUTDOWN_GRACE).await;
     };
     tokio::select! {
@@ -620,13 +644,12 @@ pub(crate) mod tests {
         let (state, _tmp) = state_with_web(web).await;
         let app = router(state);
         let hash = start_script_hash();
-        // Pages of the hub and, without a gateway yet, any other path.
+        // Pages of the hub.
         for path in [
             "/",
             "/login",
             "/admin/users/01J",
             "/invite/abc.def",
-            "/mail/inbox",
             "/account/",
         ] {
             let reply = get(&app, path).await;
@@ -646,6 +669,31 @@ pub(crate) mod tests {
             assert_eq!(reply.header("x-content-type-options"), Some("nosniff"));
             assert_eq!(reply.header("referrer-policy"), Some("no-referrer"));
         }
+
+        // A path an app could have belongs to the gateway: without that app
+        // its 404, for a page load the web app showing it.
+        let reply = get(&app, "/mail/inbox").await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        assert_eq!(reply.body, r#"{"error":"not_found"}"#);
+        let request = Request::get("/mail/inbox")
+            .header("sec-fetch-mode", "navigate")
+            .body(Body::empty())
+            .unwrap();
+        let reply = send(&app, request).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        assert!(
+            reply
+                .body
+                .contains(r#"<meta name="roedy-error" content="not_found">"#),
+            "{}",
+            reply.body
+        );
+        assert!(
+            reply
+                .header("content-security-policy")
+                .unwrap()
+                .contains(&hash)
+        );
 
         // Revalidation: 304 keeps the CSP with the hash, otherwise the browser
         // would store a CSP that blocks the start script.

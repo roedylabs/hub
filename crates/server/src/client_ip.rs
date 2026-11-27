@@ -60,9 +60,20 @@ impl FromRequestParts<AppState> for ClientIp {
 /// not per line: a proxy appends its entry to the client's line, and a byte
 /// outside ASCII there must not discard it along with the whole line.
 pub fn resolve(peer: IpAddr, headers: &HeaderMap, trust: TrustProxy) -> IpAddr {
-    let mut client = peer.to_canonical();
+    trusted_entries(headers, trust)
+        .first()
+        .copied()
+        .unwrap_or_else(|| peer.to_canonical())
+}
+
+/// The entries of `X-Forwarded-For` the trusted proxies appended, in their
+/// order: at most the last `ROEDY_TRUST_PROXY` ones, up to the first from
+/// the end that is not an address. The first one is the client (if there
+/// are any); the gateway passes all of them on to the apps
+/// (`gateway::headers::forwarded_for`).
+pub fn trusted_entries(headers: &HeaderMap, trust: TrustProxy) -> Vec<IpAddr> {
     if !trust.enabled() {
-        return client;
+        return Vec::new();
     }
     let entries: Vec<&str> = headers
         .get_all(X_FORWARDED_FOR)
@@ -72,13 +83,14 @@ pub fn resolve(peer: IpAddr, headers: &HeaderMap, trust: TrustProxy) -> IpAddr {
         // that is not an address.
         .map(|entry| std::str::from_utf8(entry.trim_ascii()).unwrap_or(""))
         .collect();
-    for entry in entries.iter().rev().take(trust.hops()) {
-        match parse(entry) {
-            Some(ip) => client = ip.to_canonical(),
-            None => break,
-        }
-    }
-    client
+    let mut trusted: Vec<IpAddr> = entries
+        .iter()
+        .rev()
+        .take(trust.hops())
+        .map_while(|entry| parse(entry).map(|ip| ip.to_canonical()))
+        .collect();
+    trusted.reverse();
+    trusted
 }
 
 fn parse(entry: &str) -> Option<IpAddr> {

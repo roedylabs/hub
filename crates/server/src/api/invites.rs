@@ -807,6 +807,7 @@ async fn accept(
     let password_hash = state.hasher.hash(&body.password).await?;
     let origin = auth::origin(&state, &headers, ip);
     let previous = previous.map(|CurrentUser(user)| user);
+    let previous_sid = previous.as_ref().map(|user| user.session_id.clone());
 
     let accepted = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
@@ -899,6 +900,9 @@ async fn accept(
         }))
     })
     .await??;
+    if let Some(previous) = previous_sid {
+        state.end_session(&previous);
+    }
     tracing::info!(user = %accepted.user.id, "invitation accepted");
     let body = Json(json!({
         "user": auth::user_json(&accepted.user),

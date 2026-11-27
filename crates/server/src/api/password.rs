@@ -251,6 +251,7 @@ async fn reset(
         let Some((user, ended)) = done else {
             return Err(invalid_token());
         };
+        worker.end_user_sessions(&user.id, None);
         // Often the reason for the reset: with the new password, sign-in
         // should work right away, with address as well as username. The
         // limits for successes end too, for sign-in as in the session: if

@@ -13,8 +13,11 @@
 //!   HTTPS.
 //!
 //! If a handler sets a CSP itself, its own stays. The gateway's responses
-//! from the apps (later) do not pass through this layer: each app sends its
-//! own headers (docs/app-contract.md › Response headers).
+//! from the apps (marked [`Proxied`]) pass through unchanged: each app sends
+//! its own headers, the gateway applies the contract's rules
+//! (docs/app-contract.md › Response headers, `gateway::headers`). The
+//! gateway's own error responses get the hub's headers like every other
+//! page of the hub.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/web/security_headers.rs`)
 //! without the `connect-src` from the mail server registry and without the
@@ -33,7 +36,8 @@ use crate::app::AppState;
 
 const PERMISSIONS_POLICY: &str = "camera=(), display-capture=(), geolocation=(), \
      microphone=(), midi=(), payment=(), serial=(), usb=(), xr-spatial-tracking=()";
-const HSTS: &str = "max-age=31536000";
+/// Also for the gateway's responses (`gateway::headers`).
+pub const HSTS: &str = "max-age=31536000";
 static PERMISSIONS_POLICY_HEADER: HeaderName = HeaderName::from_static("permissions-policy");
 static OPENER_POLICY_HEADER: HeaderName = HeaderName::from_static("cross-origin-opener-policy");
 
@@ -177,9 +181,17 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// Marks a response of an app that the gateway forwards: this layer leaves
+/// it alone.
+#[derive(Debug, Clone, Copy)]
+pub struct Proxied;
+
 /// Middleware for all of the hub's own responses.
 pub async fn apply(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
+    if response.extensions().get::<Proxied>().is_some() {
+        return response;
+    }
     let scripts = response
         .extensions_mut()
         .remove::<InlineScripts>()
