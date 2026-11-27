@@ -301,11 +301,13 @@ export class OrgPage {
         if (Object.keys(body).length === 0) return;
         applyOrg(await api<Org>('PUT', 'admin/org', body));
       });
-      // Inputs made during the request stay; the sent ones are saved now.
+      // Inputs made during the request stay; the sent ones are saved now. Compared with what was sent, not with
+      // the draft shown at submit: a queued save before this one may have changed a field this one did not send,
+      // and an input back to the old value is still unsaved.
       const rest: Partial<OrgDraft> = {};
       for (const k of ORG_KEYS) {
         const value = this.edits[k];
-        if (value !== undefined && value !== draft[k]) rest[k] = value;
+        if (value !== undefined && value !== sent[k]) rest[k] = value;
       }
       this.edits = rest;
       ui.toasts.show(m.org_saved());
