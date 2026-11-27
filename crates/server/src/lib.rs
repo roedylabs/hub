@@ -30,4 +30,5 @@ pub mod settings;
 pub mod setup_token;
 pub mod setup_totp;
 pub mod signing;
+pub mod tls;
 pub mod web;

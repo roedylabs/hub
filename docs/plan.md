@@ -10,12 +10,18 @@ static musl build, image on `scratch`, user 65532) that is three things at the
 root of one origin:
 
 ```
-Browser ──HTTPS──► TLS proxy ──► roedy-hub :8080 ─┬─ /, /login, /account, /admin, /setup, /invite, /api/v1  (hub)
-                                                  ├─ /mail/…      ──► roedy-mail:8080      (+ X-Roedy-Identity)
-                                                  └─ /contacts/…  ──► roedy-contacts:8080
-                     roedy-hub :8081 (internal, not published) ◄── pairing, JWKS, manifest, events, users
-                     roedy-hub ──► POST /<slug>/_roedy/v1/events (signed events to the apps)
+Browser ──HTTPS──► roedy-hub :8443 (TLS, ACME) ─┬─ /, /login, /account, /admin, /setup, /invite, /api/v1  (hub)
+                                                ├─ /mail/…      ──► roedy-mail:8080      (+ X-Roedy-Identity)
+                                                └─ /contacts/…  ──► roedy-contacts:8080
+        ──HTTP───► roedy-hub :8080 (ACME HTTP-01, redirect to HTTPS)
+                   roedy-hub :8081 (internal, not published) ◄── pairing, JWKS, manifest, events, users
+                   roedy-hub ──► POST /<slug>/_roedy/v1/events (signed events to the apps)
 ```
+
+**No proxy in front (decided on 2026-11-27):** no Caddy and no other
+infrastructure image. roedy-hub terminates TLS itself and gets its
+certificates itself with its own ACME client; `ROEDY_TLS=off` keeps plain
+HTTP for development and for operators with a proxy of their own.
 
 Everything an app needs is in `docs/app-contract.md`; this file covers how the
 hub itself is built.
@@ -65,7 +71,7 @@ Each can follow later; v1 stays small.
 | `apps/web` | `@roedy/hub-web`: SvelteKit SPA (home page, sign-in, setup, account, administration) |
 | `packages/tokens` | Copy of Roedy Mail's design tokens |
 | `docs/` | `app-contract.md`, `ops.md`, `plan.md`, setup guides |
-| `deploy/` | `compose.yml`, `.env.example`, `Caddyfile` |
+| `deploy/` | `compose.yml`, `.env.example`, `Caddyfile` (until 6.3, then without: the hub terminates TLS itself) |
 | `scripts/` | Hooks, E2E runner, image smoke test, pin tests |
 
 Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
@@ -75,9 +81,12 @@ Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
 
 ### Listeners
 
-- **Public** (`ROEDY_LISTEN`, `0.0.0.0:8080`): hub SPA, `/api/v1`, `/healthz`,
-  `/readyz`, `/.well-known/change-password` (→ `/account/security`), and the
-  gateway for every other first path segment that is a known slug.
+- **Public** (`ROEDY_LISTEN`, `0.0.0.0:8443` with TLS, `0.0.0.0:8080`
+  without): hub SPA, `/api/v1`, `/healthz`, `/readyz`,
+  `/.well-known/change-password` (→ `/account/security`), and the gateway for
+  every other first path segment that is a known slug.
+- **HTTP** (`ROEDY_HTTP_LISTEN`, `0.0.0.0:8080`, only with `ROEDY_TLS`):
+  ACME HTTP-01 challenges and a `308` to `ROEDY_PUBLIC_URL`, nothing else.
 - **Internal** (`ROEDY_INTERNAL_LISTEN`, `0.0.0.0:8081`): `/internal/v1/…`
   only. Empty value turns it off (then no app can pair).
 
@@ -145,8 +154,16 @@ New:
 | `ulid`, `ring`, `usvg` | Same as Mail: IDs, Ed25519, sanitizing the app icons |
 | `resvg`, `roxmltree`, `imagesize`, `zune-jpeg`, `image-webp`, `skrifa` | Same as Mail: drawing the branding logo for mails and app icons, checking uploaded logos (decided on 2026-11-26) |
 
+| `tokio-rustls` (ring, tls12), `ring` | Built-in TLS: rustls on tokio streams for the HTTPS listener and the healthcheck; ECDSA P-256 for the own ACME client. Both already in the tree through hyper-rustls, reqwest and the contract crate (decided on 2026-11-27) |
+| `rustls-webpki` (dev only) | The TLS tests check the certificates the hub writes as rustls would; the verifier rustls brings |
+
 No JWT library: the JWS is ~150 lines on top of `ring`, `base64` and
 `serde_json`, which keeps `alg` handling strict.
+
+No ACME and no X.509 library either (decided on 2026-11-27): the ACME client
+(RFC 8555 with TLS-ALPN-01 from RFC 8737 and ARI from RFC 9773), the ES256
+JWS and the DER of the CSR and of the TLS-ALPN-01 certificate are written in
+`tls` on top of `ring`, `reqwest` and `rustls`.
 
 ## 5. Web app
 
@@ -549,29 +566,25 @@ checks pass in every PR; every PR has tests for what it adds.
       access states in `users.mjs`). Open: the home page has no design yet –
       it is built plainly with the tokens (greeting, tiles in a grid, a list
       on mobile) and is finished once there is a draft.
-6. **Delivery, docs, end-to-end** – Dockerfile, release workflow, image size
-   and smoke test, `deploy/compose.yml` (Caddy + hub + Mail, only Caddy
-   published; the example app in a test override), `.env.example`,
-   `docs/ops.md`, README; Playwright suite with axe against hub + example app
-   (setup, sign-in, pairing, opening the app, SSE and WebSocket through the
-   browser, sign-out, no access, light and dark, desktop and mobile).
+6. **Delivery, TLS, end-to-end** – four PRs. The user decided on 2026-11-27
+   that there is no Caddy and no other infrastructure image: roedy-hub
+   terminates TLS and gets its certificates itself, in-house.
    *Budgets checked in CI:* image ≤ 25 MB, idle ≤ 40 MB.
-   Split into two PRs (decided on 2026-11-27):
-   1. [x] **Delivery** – Dockerfile, release workflow, budgets and smoke test
-      in CI, Compose setup, `.env.example`, `docs/ops.md`, README. Done: as
-      in Roedy Mail, the `Dockerfile` only packages the static musl binaries
-      from `just dist` (`cargo auditable zigbuild`, embedded web app) on
-      `scratch` with CA certificates, user 65532, `/data`, the healthcheck
-      and mimalloc's settings; it exposes 8080 only. `release.yml` (tags
-      `v*` on the release commit, manual dry run) builds both platforms,
-      checks size, smoke test and Trivy, pushes to `ghcr.io/roedylabs/hub`
-      with SBOM and provenance, signs with cosign, attests image and
-      binaries and creates the GitHub release with git-cliff's notes;
-      `just release`/`release-tag` (`scripts/release.sh`) prepare it. The CI
-      job "Image" (part of "CI passed") builds the amd64 image on every pull
+   1. [x] **Delivery** (PR #19) – Dockerfile, release workflow, budgets and
+      smoke test in CI, Compose setup, `.env.example`, `docs/ops.md`, README.
+      Done: as in Roedy Mail, the `Dockerfile` only packages the static musl
+      binaries from `just dist` (`cargo auditable zigbuild`, embedded web app)
+      on `scratch` with CA certificates, user 65532, `/data`, the healthcheck
+      and mimalloc's settings; it exposes 8080 only. `release.yml` (tags `v*`
+      on the release commit, manual dry run) builds both platforms, checks
+      size, smoke test and Trivy, pushes to `ghcr.io/roedylabs/hub` with SBOM
+      and provenance, signs with cosign, attests image and binaries and
+      creates the GitHub release with git-cliff's notes; `just
+      release`/`release-tag` (`scripts/release.sh`) prepare it. The CI job
+      "Image" (part of "CI passed") builds the amd64 image on every pull
       request: size ≤ 25 MB, `scripts/image-smoke.sh` (user and privileges,
-      health, SPA, CSP, internal listener listening but neither exposed nor
-      on the public port, setup token, idle RSS ≤ 40 MB, clean stop) and
+      health, SPA, CSP, internal listener listening but neither exposed nor on
+      the public port, setup token, idle RSS ≤ 40 MB, clean stop) and
       `scripts/compose-smoke.sh`. `deploy/compose.yml`: Caddy (only published
       service, `deploy/Caddyfile`), the hub on the networks `edge` and `apps`
       with its internal listener bound to its fixed address in `apps`, Roedy
@@ -580,8 +593,51 @@ checks pass in every PR; every PR has tests for what it adds.
       (`deploy/example-app.Dockerfile`, `just dist-example`) and Caddy on
       plain HTTP at 127.0.0.1:8080. Dependabot keeps the Docker images up to
       date, `scripts/docker-pins.test.mjs` checks their digests.
-   2. [ ] **End-to-end** – Playwright suite with axe against hub + example app
-      on the Compose test setup.
+   2. [x] **Built-in TLS and ACME** – the hub terminates TLS and gets its
+      certificate itself. Done: `ROEDY_TLS` (`off` by default, `acme`,
+      `files`); with TLS on `ROEDY_LISTEN` is HTTPS on `0.0.0.0:8443` and
+      `ROEDY_HTTP_LISTEN` (`0.0.0.0:8080`) answers ACME HTTP-01 and redirects
+      (`308`) to `ROEDY_PUBLIC_URL`; `ROEDY_ACME_DIRECTORY` (Let's Encrypt
+      production by default), `ROEDY_ACME_EMAIL`, `ROEDY_ACME_AGREE_TOS=true`
+      required; `ROEDY_TLS_CERT_FILE`/`ROEDY_TLS_KEY_FILE` reloaded when they
+      change. rustls (ring, TLS 1.3 and 1.2, ring's AEAD suites), ALPN
+      `http/1.1` only – axum serves HTTP/1.1 and the gateway's WebSockets
+      need HTTP/1.1's `Upgrade` (h2 would need RFC 8441) –, SNI must be the
+      public host, the certificate swapped through a resolver without
+      dropping connections, handshakes in their own tasks with a 10 s
+      deadline. Own ACME client (`tls::acme`): ES256 JWS and JWK thumbprint
+      (`tls::jose`), nonces with `badNonce` retries, account, order,
+      TLS-ALPN-01 on the HTTPS port first and HTTP-01 after a failed
+      validation, CSR and the challenge certificate as hand-written DER
+      (`tls::der`, `tls::x509`; no `rcgen`), finalize, download, ARI with
+      `replaces`. Renewal 30 days before the end (two thirds of a shorter
+      lifetime) or by ARI in the daily job `certificate_renewal`; first
+      issuance in the background at start while the HTTPS port answers only
+      TLS-ALPN-01; a background task retries every failed attempt, also a
+      failed renewal. Failures wait 1 min, 5 min, 15 min, 1 h, then 3 h, or
+      longer by `Retry-After`; the next attempt is stored, so restarts do not
+      hammer the CA. Migration 0009: `acme_accounts`, `tls_certificates`,
+      keys sealed with the instance key (another instance key: new account
+      and certificate). Audit `tls.issue`, `tls.renew`, `tls.fail` (first of
+      a series). HSTS also with TLS on; `roedy-hub healthcheck` speaks TLS
+      then. *Tests:* RFC 7638 vector, JWS, DER and X.509 (CSR and
+      certificates parsed back, chains verified with webpki), config
+      validation, resolver, redirect, files reload, and an in-process fake
+      ACME server with its own CA (`tests/fake_acme`, `tests/tls.rs`):
+      issuance over TLS-ALPN-01 and HTTP-01 with real validations against
+      the hub, `badNonce`, rate limit with `Retry-After`, error documents,
+      renewal by lifetime and by ARI with an open connection kept, another
+      instance key, a restart serving the stored certificate, and HTTPS to a
+      rustls client trusting the fake CA. Open: an admin view of the
+      certificate's state (the audit log and the log have it for now); a CI
+      job against Pebble.
+   3. [ ] **Deploy without Caddy** – compose publishes the hub's 443 and 80
+      (`443:8443`, `80:8080`) and drops Caddy and `deploy/Caddyfile`,
+      `ROEDY_TLS=acme` in `.env.example`, ops docs, smoke tests with TLS.
+   4. [ ] **End-to-end** – Playwright suite with axe against hub + example
+      app on the Compose test setup (setup, sign-in, pairing, opening the app,
+      SSE and WebSocket through the browser, sign-out, no access, light and
+      dark, desktop and mobile).
 
 ## 7. Open points (not in this assignment)
 

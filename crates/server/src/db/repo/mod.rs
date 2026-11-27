@@ -15,6 +15,7 @@ pub mod password_resets;
 pub mod recovery_codes;
 pub mod sessions;
 pub mod signing_keys;
+pub mod tls;
 pub mod totp_devices;
 pub mod user_settings;
 pub mod users;

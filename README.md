@@ -23,12 +23,14 @@ Apps keep working on their own without the hub. How an app connects to the hub i
 ## How it works
 
 ```text
-Browser ──HTTPS──► TLS proxy ──► roedy-hub ─┬─ /, /login, /account, /admin, /api/v1   (the hub itself)
-                                            ├─ /mail/…      ──► roedy-mail      (+ signed identity)
-                                            └─ /contacts/…  ──► roedy-contacts
+Browser ──HTTPS──► roedy-hub ─┬─ /, /login, /account, /admin, /api/v1   (the hub itself)
+                              ├─ /mail/…      ──► roedy-mail      (+ signed identity)
+                              └─ /contacts/…  ──► roedy-contacts
 ```
 
-All apps share one origin. Install only apps you trust as much as the hub itself
+All apps share one origin. TLS ends at Caddy in the Compose setup below, or at the hub itself: with `ROEDY_TLS=acme`
+it gets its certificate from Let's Encrypt (or another ACME CA) on its own, with `ROEDY_TLS=files` it serves one from
+files ([TLS](docs/ops.md#tls)). Install only apps you trust as much as the hub itself
 ([trust model](docs/app-contract.md#2-trust-model)).
 
 ## Quick start
@@ -52,7 +54,7 @@ built for `linux/amd64` and `linux/arm64`, signed with cosign and stays below 25
 
 ## Documentation
 
-- [Operations](docs/ops.md): installation, reverse proxy, configuration, backup, updates, pairing, health
+- [Operations](docs/ops.md): installation, reverse proxy, configuration, built-in TLS, backup, updates, pairing, health
 - [App contract](docs/app-contract.md): how an app connects to the hub
 - [Implementation plan](docs/plan.md): architecture and milestones
 - [Contributing](CONTRIBUTING.md), [security policy](SECURITY.md)

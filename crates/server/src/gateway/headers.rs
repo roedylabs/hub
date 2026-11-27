@@ -178,8 +178,8 @@ pub fn forwarded_for(peer: IpAddr, headers: &HeaderMap, trust: TrustProxy) -> St
 /// The app's response headers as the browser receives them (contract
 /// § 3.3), and the names of the cookies dropped (for the log).
 /// `switching`: the app's `101` to a WebSocket upgrade – `Connection` and
-/// `Upgrade` stay. `hsts`: the hub runs behind a TLS proxy and sends its own
-/// `Strict-Transport-Security`.
+/// `Upgrade` stay. `hsts`: the hub (or a TLS proxy in front) terminates TLS
+/// and sends its own `Strict-Transport-Security`.
 pub fn response_headers(
     mut headers: HeaderMap,
     slug: &str,

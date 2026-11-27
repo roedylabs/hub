@@ -567,7 +567,7 @@ async fn forward(
         std::mem::take(&mut parts.headers),
         slug,
         switching,
-        state.trust_proxy.enabled(),
+        state.hsts(),
     );
     for cookie in dropped {
         tracing::warn!(slug, cookie, "cookie outside the app's namespace dropped");
