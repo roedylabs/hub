@@ -260,6 +260,9 @@ impl Issuer {
                     audit,
                 )
                 .await?;
+                // `keep_valid` takes over the retry, also of a failed daily
+                // renewal.
+                self.failed.notify_one();
                 Err(error)
             }
         }

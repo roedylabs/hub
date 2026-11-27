@@ -182,10 +182,16 @@ async fn connect(addr: SocketAddr, name: &str, ca: &[u8]) -> std::io::Result<Tls
         .with_root_certificates(roots)
         .with_no_client_auth();
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let tcp = TcpStream::connect(addr).await?;
-    TlsConnector::from(Arc::new(config))
-        .connect(ServerName::try_from(name.to_owned()).unwrap(), tcp)
-        .await
+    // A hub that never finishes the handshake fails the test instead of
+    // hanging it.
+    tokio::time::timeout(PATIENCE, async {
+        let tcp = TcpStream::connect(addr).await?;
+        TlsConnector::from(Arc::new(config))
+            .connect(ServerName::try_from(name.to_owned()).unwrap(), tcp)
+            .await
+    })
+    .await
+    .unwrap_or_else(|_| panic!("TLS connection to {addr} ({name}): no handshake in time"))
 }
 
 /// One request on a kept-alive connection; the status line and headers.
@@ -484,6 +490,42 @@ async fn renews_and_swaps_without_dropping_connections() {
     );
     assert_eq!(fake.log().orders.len(), 4);
     assert_eq!(fake.log().orders[3], None);
+    hub.stop().await;
+}
+
+#[tokio::test]
+async fn a_failed_daily_renewal_is_retried_in_the_background() {
+    let fake = FakeAcme::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let hub = start(&fake, tmp.path(), SecretKey::random().unwrap()).await;
+    hub.wait_for_certificate().await;
+    // The daily job's run fails (rate limit for a second).
+    fake.knobs(|k| {
+        k.ari = Some((
+            SignedDuration::from_hours(-1),
+            SignedDuration::from_hours(1),
+        ));
+        k.rate_limited = 1;
+        k.retry_after = 1;
+    });
+    assert!(hub.issuer().run_once().await.is_err());
+    // Nobody calls it again: the background task retries once the wait is
+    // over, not a day later.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while fake.log().issued < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "failed renewal not retried"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = fake.log();
+    assert!(log.order_at[1] - log.rate_limited_at[0] >= Duration::from_secs(1));
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while hub.audit().await.last().map(|(a, _)| a.as_str()) != Some("tls.renew") {
+        assert!(tokio::time::Instant::now() < deadline, "no tls.renew");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     hub.stop().await;
 }
 
