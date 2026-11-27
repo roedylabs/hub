@@ -44,6 +44,8 @@ pub struct App {
     pub manifest: Option<Arc<Manifest>>,
     pub access_default: AccessDefault,
     pub health: Option<Health>,
+    /// [`icon_version`] of the manifest's icon; `None` while pending.
+    pub icon_version: Option<String>,
 }
 
 impl App {
@@ -63,6 +65,7 @@ impl App {
             slug: row.slug,
             internal_url,
             status: row.status,
+            icon_version: row.manifest.as_ref().map(icon_version),
             manifest: row.manifest.map(Arc::new),
             access_default: row.access_default,
             health: row.health,
@@ -129,6 +132,27 @@ impl AppTable {
     }
 }
 
+/// The version of the manifest's (sanitized) icon for `?v=` in its URL: the
+/// first 16 hex digits of its SHA-256, so that the URL changes with the
+/// icon.
+pub fn icon_version(manifest: &Manifest) -> String {
+    use std::fmt::Write as _;
+
+    Sha256::digest(manifest.icon.as_bytes())
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
+/// The browser's address of the app's icon (contract § 6), with the
+/// version: `/api/v1/apps/<slug>/icon.svg?v=<version>`.
+pub fn icon_url(slug: &str, manifest: &Manifest) -> String {
+    format!("/api/v1/apps/{slug}/icon.svg?v={}", icon_version(manifest))
+}
+
 /// Why a slug is not accepted: `invalid` (format) or `reserved`.
 pub fn check_slug(slug: &str) -> Result<(), &'static str> {
     if is_reserved_slug(slug) {
@@ -174,7 +198,44 @@ pub fn sanitize_icon(svg: &str) -> Result<String, &'static str> {
     if !has_square_view_box(svg) {
         return Err("not_square");
     }
-    String::from_utf8(image.data.to_vec()).map_err(|_| "unreadable")
+    let clean = String::from_utf8(image.data.to_vec()).map_err(|_| "unreadable")?;
+    with_view_box(&clean)
+}
+
+/// The rewritten SVG with a `viewBox` over its `width` and `height`: the
+/// rewriting resolves the original `viewBox` into the drawing, so that an
+/// `<img>` of another size would show the icon unscaled in its corner.
+/// `not_square` if `width` and `height` differ (a square `viewBox` with a
+/// rectangular size), `unreadable` without a size.
+pub fn with_view_box(svg: &str) -> Result<String, &'static str> {
+    let doc = roxmltree::Document::parse(svg).map_err(|_| "unreadable")?;
+    let root = doc.root_element();
+    if root.has_attribute("viewBox") {
+        return Ok(svg.to_owned());
+    }
+    let size = |name| {
+        root.attribute(name)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|n| n.is_finite() && *n > 0.0)
+            .ok_or("unreadable")
+    };
+    let (width, height) = (size("width")?, size("height")?);
+    if width != height {
+        return Err("not_square");
+    }
+    let at = svg.find("<svg").ok_or("unreadable")? + "<svg".len();
+    Ok(format!(
+        "{} viewBox=\"0 0 {width} {height}\"{}",
+        &svg[..at],
+        &svg[at..]
+    ))
+}
+
+/// A stored icon as served: icons sanitized before the `viewBox` was kept
+/// get it now (on read, so that the icon's version and `ETag` follow the
+/// bytes served); one that cannot get it stays as it is.
+pub fn stored_icon(svg: String) -> String {
+    with_view_box(&svg).unwrap_or(svg)
 }
 
 /// Whether the root element has a `viewBox` with equal, positive width and
@@ -360,6 +421,26 @@ mod tests {
             assert!(!clean.contains(unsafe_part), "{unsafe_part}: {clean}");
         }
         assert!(clean.contains("<path"), "{clean}");
+        // It scales in an `<img>` of any size.
+        assert!(clean.contains(r#"viewBox="0 0 24 24""#), "{clean}");
+        assert!(has_square_view_box(&clean), "{clean}");
+        // A square `viewBox` with a rectangular size is no square icon.
+        assert_eq!(
+            sanitize_icon(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="48" height="24"><path d="M2 2h20v20H2z"/></svg>"#
+            ),
+            Err("not_square")
+        );
+        // Icons stored without a `viewBox` get one when read.
+        let old = r#"<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h20v20H2z"/></svg>"#;
+        let served = stored_icon(old.to_owned());
+        assert!(
+            served.starts_with(r#"<svg viewBox="0 0 24 24" width="24""#),
+            "{served}"
+        );
+        assert_eq!(stored_icon(served.clone()), served);
+        let wide = r#"<svg width="48" height="24" xmlns="http://www.w3.org/2000/svg"/>"#;
+        assert_eq!(stored_icon(wide.to_owned()), wide);
 
         for (svg, code) in [
             (

@@ -49,6 +49,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "events",
         sql: include_str!("migrations/0007_events.sql"),
     },
+    Migration {
+        version: 8,
+        name: "access",
+        sql: include_str!("migrations/0008_access.sql"),
+    },
 ];
 
 /// Applies all pending migrations and returns the schema version.
@@ -165,6 +170,7 @@ mod tests {
                 "email_changes",
                 "event_delivery",
                 "events",
+                "invitation_access",
                 "invitations",
                 "known_devices",
                 "pairing_codes",

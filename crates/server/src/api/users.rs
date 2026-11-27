@@ -7,10 +7,23 @@
 //! - `PATCH users/:id` (`{role}`), `POST users/:id/lock|unlock`,
 //!   `POST users/:id/reset-mfa`, `DELETE users/:id`: not for the own account
 //!   (422 `own_account`); invitations via `invites/:id`.
-//! - `POST users/bulk` (`{action, ids, role?}`): role, lock, unlock or remove
-//!   for the selection of the list – users and invitations mixed; whatever
-//!   does not fit (such as "lock" for a locked account or the own one) stays
-//!   as it is. The response names the changed IDs.
+//! - `PUT users/:id/apps/:slug` (`{app_role?}`): access to a paired app with
+//!   that role (without one: the app's default role), or the new role;
+//!   `DELETE users/:id/apps/:slug`: no access. Also for the own account and
+//!   locked ones. Unknown user or app 404, a pending app 409 `app_pending`,
+//!   a role the manifest does not have 422 `fields.app_role`: `invalid`.
+//!   Returns the user's row.
+//! - `POST users/bulk` (`{action, ids, role?, slug?, access?, app_role?}`):
+//!   role, lock, unlock or remove for the selection of the list, or
+//!   `access` to one app (`slug`, `access`, `app_role?`) – users and
+//!   invitations mixed; whatever does not fit (such as "lock" for a locked
+//!   account or the own one) stays as it is. The response names the
+//!   changed IDs.
+//!
+//! Every row carries `apps`: the paired apps the user has access to, slug →
+//! role (for invitations: the access accepting it will give). A change of
+//! access gives the app `access.changed`, an audit entry in the category
+//! `apps`, and reaches the gateway at once (`apps::access_changed`).
 //!
 //! Every change checks in its transaction whether the acting administrator is
 //! still signed in and an administrator (`invites::admin_holds`): otherwise
@@ -27,7 +40,7 @@
 //! Taken over from Roedy Mail (`crates/server/src/api/users.rs`) without the
 //! notifications for the administrators and the mail accounts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
     Json, Router,
@@ -41,7 +54,8 @@ use serde_json::{Value, json};
 
 use super::{
     ApiError, FieldErrors, JsonBody,
-    invites::{self, Actor, admin_change_then, invite_json},
+    apps::{access_changed, app_pending, role_in, set_access},
+    invites::{self, Actor, admin_change_then, invite_rows},
     mfa::mfa_disabled,
 };
 use crate::{
@@ -51,7 +65,9 @@ use crate::{
     db::{
         self,
         repo::{
-            self, audit_log,
+            self, app_access,
+            apps::{self as app_repo, App, Status},
+            audit_log,
             events::Reason,
             invitations, recovery_codes, sessions, totp_devices,
             users::{self, Listed, Profile, Role},
@@ -71,6 +87,10 @@ pub fn routes() -> Router<AppState> {
         .route("/users/{id}/lock", post(lock))
         .route("/users/{id}/unlock", post(unlock))
         .route("/users/{id}/reset-mfa", post(reset_mfa))
+        .route(
+            "/users/{id}/apps/{slug}",
+            axum::routing::put(grant).delete(revoke),
+        )
 }
 
 /// 422 `own_account`: the own account is changed under Account.
@@ -83,8 +103,8 @@ fn last_admin() -> ApiError {
     ApiError::rejected(StatusCode::CONFLICT, "last_admin")
 }
 
-/// List entry for a user.
-fn user_json(user: &Listed) -> Value {
+/// List entry for a user; `apps`: slug → role in the paired apps.
+fn user_json(user: &Listed, apps: &BTreeMap<String, String>) -> Value {
     let p = &user.profile;
     json!({
         "id": p.id,
@@ -96,19 +116,29 @@ fn user_json(user: &Listed) -> Value {
         "mfa": user.mfa,
         "last_seen_at": user.last_seen_at,
         "created_at": user.created_at,
+        "apps": apps,
     })
 }
 
+/// The row of one user, with their apps; `None` if the user is gone.
+fn row_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<Value>> {
+    let Some(row) = users::get_listed(conn, id)? else {
+        return Ok(None);
+    };
+    Ok(Some(user_json(&row, &app_access::of_user(conn, id)?)))
+}
+
 async fn list(State(state): State<AppState>, _: AdminUser) -> Result<Json<Value>, ApiError> {
-    let (users, invites) = db::call(&state.db, |conn| {
-        Ok((users::list(conn)?, invitations::list(conn)?))
+    let rows = db::call(&state.db, |conn| {
+        let mut access = app_access::all_by_user(conn)?;
+        let mut rows: Vec<Value> = users::list(conn)?
+            .iter()
+            .map(|user| user_json(user, &access.remove(&user.profile.id).unwrap_or_default()))
+            .collect();
+        rows.extend(invite_rows(conn, &invitations::list(conn)?)?);
+        Ok(rows)
     })
     .await?;
-    let rows: Vec<Value> = users
-        .iter()
-        .map(user_json)
-        .chain(invites.iter().map(invite_json))
-        .collect();
     Ok(Json(json!({ "users": rows })))
 }
 
@@ -120,7 +150,7 @@ async fn show(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let found = db::call(&state.db, move |conn| {
-        let Some(row) = users::get_listed(conn, &id)? else {
+        let Some(row) = row_of(conn, &id)? else {
             return Ok(None);
         };
         let devices: Vec<Value> = sessions::list(conn, &id)?
@@ -132,8 +162,7 @@ async fn show(
         Ok(Some((row, devices, codes)))
     })
     .await?;
-    let (row, devices, codes) = found.ok_or(ApiError::NotFound)?;
-    let mut body = user_json(&row);
+    let (mut body, devices, codes) = found.ok_or(ApiError::NotFound)?;
     body["sessions"] = json!(devices);
     body["recovery_codes"] = json!(codes);
     Ok(Json(json!({ "user": body })))
@@ -260,7 +289,7 @@ async fn one_user(
             // pending sign-in steps.
             let done = change.apply(tx, actor, &user)?;
             let ends_sign_ins = done && matches!(change, Change::Lock | Change::Remove);
-            let row = users::get_listed(tx, &target)?.map(|row| user_json(&row));
+            let row = row_of(tx, &target)?;
             Ok(Ok((row, ends_sign_ins)))
         },
         move |(_, ends_sign_ins)| {
@@ -279,8 +308,8 @@ async fn one_user(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RoleBody {
-    pub role: Role,
+struct RoleBody {
+    role: Role,
 }
 
 /// "Role" in the expanded row.
@@ -365,7 +394,7 @@ async fn reset_mfa(
             let mut details = names(&user);
             details["devices"] = json!(devices);
             audit_log::insert(tx, &actor.entry("users.mfa_reset", &user.id, details))?;
-            let row = users::get_listed(tx, &user.id)?.map(|row| user_json(&row));
+            let row = row_of(tx, &user.id)?;
             Ok(Ok((row, outbox)))
         },
         move |(_, outbox)| {
@@ -379,6 +408,97 @@ async fn reset_mfa(
     Ok(Json(json!({ "user": row })))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccessBody {
+    #[serde(default)]
+    app_role: Option<String>,
+}
+
+/// 422 `fields.app_role`: `invalid` – the manifest has no such role.
+fn invalid_app_role() -> ApiError {
+    let mut errors = FieldErrors::default();
+    errors.code("app_role", "invalid");
+    errors.into_error()
+}
+
+/// The paired app for a change of access: 404 for an unknown slug, 409
+/// `app_pending` for a pending app.
+fn paired_app(conn: &Connection, slug: &str) -> rusqlite::Result<Result<App, ApiError>> {
+    Ok(match app_repo::by_slug(conn, slug)? {
+        None => Err(ApiError::NotFound),
+        Some(app) if app.status != Status::Paired => Err(app_pending()),
+        Some(app) => Ok(app),
+    })
+}
+
+/// Access of one user to one app: `Some` with a role (`None` inside: the
+/// default role), `None` for no access.
+async fn one_access(
+    state: &AppState,
+    admin: AuthUser,
+    ip: ClientIp,
+    (id, slug): (String, String),
+    access: Option<Option<String>>,
+) -> Result<Json<Value>, ApiError> {
+    let after = state.clone();
+    let (row, _) = admin_change_then(
+        state,
+        admin,
+        ip,
+        move |tx, actor| {
+            let Some(user) = users::credentials_by_id(tx, &id)?.map(|c| c.user) else {
+                return Ok(Err(ApiError::NotFound));
+            };
+            let app = match paired_app(tx, &slug)? {
+                Ok(app) => app,
+                Err(error) => return Ok(Err(error)),
+            };
+            let role = match &access {
+                Some(requested) => match role_in(&app, requested.as_deref()) {
+                    Ok(role) => Some(role),
+                    Err(()) => return Ok(Err(invalid_app_role())),
+                },
+                None => None,
+            };
+            let changed = set_access(tx, actor, &user, &app, role.as_deref())?;
+            let row = row_of(tx, &user.id)?;
+            Ok(Ok((
+                row,
+                changed.then(|| (user.id, app.id, role.is_some())),
+            )))
+        },
+        move |(_, changed)| {
+            if let Some((user, app, access)) = changed {
+                access_changed(&after, user, app, *access);
+            }
+        },
+    )
+    .await?;
+    Ok(Json(json!({ "user": row })))
+}
+
+/// "Access" in the expanded row: grant, or change the role.
+async fn grant(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    ip: ClientIp,
+    Path(target): Path<(String, String)>,
+    JsonBody(body): JsonBody<AccessBody>,
+) -> Result<Json<Value>, ApiError> {
+    one_access(&state, admin, ip, target, Some(body.app_role)).await
+}
+
+/// "Access" in the expanded row: remove.
+async fn revoke(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    ip: ClientIp,
+    Path(target): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    one_access(&state, admin, ip, target, None).await
+}
+
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum Action {
@@ -386,6 +506,7 @@ enum Action {
     Lock,
     Unlock,
     Remove,
+    Access,
 }
 
 #[derive(Deserialize)]
@@ -395,13 +516,27 @@ struct BulkBody {
     ids: Vec<String>,
     #[serde(default)]
     role: Option<Role>,
+    /// For `access`: the app, whether to give access and with which role
+    /// (without one the app's default role).
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    access: Option<bool>,
+    #[serde(default)]
+    app_role: Option<String>,
 }
+
+/// What `access` does in bulk: the app and the role (`None`: no access).
+type BulkAccess = (App, Option<String>);
 
 /// Bulk actions on the selection: role for users and invitations, lock only
 /// active ones, unlock only locked ones, remove deletes users and withdraws
-/// invitations – all in one transaction. The own account and the last
+/// invitations, access to one app for users and invitations – all in one
+/// transaction. The own account (except for `access`) and the last
 /// administrator, like everything that does not fit, stay unchanged (the
-/// list does not let the own account be selected anyway).
+/// list does not let the own account be selected anyway). For `access` an
+/// unknown app is 404, a pending one 409 `app_pending`, a role the manifest
+/// does not have 422 `fields.app_role`.
 async fn bulk(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
@@ -421,28 +556,69 @@ async fn bulk(
         }
         (_, role) => role,
     };
+    let access = match (body.action, body.slug, body.access) {
+        (Action::Access, Some(slug), Some(access)) => Some((slug, access, body.app_role)),
+        (Action::Access, slug, access) => {
+            if slug.is_none() {
+                errors.code("slug", "required");
+            }
+            if access.is_none() {
+                errors.code("access", "required");
+            }
+            None
+        }
+        _ => None,
+    };
     if !errors.is_empty() {
         return Err(errors.into_error());
     }
     let mut ids: BTreeSet<String> = body.ids.into_iter().collect();
-    ids.remove(&admin.id);
     let action = body.action;
+    if action != Action::Access {
+        ids.remove(&admin.id);
+    }
     let after = state.clone();
-    let (changed, _) = admin_change_then(
+    let (changed, _, _) = admin_change_then(
         &state,
         admin,
         ip,
         move |tx, actor| {
+            // The app and role of `access`, checked once for all.
+            let access: Option<BulkAccess> = match access {
+                Some((slug, access, app_role)) => {
+                    let app = match paired_app(tx, &slug)? {
+                        Ok(app) => app,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let role = if access {
+                        match role_in(&app, app_role.as_deref()) {
+                            Ok(role) => Some(role),
+                            Err(()) => return Ok(Err(invalid_app_role())),
+                        }
+                    } else {
+                        None
+                    };
+                    Some((app, role))
+                }
+                None => None,
+            };
             let (mut changed, mut gone) = (Vec::new(), Vec::new());
             for id in &ids {
                 let done = if let Some(user) = users::credentials_by_id(tx, id)?.map(|c| c.user) {
                     let change = match action {
-                        Action::Role => Change::Role(role.unwrap_or(user.role)),
-                        Action::Lock => Change::Lock,
-                        Action::Unlock => Change::Unlock,
-                        Action::Remove => Change::Remove,
+                        Action::Role => Some(Change::Role(role.unwrap_or(user.role))),
+                        Action::Lock => Some(Change::Lock),
+                        Action::Unlock => Some(Change::Unlock),
+                        Action::Remove => Some(Change::Remove),
+                        Action::Access => None,
                     };
-                    let done = change.apply(tx, actor, &user)?;
+                    let done = match (change, &access) {
+                        (Some(change), _) => change.apply(tx, actor, &user)?,
+                        (None, Some((app, role))) => {
+                            set_access(tx, actor, &user, app, role.as_deref())?
+                        }
+                        (None, None) => false,
+                    };
                     if done && matches!(action, Action::Lock | Action::Remove) {
                         gone.push(id.clone());
                     }
@@ -453,6 +629,16 @@ async fn bulk(
                             invites::change_role(tx, actor, &invite, role.unwrap_or(invite.role))?
                         }
                         Action::Remove => invites::revoke_invite(tx, actor, &invite)?,
+                        Action::Access => match &access {
+                            Some((app, role)) => invites::set_invite_access(
+                                tx,
+                                actor,
+                                &invite,
+                                app,
+                                role.as_deref(),
+                            )?,
+                            None => false,
+                        },
                         Action::Lock | Action::Unlock => false,
                     }
                 } else {
@@ -462,11 +648,15 @@ async fn bulk(
                     changed.push(id.clone());
                 }
             }
-            Ok(Ok((changed, gone)))
+            let app = access.map(|(app, role)| (app.id, role.is_some()));
+            Ok(Ok((changed, gone, app)))
         },
-        move |(changed, gone)| {
+        move |(changed, gone, app)| {
             for id in changed.iter() {
-                after.gateway.sessions.forget_user(id, None);
+                match app {
+                    Some((app, access)) => access_changed(&after, id, app, *access),
+                    None => after.gateway.sessions.forget_user(id, None),
+                }
             }
             for id in gone.iter() {
                 after.challenges.discard_user(id);

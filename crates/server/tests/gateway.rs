@@ -118,9 +118,16 @@ async fn hub_with(limits: Limits, web: Option<&Path>) -> Hub {
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
     let code = reply.json()["pairing"]["code"].as_str().unwrap().to_owned();
     example.pair(&code).await.unwrap();
-    // Eva has no access (milestone 5 brings the administration of it).
-    env.sql(move |c| c.execute("DELETE FROM app_access WHERE user_id = ?1", [&eva_id]))
+    // Eva has no access.
+    let reply = env
+        .as_user(
+            &anna,
+            Method::DELETE,
+            &format!("/users/{eva_id}/apps/example"),
+            None,
+        )
         .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     let max = env.session_for("max").await;
     let eva = env.session_for("eva").await;
 
@@ -1246,4 +1253,72 @@ async fn ending_a_session_closes_its_streams() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn access_changes_reach_the_gateway_at_once() {
+    let hub = hub().await;
+    let within = Duration::from_secs(5);
+    let eva = hub.user_id("eva").await;
+    let access = format!("/users/{eva}/apps/example");
+
+    // Without access: 403. Granting it applies to the next request, even
+    // though the session was checked a moment ago (cache of 10 s).
+    let (status, _, _) = hub.json("/example/whoami", Some(&hub.eva)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .env
+        .as_user(&hub.anna, Method::PUT, &access, Some(json!({})))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let (status, _, me) = hub.json("/example/whoami", Some(&hub.eva)).await;
+    assert_eq!((status, &me["app_role"]), (StatusCode::OK, &json!("user")));
+
+    // A new role: the next identity carries it.
+    let reply = hub
+        .env
+        .as_user(
+            &hub.anna,
+            Method::PUT,
+            &access,
+            Some(json!({ "app_role": "admin" })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let (status, _, me) = hub.json("/example/whoami", Some(&hub.eva)).await;
+    assert_eq!((status, &me["app_role"]), (StatusCode::OK, &json!("admin")));
+
+    // Removing the access closes Eva's stream and WebSocket to the app at
+    // once; Max's stay open, and Eva's next request gets 403.
+    let mut stream = open_stream(&hub, &hub.eva).await;
+    let mut socket = hub.websocket(&hub.eva, ORIGIN).await.unwrap();
+    let mut other = open_stream(&hub, &hub.max).await;
+    let reply = hub
+        .env
+        .as_user(&hub.anna, Method::DELETE, &access, None)
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let (stream_closed, socket_closed) = tokio::join!(
+        stream_ends(&mut stream, within),
+        socket_ends(&mut socket, within)
+    );
+    assert!(stream_closed, "stream still open");
+    assert!(socket_closed, "WebSocket still open");
+    assert!(
+        next_frame(&mut other, Duration::from_secs(2))
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    let (status, _, body) = hub.json("/example/whoami", Some(&hub.eva)).await;
+    assert_eq!(
+        (status, &body),
+        (StatusCode::FORBIDDEN, &json!({ "error": "no_app_access" }))
+    );
+    // Eva is still signed in to the hub.
+    let reply = hub
+        .env
+        .as_user(&hub.eva, Method::GET, "/session", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
 }

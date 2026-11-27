@@ -3,7 +3,7 @@
 //! For administrators (`invites/:id`):
 //!
 //! - `GET invites`: the open invitations, oldest first.
-//! - `POST invites` (`{emails, role, name?}`): creates every invitation, even
+//! - `POST invites` (`{emails, role, name?, apps?}`): creates every invitation, even
 //!   if its mail does not go out, and reports ID and `sent` per address;
 //!   without a system mail the invitations are only created
 //!   (`system_mail: false`, "Copy link" then passes them on). An address is
@@ -16,8 +16,19 @@
 //!   (7 days), no mail; `mail_sent_at` stays. As with `resend`, the acting
 //!   administrator becomes the inviter. Also for valid invitations (the page
 //!   only offers it for expired ones).
-//! - `GET invites/:id/link` ("Copy link"), `PATCH invites/:id` (`{role}`),
-//!   `DELETE invites/:id` (revoke).
+//! - `GET invites/:id/link` ("Copy link"), `PATCH invites/:id`
+//!   (`{role?, apps?}`), `DELETE invites/:id` (revoke).
+//!
+//! App access in the form: `apps` maps the slug of a paired app to a role
+//! from its manifest or to `null` for "no access"; apps it does not name get
+//! their default when the invitation is accepted (contract § 11: "everyone"
+//! the default role, "selected only" none). `PATCH` changes only the apps it
+//! names. Errors per app under `apps.<slug>`: `not_found`, `app_pending`,
+//! `invalid` (no such role). Every invitation in a response carries `apps`:
+//! slug → role of the access accepting it will give, as of now (a role the
+//! manifest dropped meanwhile becomes its default role). Choices are
+//! recorded in the audit log (`apps.invite_access`, category `apps`);
+//! accepting grants the access with `access.changed` for each app.
 //!
 //! Public with the token from the link (`invites/:token`; unknown tokens are
 //! 404 and count towards the per-IP limit like the other links from mails):
@@ -37,10 +48,13 @@
 //!
 //! Taken over from Roedy Mail (`crates/server/src/api/invites.rs`) without
 //! the notifications in the app (a request shows in the list instead); the
-//! multi-factor step is optional here. The app access chosen in the form
-//! follows with milestone 5.
+//! multi-factor step is optional here.
 
-use std::{collections::HashSet, net::IpAddr, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    net::IpAddr,
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -58,7 +72,6 @@ use super::{
     ApiError, FieldErrors, JsonBody, auth,
     me::{check_display_name, check_email, check_new_password},
     password::LINK_IP,
-    users::RoleBody,
 };
 use crate::{
     app::AppState,
@@ -67,12 +80,14 @@ use crate::{
     db::{
         self,
         repo::{
+            app_access::{self, Outcome},
+            apps::{self as app_repo, App as HubApp, Status},
             audit_log::{self, Category, Entry},
             email_changes,
             events::Reason,
             invitations::{self, Found, Invitation, NewInvitation, TOKEN_PURPOSE, TOTP_PURPOSE},
             known_devices, sessions, totp_devices,
-            users::{self, NewUser, Role},
+            users::{self, NewAccess, NewUser, Role},
         },
     },
     mailer::{
@@ -228,9 +243,94 @@ pub(super) async fn admin_change_then<T: Send + 'static>(
     .await?
 }
 
+/// Changes what the invitation gives in one paired app (`role`, `None`: no
+/// access), with an audit entry `apps.invite_access`; `false` if it already
+/// gave that.
+pub(super) fn set_invite_access(
+    conn: &Connection,
+    actor: &Actor<'_>,
+    invite: &Invitation,
+    app: &HubApp,
+    role: Option<&str>,
+) -> anyhow::Result<bool> {
+    let Outcome::Changed { previous } = app_access::set_choice(conn, &invite.id, app, role)? else {
+        return Ok(false);
+    };
+    let entry = Entry::new(Category::Apps, "apps.invite_access")
+        .actor(actor.admin)
+        .ip(actor.ip)
+        .target(&invite.id)
+        .details(json!({
+            "slug": app.slug,
+            "email": invite.email,
+            "app_role": role,
+            "previous": previous,
+        }));
+    audit_log::insert(conn, &entry)?;
+    Ok(true)
+}
+
+/// A paired app and the role an invitation gives in it (`None`: no access).
+type Chosen = (HubApp, Option<String>);
+
+/// The access of the form, checked against the apps: per slug the paired
+/// app and the role. Errors under `apps.<slug>`.
+fn check_apps(
+    conn: &Connection,
+    apps: &BTreeMap<String, Option<String>>,
+) -> rusqlite::Result<Result<Vec<Chosen>, FieldErrors>> {
+    let mut errors = FieldErrors::default();
+    let mut checked = Vec::with_capacity(apps.len());
+    for (slug, role) in apps {
+        let field = format!("apps.{slug}");
+        match app_repo::by_slug(conn, slug)? {
+            None => errors.code(&field, "not_found"),
+            Some(app) if app.status != Status::Paired => errors.code(&field, "app_pending"),
+            Some(app) => match role {
+                Some(role) if !app.manifest.as_ref().is_some_and(|m| m.has_role(role)) => {
+                    errors.code(&field, "invalid");
+                }
+                _ => checked.push((app, role.clone())),
+            },
+        }
+    }
+    Ok(if errors.is_empty() {
+        Ok(checked)
+    } else {
+        Err(errors)
+    })
+}
+
+/// The rows of invitations with the access each will give.
+pub(super) fn invite_rows(
+    conn: &Connection,
+    invites: &[Invitation],
+) -> rusqlite::Result<Vec<Value>> {
+    let apps = app_repo::list(conn)?;
+    let choices = app_access::all_choices(conn)?;
+    Ok(invites
+        .iter()
+        .map(|invite| {
+            invite_json(
+                invite,
+                &app_access::effective(&apps, choices.get(&invite.id)),
+            )
+        })
+        .collect())
+}
+
+/// The row of one invitation; `None` if it is gone.
+fn invite_row(conn: &Connection, id: &str) -> rusqlite::Result<Option<Value>> {
+    let Some(invite) = invitations::get(conn, id)? else {
+        return Ok(None);
+    };
+    Ok(invite_rows(conn, &[invite])?.pop())
+}
+
 /// List entry for an invitation: name only if it was in the form;
-/// `mail_sent_at` empty = "Not sent".
-pub(super) fn invite_json(invite: &Invitation) -> Value {
+/// `mail_sent_at` empty = "Not sent"; `apps`: slug → role of the access it
+/// will give.
+pub(super) fn invite_json(invite: &Invitation, apps: &BTreeMap<String, String>) -> Value {
     json!({
         "id": invite.id,
         "status": "invited",
@@ -246,6 +346,7 @@ pub(super) fn invite_json(invite: &Invitation) -> Value {
         "expires_at": invite.expires_at,
         "expired": invite.expired,
         "requested_at": invite.requested_at,
+        "apps": apps,
     })
 }
 
@@ -296,8 +397,10 @@ async fn send_mail(
 
 /// The open invitations for Administration › Users.
 async fn list(State(state): State<AppState>, _: AdminUser) -> Result<Json<Value>, ApiError> {
-    let invites = db::call(&state.db, |conn| Ok(invitations::list(conn)?)).await?;
-    let rows: Vec<Value> = invites.iter().map(invite_json).collect();
+    let rows = db::call(&state.db, |conn| {
+        Ok(invite_rows(conn, &invitations::list(conn)?)?)
+    })
+    .await?;
     Ok(Json(json!({ "invites": rows })))
 }
 
@@ -309,6 +412,10 @@ struct CreateBody {
     /// Only with a single address.
     #[serde(default)]
     name: Option<String>,
+    /// Slug → role or `null` ("no access"); the other apps get their
+    /// default.
+    #[serde(default)]
+    apps: BTreeMap<String, Option<String>>,
 }
 
 /// Validated form: addresses with their index in the input.
@@ -316,6 +423,7 @@ struct Form {
     emails: Vec<(usize, String)>,
     name: Option<String>,
     role: Role,
+    apps: BTreeMap<String, Option<String>>,
 }
 
 /// Validates the form; errors per address under `emails.<i>` (index in the
@@ -357,6 +465,7 @@ fn validate(body: CreateBody) -> Result<Form, FieldErrors> {
             emails,
             name,
             role: body.role,
+            apps: body.apps,
         })
     } else {
         Err(errors)
@@ -373,7 +482,12 @@ async fn create(
     ip: ClientIp,
     JsonBody(body): JsonBody<CreateBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let Form { emails, name, role } = validate(body).map_err(FieldErrors::into_error)?;
+    let Form {
+        emails,
+        name,
+        role,
+        apps,
+    } = validate(body).map_err(FieldErrors::into_error)?;
     let delivery = Delivery::prepare(&state).await?;
     let system_mail = !matches!(delivery, Err(Unavailable::NoSystemMail));
     let mails = if delivery.is_ok() { emails.len() } else { 0 };
@@ -413,9 +527,17 @@ async fn create(
                     taken.code(&format!("emails.{i}"), "taken");
                 }
             }
+            let chosen = match check_apps(tx, &apps)? {
+                Ok(chosen) => chosen,
+                Err(errors) => {
+                    taken.merge(errors);
+                    Vec::new()
+                }
+            };
             if !taken.is_empty() {
                 return Ok(Err(taken.into_error()));
             }
+            let all_apps = app_repo::list(tx)?;
             let mut created = Vec::with_capacity(planned.len());
             for (_, email, id, token, sealed) in planned {
                 let invite = invitations::insert(
@@ -430,10 +552,19 @@ async fn create(
                         invited_by: &actor.admin.id,
                     },
                 )?;
+                for (app, app_role) in &chosen {
+                    app_access::set_choice(tx, &invite.id, app, app_role.as_deref())?;
+                }
                 // Open changes of other accounts to this address end for
                 // good, also if the invitation is revoked later.
                 email_changes::discard_to(tx, &invite.email)?;
-                let details = json!({ "email": invite.email, "role": role.as_str() });
+                let gives =
+                    app_access::effective(&all_apps, Some(&app_access::choices(tx, &invite.id)?));
+                let details = json!({
+                    "email": invite.email,
+                    "role": role.as_str(),
+                    "apps": gives,
+                });
                 audit_log::insert(tx, &actor.entry("users.invite", &invite.id, details))?;
                 created.push((invite, token));
             }
@@ -544,9 +675,9 @@ async fn resend(
             };
             let details = json!({ "email": invite.email });
             audit_log::insert(&tx, &actor.entry("users.invite_resend", &id, details))?;
-            let now = invitations::get(&tx, &id)?;
+            let now = invite_row(&tx, &id)?;
             tx.commit()?;
-            Ok(Ok(Json(json!({ "invite": now.as_ref().map(invite_json) }))))
+            Ok(Ok(Json(json!({ "invite": now }))))
         })
         .await?
     })
@@ -586,51 +717,75 @@ async fn renew(
     let now = one_invite(&state, admin, ip, id, |conn, actor, invite| {
         let until = invitations::next_expiry(conn)?;
         if !invitations::renew(conn, &invite.id, &actor.admin.id, &until)? {
-            return Ok(false);
+            return Ok(Ok(()));
         }
         let details = json!({ "email": invite.email });
         audit_log::insert(
             conn,
             &actor.entry("users.invite_renew", &invite.id, details),
         )?;
-        Ok(true)
+        Ok(Ok(()))
     })
     .await?;
-    Ok(Json(json!({ "invite": now.as_ref().map(invite_json) })))
+    Ok(Json(json!({ "invite": now })))
 }
 
-/// Changes an invitation (`admin_change`); then returns its state (`None`
-/// after revoking).
+/// Changes an invitation (`admin_change`); then returns its row (`None`
+/// after revoking). `apply` may refuse with an API error.
 async fn one_invite(
     state: &AppState,
     admin: AuthUser,
     ip: ClientIp,
     id: String,
-    apply: impl FnOnce(&Connection, &Actor<'_>, &Invitation) -> anyhow::Result<bool> + Send + 'static,
-) -> Result<Option<Invitation>, ApiError> {
+    apply: impl FnOnce(&Connection, &Actor<'_>, &Invitation) -> anyhow::Result<Result<(), ApiError>>
+    + Send
+    + 'static,
+) -> Result<Option<Value>, ApiError> {
     admin_change(state, admin, ip, move |tx, actor| {
         let Some(invite) = invitations::get(tx, &id)? else {
             return Ok(Err(ApiError::NotFound));
         };
-        apply(tx, actor, &invite)?;
-        Ok(Ok(invitations::get(tx, &id)?))
+        if let Err(error) = apply(tx, actor, &invite)? {
+            return Ok(Err(error));
+        }
+        Ok(Ok(invite_row(tx, &id)?))
     })
     .await
 }
 
-/// "Role" of an invitation.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateBody {
+    #[serde(default)]
+    role: Option<Role>,
+    /// Only the apps named change.
+    #[serde(default)]
+    apps: BTreeMap<String, Option<String>>,
+}
+
+/// "Role" and "Access" of an invitation.
 async fn update(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
     ip: ClientIp,
     Path(id): Path<String>,
-    JsonBody(body): JsonBody<RoleBody>,
+    JsonBody(body): JsonBody<UpdateBody>,
 ) -> Result<Json<Value>, ApiError> {
     let now = one_invite(&state, admin, ip, id, move |conn, actor, invite| {
-        change_role(conn, actor, invite, body.role)
+        let chosen = match check_apps(conn, &body.apps)? {
+            Ok(chosen) => chosen,
+            Err(errors) => return Ok(Err(errors.into_error())),
+        };
+        if let Some(role) = body.role {
+            change_role(conn, actor, invite, role)?;
+        }
+        for (app, app_role) in &chosen {
+            set_invite_access(conn, actor, invite, app, app_role.as_deref())?;
+        }
+        Ok(Ok(()))
     })
     .await?;
-    Ok(Json(json!({ "invite": now.as_ref().map(invite_json) })))
+    Ok(Json(json!({ "invite": now })))
 }
 
 /// "Revoke invitation" after confirmation: the link no longer works.
@@ -640,7 +795,11 @@ async fn revoke(
     ip: ClientIp,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    one_invite(&state, admin, ip, id, revoke_invite).await?;
+    one_invite(&state, admin, ip, id, |conn, actor, invite| {
+        revoke_invite(conn, actor, invite)?;
+        Ok(Ok(()))
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -827,7 +986,9 @@ async fn accept(
         }
         let invite = now.invitation;
         let username = users::unique_username(&tx, &invite.email)?;
-        let user_id = users::insert(
+        // The access the invitation chose, the defaults for the other apps;
+        // before the invitation (and its choices) go.
+        let user_id = users::insert_with(
             &tx,
             &NewUser {
                 username: &username,
@@ -836,7 +997,9 @@ async fn accept(
                 role: invite.role,
                 password_hash: &password_hash,
             },
+            NewAccess::Invitation(&invite.id),
         )?;
+        let granted = app_access::of_user(&tx, &user_id)?;
         let codes = match &app {
             Some(app) => {
                 // No settings yet: the app name in the default language.
@@ -883,6 +1046,7 @@ async fn accept(
                     "invitation": invite.id,
                     "invited_by": invite.invited_by,
                     "mfa": app.is_some(),
+                    "apps": granted,
                 })),
         )?;
         audit_log::insert(

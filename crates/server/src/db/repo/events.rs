@@ -442,25 +442,39 @@ pub struct State {
     pub delivered_seq: u64,
     pub attempts: u32,
     pub retry_at: Option<String>,
+    pub failing_since: Option<String>,
     pub last_error: Option<String>,
+}
+
+const STATE: &str = "SELECT last_seq, delivered_seq, attempts, retry_at, failing_since, \
+                            last_error, app_id \
+                     FROM event_delivery";
+
+fn delivery_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<State> {
+    Ok(State {
+        last_seq: to_u64(row.get(0)?),
+        delivered_seq: to_u64(row.get(1)?),
+        attempts: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+        retry_at: row.get(3)?,
+        failing_since: row.get(4)?,
+        last_error: row.get(5)?,
+    })
 }
 
 pub fn state(conn: &Connection, app_id: &str) -> rusqlite::Result<Option<State>> {
     conn.query_row(
-        "SELECT last_seq, delivered_seq, attempts, retry_at, last_error \
-         FROM event_delivery WHERE app_id = ?1",
+        &format!("{STATE} WHERE app_id = ?1"),
         [app_id],
-        |row| {
-            Ok(State {
-                last_seq: to_u64(row.get(0)?),
-                delivered_seq: to_u64(row.get(1)?),
-                attempts: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
-                retry_at: row.get(3)?,
-                last_error: row.get(4)?,
-            })
-        },
+        delivery_state,
     )
     .optional()
+}
+
+/// The delivery state of every app with events, by app ID.
+pub fn states(conn: &Connection) -> rusqlite::Result<std::collections::HashMap<String, State>> {
+    conn.prepare(STATE)?
+        .query_map([], |row| Ok((row.get(6)?, delivery_state(row)?)))?
+        .collect()
 }
 
 /// One page of `GET /internal/v1/events` ([`page`]).

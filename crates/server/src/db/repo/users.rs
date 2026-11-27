@@ -49,12 +49,32 @@ pub struct NewUser<'a> {
     pub password_hash: &'a str,
 }
 
+/// The app access a new user gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewAccess<'a> {
+    /// The default role of the apps whose default is "everyone"
+    /// (`app_access::grant_to_new_user`).
+    Defaults,
+    /// What the invitation with this ID chose, the defaults for the other
+    /// apps (`app_access::grant_invited`).
+    Invitation(&'a str),
+}
+
 /// Creates an active user and returns its ID; the user gets access to the
 /// apps whose default is "everyone" (`app_access::grant_to_new_user`, with
 /// `access.changed` for those apps). If
 /// the username or email address is taken, the call fails on the uniqueness
 /// constraint (`rusqlite::ErrorCode::ConstraintViolation`).
 pub fn insert(conn: &Connection, user: &NewUser<'_>) -> anyhow::Result<String> {
+    insert_with(conn, user, NewAccess::Defaults)
+}
+
+/// Like [`insert`], with the app access of `access`.
+pub fn insert_with(
+    conn: &Connection,
+    user: &NewUser<'_>,
+    access: NewAccess<'_>,
+) -> anyhow::Result<String> {
     anyhow::ensure!(
         username::is_valid(user.username),
         "invalid username \"{}\"",
@@ -75,7 +95,15 @@ pub fn insert(conn: &Connection, user: &NewUser<'_>) -> anyhow::Result<String> {
             ),
         )
         .context("user not created")?;
-        app_access::grant_to_new_user(conn, &id).context("app access not granted")?;
+        match access {
+            NewAccess::Defaults => {
+                app_access::grant_to_new_user(conn, &id).context("app access not granted")?;
+            }
+            NewAccess::Invitation(invitation) => {
+                app_access::grant_invited(conn, &id, invitation)
+                    .context("app access not granted")?;
+            }
+        }
         Ok(id)
     })
 }

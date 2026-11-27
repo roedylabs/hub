@@ -56,6 +56,7 @@ use crate::{
     setup_token,
     signing::{self, KeyStore},
     web::{
+        app_icons,
         branding::{
             self, APP_ICON_PATH, MANIFEST_PATH, MASKABLE_ICON_PATH, SMALL_ICON_PATH,
             TOUCH_ICON_PATH,
@@ -249,6 +250,9 @@ pub fn router(state: AppState) -> Router {
         .route(APP_ICON_PATH, get(branding::app_icon))
         .route(MASKABLE_ICON_PATH, get(branding::maskable_icon))
         .route(TOUCH_ICON_PATH, get(branding::touch_icon))
+        // The apps' icons: public and cacheable images under the API's
+        // path, without its middleware (`web::app_icons`).
+        .route(app_icons::ICON_PATH, get(app_icons::icon))
         .nest(api::PREFIX, api.clone())
         // `nest` does not cover `/api/v1/` (axum 0.8); the API answers there too.
         .route_service(&format!("{}/", api::PREFIX), api.with_state(state.clone()))

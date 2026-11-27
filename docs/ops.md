@@ -75,6 +75,8 @@ when:
 Every `502` and `504` is logged as a warning with the slug and the request's `X-Roedy-Request-Id`, which the app
 receives as well. A session is checked at most every 10 seconds per cookie; signing out, revoking a device, locking or
 removing a user and changing the password take effect at once and close the session's open streams and WebSockets.
+Granting, changing or removing a user's access to an app (Administration › Users or › Apps) applies to their next
+request; removing it also closes their open streams and WebSockets to that app.
 Sessions that end otherwise (expired, signed out by `roedy-hub reset-admin`) lose them within 5 seconds, as long as
 the database answers within a second; a busier database delays it until a check gets through.
 

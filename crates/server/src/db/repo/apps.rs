@@ -30,7 +30,8 @@ impl Status {
 }
 
 /// Access of new users (contract § 11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AccessDefault {
     /// "Everyone": new users get access with the default role.
     All,
@@ -89,6 +90,11 @@ pub struct App {
     pub created_at: String,
     /// Expiry of the open, unexpired pairing code.
     pub pairing_expires_at: Option<String>,
+    /// The app's last request with its secret (or its pairing), to the
+    /// minute.
+    pub contacted_at: Option<String>,
+    /// The last health check the app passed.
+    pub online_at: Option<String>,
 }
 
 const SELECT: &str = "SELECT a.id, a.slug, a.internal_url, a.state, a.manifest_json, \
@@ -96,18 +102,25 @@ const SELECT: &str = "SELECT a.id, a.slug, a.internal_url, a.state, a.manifest_j
                              a.created_at, \
                              (SELECT p.expires_at FROM pairing_codes p \
                               WHERE p.app_id = a.id \
-                                AND p.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
+                                AND p.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), \
+                             a.contacted_at, a.online_at \
                       FROM apps a";
 
 fn app(row: &rusqlite::Row<'_>) -> rusqlite::Result<App> {
     let state: String = row.get(3)?;
     let manifest: Option<String> = row.get(4)?;
-    let manifest = manifest
+    let mut manifest = manifest
         .map(|json| serde_json::from_str::<Manifest>(&json))
         .transpose()
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
         })?;
+    // Icons stored before the sanitizer kept a `viewBox` (milestone 4.2) get
+    // one here, so that every reader – the icon, its version, the lists –
+    // sees the same bytes.
+    if let Some(manifest) = &mut manifest {
+        manifest.icon = crate::apps::stored_icon(std::mem::take(&mut manifest.icon));
+    }
     let access: String = row.get(5)?;
     let health: Option<String> = row.get(7)?;
     Ok(App {
@@ -131,6 +144,8 @@ fn app(row: &rusqlite::Row<'_>) -> rusqlite::Result<App> {
         paired_at: row.get(9)?,
         created_at: row.get(10)?,
         pairing_expires_at: row.get(11)?,
+        contacted_at: row.get(12)?,
+        online_at: row.get(13)?,
     })
 }
 
@@ -198,7 +213,8 @@ pub fn pair(
     conn.execute(
         &format!(
             "UPDATE apps SET state = 'paired', manifest_json = ?2, manifest_id = ?3, \
-                             version = ?4, secret_hash = ?5, paired_at = {NOW} \
+                             version = ?4, secret_hash = ?5, paired_at = {NOW}, \
+                             contacted_at = {NOW} \
              WHERE id = ?1"
         ),
         (
@@ -231,11 +247,56 @@ pub fn set_manifest(conn: &Connection, id: &str, manifest: &Manifest) -> anyhow:
 pub fn set_health(conn: &Connection, id: &str, health: Health) -> rusqlite::Result<bool> {
     let n = conn.execute(
         &format!(
-            "UPDATE apps SET health = ?2, health_at = {NOW} WHERE id = ?1 AND state = 'paired'"
+            "UPDATE apps SET health = ?2, health_at = {NOW}, \
+                             online_at = CASE ?2 WHEN 'online' THEN {NOW} ELSE online_at END \
+             WHERE id = ?1 AND state = 'paired'"
         ),
         (id, health.as_str()),
     )?;
     Ok(n == 1)
+}
+
+/// The app made a request with its secret: `contacted_at`, written at most
+/// once a minute so that busy apps do not write on every request.
+pub fn touch_contact(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "UPDATE apps SET contacted_at = {NOW} \
+             WHERE id = ?1 AND (contacted_at IS NULL \
+                   OR contacted_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 minute'))"
+        ),
+        [id],
+    )?;
+    Ok(())
+}
+
+/// New access default; `false` if it already applied (or the app is gone).
+/// Existing access stays as it is: the default is for new users only
+/// (contract § 11).
+pub fn set_access_default(
+    conn: &Connection,
+    id: &str,
+    access: AccessDefault,
+) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE apps SET access_default = ?2 WHERE id = ?1 AND access_default <> ?2",
+        (id, access.as_str()),
+    )?;
+    Ok(n == 1)
+}
+
+/// The order on the home page: `ids` are every app's ID, in the new order;
+/// positions become 1, 2, …. Returns whether anything moved.
+pub fn set_order(conn: &Connection, ids: &[String]) -> rusqlite::Result<bool> {
+    db::atomic(conn, |conn| {
+        let mut moved = false;
+        let mut update =
+            conn.prepare("UPDATE apps SET position = ?2 WHERE id = ?1 AND position <> ?2")?;
+        for (position, id) in (1_i64..).zip(ids) {
+            moved |= update.execute((id, position))? == 1;
+        }
+        Ok(moved)
+    })
 }
 
 /// A new pairing code for the app, replacing the open one; returns its
