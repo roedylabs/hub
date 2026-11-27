@@ -116,7 +116,8 @@ pub fn request_headers(incoming: &HeaderMap, forward: &Forward<'_>) -> HeaderMap
         headers.remove(name);
     }
     headers.remove(&FORWARDED);
-    match app_cookies(incoming, forward.slug) {
+    // From what is left: a `Cookie` that `Connection` names stays gone.
+    match app_cookies(&headers, forward.slug) {
         Some(cookies) => headers.insert(header::COOKIE, cookies),
         None => headers.remove(header::COOKIE),
     };
@@ -384,6 +385,29 @@ mod tests {
         // The other hop-by-hop headers still go.
         assert_eq!(all(&headers, "keep-alive"), Vec::<String>::new());
         assert_eq!(all(&headers, "x-custom-hop"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_cookie_named_in_connection_stays_gone() {
+        let incoming = map(&[
+            ("connection", "Cookie"),
+            ("cookie", "__Host-roedy-mail_a=1"),
+        ]);
+        let (host, proto) = (
+            HeaderValue::from_static("app.example.com"),
+            HeaderValue::from_static("https"),
+        );
+        let forward = Forward {
+            slug: "mail",
+            host: &host,
+            proto: &proto,
+            forwarded_for: HeaderValue::from_static("10.0.0.2"),
+            request_id: HeaderValue::from_static("01JDX5REQUEST000000000000"),
+            identity: None,
+            websocket: false,
+        };
+        let headers = request_headers(&incoming, &forward);
+        assert!(headers.get(header::COOKIE).is_none());
     }
 
     #[test]

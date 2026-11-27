@@ -30,6 +30,7 @@
 //! Every response body and WebSocket of a session is registered in
 //! [`Streams`]; ending the session closes them.
 
+pub mod client;
 pub mod headers;
 pub mod sessions;
 
@@ -50,18 +51,14 @@ use axum::{
     response::{IntoResponse as _, Response},
 };
 use hyper::body::{Body as HttpBody, Frame, Incoming, SizeHint};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-    rt::{TokioExecutor, TokioIo},
-};
+use hyper_util::rt::TokioIo;
 use percent_encoding::percent_decode_str;
 use roedy_hub_contract::pairing::{is_reserved_slug, is_valid_slug};
-use rustls_platform_verifier::ConfigVerifierExt as _;
 use serde_json::json;
 use url::Url;
 
 use self::{
+    client::{AppClient, Upload},
     headers::Forward,
     sessions::{SessionCache, Signed, Streams, Watch},
 };
@@ -99,8 +96,6 @@ impl Default for Limits {
     }
 }
 
-type AppClient = Client<HttpsConnector<HttpConnector>, Body>;
-
 /// Client, limits and session state of the gateway.
 pub struct Gateway {
     client: AppClient,
@@ -131,7 +126,7 @@ impl Gateway {
             None => host.to_owned(),
         };
         Ok(Self {
-            client: client(limits.connect)?,
+            client: client::client(limits.connect)?,
             limits,
             host: HeaderValue::try_from(host)?,
             proto: HeaderValue::try_from(public_url.scheme())?,
@@ -162,28 +157,6 @@ impl Gateway {
     pub fn shutdown(&self) {
         self.streams.end_all();
     }
-}
-
-/// hyper's pooled client: HTTP/1.1 only (contract § 3.4), TLS for an
-/// `https` internal address with the system's roots, as the health checks.
-fn client(connect: Duration) -> anyhow::Result<AppClient> {
-    // As in `mailer::http_client`: ring for the whole process, if no
-    // provider is set yet.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let tls = rustls::ClientConfig::with_platform_verifier()
-        .map_err(|error| anyhow::anyhow!("TLS for the apps not set up: {error}"))?;
-    let mut http = HttpConnector::new();
-    http.enforce_http(false);
-    http.set_connect_timeout(Some(connect));
-    http.set_nodelay(true);
-    let connector = HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_http1()
-        .wrap_connector(http);
-    Ok(Client::builder(TokioExecutor::new())
-        .pool_idle_timeout(Duration::from_secs(60))
-        .build(connector))
 }
 
 /// Errors the gateway answers itself (contract § 12).
@@ -239,11 +212,11 @@ pub fn app_slug(path: &str) -> Option<&str> {
     (is_valid_slug(first) && !is_reserved_slug(first)).then_some(first)
 }
 
-/// Whether `path` addresses the app's reserved `/<slug>/_roedy/` (contract
+/// Whether `path` addresses an app's reserved `/<slug>/_roedy/` (contract
 /// § 3.1) – also in the spellings an app's server may normalize to it:
 /// percent-encoded, with empty, `.` and `..` segments, backslashes or path
-/// parameters.
-pub fn is_reserved_app_path(path: &str, slug: &str) -> bool {
+/// parameters, and whichever slug it normalizes to.
+pub fn is_reserved_app_path(path: &str) -> bool {
     let decoded = percent_decode_str(path).decode_utf8_lossy();
     let mut segments: Vec<&str> = Vec::new();
     for segment in decoded.split(['/', '\\']) {
@@ -256,7 +229,7 @@ pub fn is_reserved_app_path(path: &str, slug: &str) -> bool {
             _ => segments.push(segment),
         }
     }
-    matches!(segments.as_slice(), [first, "_roedy", ..] if *first == slug)
+    matches!(segments.as_slice(), [_, "_roedy", ..])
 }
 
 /// Whether the browser loads a page (contract § 12): `Sec-Fetch-Mode:
@@ -267,7 +240,12 @@ fn is_page_load(headers: &HeaderMap) -> bool {
         None => headers
             .get_all(header::ACCEPT)
             .iter()
-            .any(|accept| accept.as_bytes().windows(9).any(|w| w == b"text/html")),
+            .flat_map(|accept| accept.as_bytes().split(|&b| b == b','))
+            .any(|range| {
+                // The media type without its parameters.
+                let media = range.split(|&b| b == b';').next().unwrap_or_default();
+                media.trim_ascii().eq_ignore_ascii_case(b"text/html")
+            }),
     }
 }
 
@@ -394,8 +372,11 @@ pub async fn serve(State(state): State<AppState>, request: Request) -> Response 
         return static_files::serve(State(state), parts.method, parts.uri, parts.headers).await;
     };
     let page_load = is_page_load(request.headers());
+    if header_bytes(request.headers()) > state.gateway.limits.request_headers {
+        return error_response(&state, page_load, GatewayError::HeadersTooLarge).await;
+    }
     let app = match state.apps.get(&slug) {
-        Some(app) if !is_reserved_app_path(request.uri().path(), &slug) => app,
+        Some(app) if !is_reserved_app_path(request.uri().path()) => app,
         _ => return error_response(&state, page_load, GatewayError::NotFound).await,
     };
     let session = match session(&state, request.headers()).await {
@@ -420,9 +401,6 @@ async fn forward(
 ) -> Result<Response, GatewayError> {
     let slug = app.slug.as_str();
     let gateway = &state.gateway;
-    if header_bytes(request.headers()) > gateway.limits.request_headers {
-        return Err(GatewayError::HeadersTooLarge);
-    }
     let signed = session.signed.as_deref();
     let role = match access(app, signed)? {
         Access::Anonymous => None,
@@ -485,16 +463,25 @@ async fn forward(
     let uri = app_uri(app, request.uri()).ok_or(GatewayError::Internal)?;
     let client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
     let (parts, body) = request.into_parts();
-    let mut to_app = axum::http::Request::new(if websocket { Body::empty() } else { body });
+    let (body, sent) = Upload::new(if websocket { Body::empty() } else { body });
+    let mut to_app = axum::http::Request::new(body);
     *to_app.method_mut() = parts.method;
     *to_app.uri_mut() = uri;
     *to_app.version_mut() = Version::HTTP_11;
     *to_app.headers_mut() = outgoing;
 
-    let sent = tokio::time::timeout(gateway.limits.response, gateway.client.request(to_app)).await;
-    let mut from_app = match sent {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => {
+    // A revocation while the app answers: checked once the stream is
+    // registered (below).
+    let generation = gateway.sessions.generation();
+    let answer = client::respond(
+        gateway.client.request(to_app),
+        sent,
+        gateway.limits.response,
+    )
+    .await;
+    let mut from_app = match answer {
+        Some(Ok(response)) => response,
+        Some(Err(error)) => {
             tracing::warn!(
                 slug,
                 request_id = request_id.to_str().unwrap_or_default(),
@@ -503,7 +490,7 @@ async fn forward(
             );
             return Err(GatewayError::Unreachable);
         }
-        Err(_) => {
+        None => {
             tracing::warn!(
                 slug,
                 request_id = request_id.to_str().unwrap_or_default(),
@@ -516,12 +503,21 @@ async fn forward(
 
     let switching = from_app.status() == StatusCode::SWITCHING_PROTOCOLS;
     if switching && !websocket {
-        tracing::warn!(slug, "app switched protocols without an upgrade");
+        tracing::warn!(
+            slug,
+            request_id = request_id.to_str().unwrap_or_default(),
+            "app switched protocols without an upgrade"
+        );
         return Err(GatewayError::Unreachable);
     }
     let watch = gateway
         .streams
         .watch(signed.map(|signed| (signed.user.session_id.as_str(), signed.user.id.as_str())));
+    if let Some(signed) = signed
+        && gateway.sessions.generation() != generation
+    {
+        still_valid(state, &signed.user.session_id).await;
+    }
     let app_upgrade = switching.then(|| hyper::upgrade::on(&mut from_app));
     let (mut parts, incoming) = from_app.into_parts();
     let body = match (client_upgrade, app_upgrade) {
@@ -548,6 +544,23 @@ async fn forward(
     *response.headers_mut() = headers;
     response.extensions_mut().insert(Proxied);
     Ok(response)
+}
+
+/// A session ended while its request waited for the app – before its
+/// stream was registered, so nothing closed it: checks the session and ends
+/// it (and the new stream) if it is no longer valid. If the check fails, the
+/// stream ends too.
+async fn still_valid(state: &AppState, sid: &str) {
+    let id = vec![sid.to_owned()];
+    let valid = db::call(&state.db, move |conn| Ok(repo::valid_among(conn, &id)?)).await;
+    match valid {
+        Ok(valid) if valid.contains(sid) => {}
+        Ok(_) => state.end_session(sid),
+        Err(error) => {
+            tracing::warn!("session not checked again, stream closed: {error:#}");
+            state.end_session(sid);
+        }
+    }
 }
 
 /// `<internal address><path and query>`, both unchanged.
@@ -687,6 +700,9 @@ mod tests {
             ("/mail\\_roedy\\v1\\events", true),
             ("/mail/_roedy;x=1/v1/events", true),
             ("/mail/../mail/_roedy/v1/events", true),
+            // Normalized into another prefix: refused as well.
+            ("/mail/../other/_roedy/x", true),
+            ("/mail/x/../../other/_roedy", true),
             ("/mail/_roedyx", false),
             ("/mail/_ROEDY/v1/events", false),
             ("/mail/api/_roedy", false),
@@ -695,7 +711,7 @@ mod tests {
             ("/mail", false),
         ];
         for (path, expected) in table {
-            assert_eq!(is_reserved_app_path(path, "mail"), *expected, "{path}");
+            assert_eq!(is_reserved_app_path(path), *expected, "{path}");
         }
     }
 
@@ -710,6 +726,12 @@ mod tests {
             ),
             (&[("accept", "text/html,application/xhtml+xml")], true),
             (&[("accept", "application/json")], false),
+            (&[("accept", "application/json, TEXT/HTML;q=0.9")], true),
+            (
+                &[("accept", "application/json;profile=\"text/html\"")],
+                false,
+            ),
+            (&[("accept", "text/html-fragment")], false),
             (&[], false),
         ];
         for (pairs, expected) in table {

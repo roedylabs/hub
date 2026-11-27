@@ -379,17 +379,22 @@ checks pass in every PR; every PR has tests for what it adds.
       Header rules as pure functions in `gateway::headers` with
       table-driven tests (`client_ip::trusted_entries` shared with the
       hub's own client IP). Limits (`gateway::Limits`): 5 s to connect →
-      `502 app_unreachable`, 300 s to the response headers → `504
-      app_timeout`, 64 KiB of request headers → `431 headers_too_large`
+      `502 app_unreachable`, 300 s from the end of the request body to the
+      response headers → `504 app_timeout`, 64 KiB of request headers → `431 headers_too_large`
       (added to contract § 3.4 and § 12). Errors as JSON with `no-store`,
       for page loads the web app with `<meta name="roedy-error">`
       (`static_files::error_page`, with the hub's security headers); the
       app's responses are marked `Proxied` and keep their own headers.
       Response bodies and WebSockets are registered per session
-      (`gateway::sessions::Streams`) and close when it ends; the job
-      `gateway_streams` (every 3 s, a query only while streams are open)
-      closes those of sessions that ended otherwise (expired, trimmed,
-      `reset-admin`), the shutdown all of them. Tests: unit tests of the
+      (`gateway::sessions::Streams`) and close when it ends – also when it
+      ended while the request waited for the app (checked again after the
+      registration); the job `gateway_streams` (every 2 s, a query of at
+      most 1.5 s, only while streams are open) closes those of sessions
+      that ended otherwise (expired, trimmed, `reset-admin`), the shutdown
+      all of them. The connect deadline covers lookup, TCP and TLS
+      (`gateway::client::Deadline`); the 300 s count from the end of the
+      request body (`gateway::client::Upload`), so uploads have no time
+      limit. Tests: unit tests of the
       rules, routing and access, and `tests/gateway.rs` against the example
       app over real connections (path and query, headers both ways, the
       identity verified at the app and its rejections with the hub's real

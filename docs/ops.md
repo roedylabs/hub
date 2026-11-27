@@ -66,15 +66,16 @@ when:
 | `404` | `not_found` | No app with this slug, or `/<slug>/_roedy/…` from outside |
 | `403` | `no_app_access` | Signed in, but without access to the app |
 | `403` | `origin_mismatch` | A WebSocket upgrade from another origin |
-| `431` | `headers_too_large` | More than 64 KiB of request headers |
-| `502` | `app_unreachable` | The app does not accept the connection within 5 seconds, or breaks it off before its response |
+| `431` | `headers_too_large` | More than 64 KiB of request headers; always JSON, also for page loads |
+| `502` | `app_unreachable` | No connection to the app within 5 seconds (name lookup, TCP and TLS), or the app breaks it off before its response |
 | `503` | `app_not_ready` | The app waits for pairing and the user is no hub administrator |
-| `504` | `app_timeout` | No response headers from the app within 300 seconds |
+| `504` | `app_timeout` | No response headers from the app within 300 seconds after the request body (an upload has no time limit) |
 
 Every `502` and `504` is logged as a warning with the slug and the request's `X-Roedy-Request-Id`, which the app
 receives as well. A session is checked at most every 10 seconds per cookie; signing out, revoking a device, locking or
 removing a user and changing the password take effect at once and close the session's open streams and WebSockets.
-Sessions that end otherwise (expired, signed out by `roedy-hub reset-admin`) lose them within 5 seconds.
+Sessions that end otherwise (expired, signed out by `roedy-hub reset-admin`) lose them within 5 seconds, as long as
+the database answers within 1.5 seconds; a busier database delays it to the next check two seconds later.
 
 ## Health
 

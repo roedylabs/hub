@@ -38,6 +38,9 @@ hyper = { version = "1.13.0", features = ["client", "http1"] }
 # rustls' ring provider.
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "tls12"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
+# The connector with a deadline for lookup, TCP and TLS (`gateway::client`);
+# hyper-util's trait crate.
+tower-service = "0.3.3"
 # MACs with the instance key (`crypto`); the same trait crate as chacha20poly1305.
 hmac = "0.13.0"
 # Letters and marks in display names (general category); already comes with

@@ -124,8 +124,8 @@ stricter.
 
 | Limit | Value |
 |---|---|
-| Connect to the app | 5 s, then 502 `app_unreachable` |
-| Until the app's response headers | 300 s, then 504 `app_timeout` |
+| Connect to the app (name lookup, TCP, TLS) | 5 s, then 502 `app_unreachable` |
+| Until the app's response headers | 300 s after the request body is sent (an earlier response counts at once), then 504 `app_timeout` |
 | Response and request bodies | Streamed in both directions without buffering; no total time limit, no size limit at the hub |
 | Request headers | 64 KiB in total, then 431 `headers_too_large` |
 | Protocol to the app | HTTP/1.1 (the hub does not speak h2c to apps) |
@@ -806,7 +806,7 @@ page loads (`Sec-Fetch-Mode: navigate`, or `Accept` with `text/html` and no
 | 431 | `headers_too_large` | Request headers beyond 64 KiB ([§ 3.4](#34-limits-and-timeouts)); always JSON |
 | 502 | `app_unreachable` | The app does not accept the connection |
 | 503 | `app_not_ready` | The app waits for pairing, and the user is not a hub administrator |
-| 504 | `app_timeout` | No response headers within 300 s |
+| 504 | `app_timeout` | No response headers within 300 s after the request body ([§ 3.4](#34-limits-and-timeouts)) |
 
 Errors of the app itself (its 401, 403, 404, 5xx) reach the browser unchanged.
 

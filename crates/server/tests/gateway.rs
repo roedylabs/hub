@@ -808,6 +808,31 @@ async fn timeouts_and_unreachable_apps() {
         .json("/example/slow?ms=0&body_ms=1000", Some(&hub.max))
         .await;
     assert_eq!((status, &body["body_ms"]), (StatusCode::OK, &json!(1000)));
+    // A slow upload: the time until the response headers counts from its
+    // end, so 1.5 s of upload with a limit of 0.5 s is fine.
+    let chunks = stream::unfold(0u32, |n| async move {
+        if n == 6 {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let data = Bytes::from(vec![1u8; 1024]);
+        Some((Ok::<_, Infallible>(Frame::data(data)), n + 1))
+    });
+    let response = hub
+        .send(
+            Method::POST,
+            "/example/upload",
+            Some(&hub.max),
+            &[],
+            http_body_util::BodyExt::boxed(StreamBody::new(chunks)),
+        )
+        .await;
+    let (status, _, body) = json_of(response).await;
+    assert_eq!(
+        (status, &body["bytes"]),
+        (StatusCode::OK, &json!(6 * 1024)),
+        "{body}"
+    );
     // Request headers beyond 64 KiB.
     let big = "a".repeat(70 * 1024);
     let response = hub
@@ -1076,11 +1101,13 @@ async fn ending_a_session_closes_its_streams() {
         .as_user(&hub.max, Method::POST, "/auth/logout", None)
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    assert!(stream_ends(&mut stream, within).await, "stream still open");
-    assert!(
-        socket_ends(&mut socket, within).await,
-        "WebSocket still open"
+    // Both within the same 5 s.
+    let (stream_closed, socket_closed) = tokio::join!(
+        stream_ends(&mut stream, within),
+        socket_ends(&mut socket, within)
     );
+    assert!(stream_closed, "stream still open");
+    assert!(socket_closed, "WebSocket still open");
     assert!(
         next_frame(&mut other, Duration::from_secs(2))
             .await
@@ -1092,6 +1119,32 @@ async fn ending_a_session_closes_its_streams() {
         (status, &me["reason"]),
         (StatusCode::UNAUTHORIZED, &json!("missing"))
     );
+
+    // Signed out while the app still prepares its answer: the response
+    // registers after the sign-out and ends at once – before its headers or
+    // right after them (the job does not run in this test).
+    let late = hub.env.session_for("max").await;
+    let request = Request::get(format!(
+        "http://{}/example/slow?ms=800&body_ms=5000",
+        hub.public
+    ))
+    .header(header::COOKIE, cookie(&late))
+    .body(empty())
+    .unwrap();
+    let (response, reply) = tokio::join!(hub.client.request(request), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        hub.env
+            .as_user(&late, Method::POST, "/auth/logout", None)
+            .await
+    });
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    if let Ok(response) = response {
+        let mut body = response.into_body();
+        assert!(
+            stream_ends(&mut body, Duration::from_secs(2)).await,
+            "response of a session ended during the wait"
+        );
+    }
 
     // Locked by an administrator: every session of the user.
     let max = hub.env.session_for("max").await;
