@@ -43,7 +43,7 @@ Roedy Mail.
 | `ROEDY_ACME_DIRECTORY` | `https://acme-v02.api.letsencrypt.org/directory` | `acme`: the CA's directory. Let's Encrypt's staging directory (`https://acme-staging-v02.api.letsencrypt.org/directory`) is for trying a setup out; its certificates are not trusted by browsers. `http://` only for a test CA on loopback. Changing it gets a new certificate from the new CA at the next start. |
 | `ROEDY_ACME_EMAIL` | – | `acme`: contact address for the account at the CA (optional; Let's Encrypt sends no expiry mails anymore). |
 | `ROEDY_ACME_AGREE_TOS` | `false` | `acme`: **required** `true` – you accept the CA's terms of service (Let's Encrypt: the Subscriber Agreement linked from its directory). Without it, `serve` refuses to start and says so. |
-| `ROEDY_TLS_CERT_FILE` | – | `files`: the certificate chain in PEM, leaf first. Reloaded within 10 seconds when it changes, without a restart; a replacement that cannot be used is logged and the previous certificate stays. |
+| `ROEDY_TLS_CERT_FILE` | – | `files`: the certificate chain in PEM, leaf first. Reloaded within 10 seconds when its content changes, without a restart; a replacement that cannot be used yet (not valid before a later time) or at all is logged and the previous certificate stays until it can. |
 | `ROEDY_TLS_KEY_FILE` | – | `files`: its private key in PEM (PKCS#8, SEC1 or PKCS#1; ECDSA, Ed25519 or RSA). |
 
 **Initial setup:** as long as no administrator exists, every start writes a setup token to the log
@@ -71,8 +71,8 @@ than 30 days ([Events](#events)) once a day.
 Roedy Hub terminates TLS itself (TLS 1.3 and 1.2, AEAD cipher suites with forward secrecy only, ALPN `http/1.1`) and,
 with `ROEDY_TLS=acme`, gets and renews its certificate on its own with its built-in ACME client (RFC 8555). It answers
 only TLS connections for the host of `ROEDY_PUBLIC_URL` (SNI); other names get no certificate. Responses carry
-`Strict-Transport-Security: max-age=31536000` (without `includeSubDomains` and `preload`; submit the domain to the
-preload list yourself if you want that). HTTP/2 is not offered: the gateway's WebSockets use HTTP/1.1's `Upgrade`.
+`Strict-Transport-Security: max-age=31536000`, without `includeSubDomains` and `preload` – the hub cannot know whether
+every subdomain speaks HTTPS, so this policy is not eligible for the browsers' preload list. HTTP/2 is not offered: the gateway's WebSockets use HTTP/1.1's `Upgrade`.
 
 **Ports and firewall.** In the container the hub runs as an unprivileged user and listens on `8443` (HTTPS) and `8080`
 (HTTP); publish them as `443` and `80`, e.g. `ports: ["443:8443", "80:8080"]` in Compose. Open both in the firewall.
@@ -94,8 +94,7 @@ tries again after 1 minute, 5 minutes, 15 minutes, 1 hour and then every 3 hours
 
 **Renewal.** A daily check renews the certificate 30 days before it expires (after two thirds of the lifetime for
 shorter certificates) or earlier when the CA's renewal information (ARI) suggests it, and swaps it in without dropping
-open connections; a failed renewal is tried again with the next daily check (at the earliest when the wait above is
-over), long before the certificate expires. Issuance, renewal and the first failure of a series appear in
+open connections; a failed renewal is retried on the same schedule as above, long before the certificate expires. Issuance, renewal and the first failure of a series appear in
 Administration › Audit log (category System).
 
 **Storage.** The account key, the certificate's private key and the chain are kept in the database, the keys encrypted
@@ -108,7 +107,8 @@ works; the hub then gets a certificate from production.
 
 **Certificate from files.** With `ROEDY_TLS=files` the hub serves the certificate in `ROEDY_TLS_CERT_FILE` and
 `ROEDY_TLS_KEY_FILE`, e.g. from your own CA or another ACME client, and reloads it when the files change. It must
-contain the host of `ROEDY_PUBLIC_URL` (a wildcard covers one label); the start fails otherwise. The HTTP port only
+contain the host of `ROEDY_PUBLIC_URL` (a wildcard covers one label; an IP address as host needs it as an IP address
+name) and be valid now; the start fails otherwise. The HTTP port only
 redirects then.
 
 **Behind your own proxy.** Keep `ROEDY_TLS=off`, let the proxy terminate TLS and forward to `ROEDY_LISTEN`, and set

@@ -95,6 +95,15 @@ impl Hub {
     }
 }
 
+/// The stored retry state, if any.
+async fn retry_state(hub: &Hub) -> Option<serde_json::Value> {
+    db::call(&hub.state.db, |conn| {
+        roedy_hub_server::db::repo::app_settings::get(conn, "tls_retry")
+    })
+    .await
+    .unwrap()
+}
+
 fn config(fake: &FakeAcme) -> Config {
     Config {
         tls: TlsMode::Acme,
@@ -181,6 +190,15 @@ async fn connect(addr: SocketAddr, name: &str, ca: &[u8]) -> std::io::Result<Tls
 
 /// One request on a kept-alive connection; the status line and headers.
 async fn get<S>(stream: &mut S, path: &str) -> String
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    tokio::time::timeout(PATIENCE, exchange(stream, path))
+        .await
+        .unwrap_or_else(|_| panic!("GET {path}: no complete response in time"))
+}
+
+async fn exchange<S>(stream: &mut S, path: &str) -> String
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -321,13 +339,15 @@ async fn falls_back_to_http_01_after_a_failed_validation() {
             .await
             .starts_with("HTTP/1.1 200")
     );
-    // The retry state is gone after the success.
-    let retry: Option<String> = db::call(&hub.state.db, |conn| {
-        roedy_hub_server::db::repo::app_settings::get(conn, "tls_retry")
-    })
-    .await
-    .unwrap();
-    assert_eq!(retry, None);
+    // The retry state is cleared once the certificate is in place.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while retry_state(&hub).await.is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "retry state not cleared"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     hub.stop().await;
 }
 
@@ -344,20 +364,27 @@ async fn waits_as_the_ca_says_and_records_one_failure() {
     let hub = start(&fake, tmp.path(), SecretKey::random().unwrap()).await;
 
     // No certificate yet: no TLS handshake, the healthcheck fails.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Wait for the rate limit to be recorded; the next attempt waits the
+    // CA's two seconds, which leaves ample time for the checks below.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let retry = loop {
+        if let Some(retry) = retry_state(&hub).await {
+            break retry;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no failure recorded"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    // Stored, so that a restart waits as well.
+    assert_eq!(retry["failures"], 1);
     assert!(hub.tls().resolver.current().is_none());
     assert!(connect(hub.https, HOST, &fake.ca_cert).await.is_err());
     let err = healthcheck::check_tls(hub.https, HOST, healthcheck::DEFAULT_TIMEOUT)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no TLS connection"), "{err}");
-    // The retry is stored, so that a restart waits as well.
-    let retry: Option<serde_json::Value> = db::call(&hub.state.db, |conn| {
-        roedy_hub_server::db::repo::app_settings::get(conn, "tls_retry")
-    })
-    .await
-    .unwrap();
-    assert_eq!(retry.unwrap()["failures"], 1);
 
     hub.wait_for_certificate().await;
     assert!(
@@ -367,6 +394,9 @@ async fn waits_as_the_ca_says_and_records_one_failure() {
     );
     let log = fake.log();
     assert_eq!(log.rate_limits_sent, 1);
+    // The next order came no earlier than `Retry-After` allowed.
+    let gap = log.order_at[0] - log.rate_limited_at[0];
+    assert!(gap >= Duration::from_secs(2), "next order after {gap:?}");
     // The rate-limited attempt, the refused finalize, the success.
     assert_eq!(log.orders.len(), 2);
     let audit = hub.audit().await;
@@ -432,9 +462,11 @@ async fn renews_and_swaps_without_dropping_connections() {
     let log = fake.log();
     assert_eq!(log.orders.len(), 3);
     assert_eq!(log.orders[1], None);
+    // `replaces` names the second certificate as the CA knows it.
+    assert_eq!(log.orders[2].as_ref(), Some(&log.issued_ids[1]));
     let second_info =
         CertInfo::parse(&second_conn.get_ref().1.peer_certificates().unwrap()[0]).unwrap();
-    assert_eq!(log.orders[2], second_info.ari_id());
+    assert_eq!(second_info.ari_id().as_ref(), Some(&log.issued_ids[1]));
     assert!(get(&mut kept, "/healthz").await.starts_with("HTTP/1.1 200"));
 
     let actions: Vec<String> = hub.audit().await.into_iter().map(|(a, _)| a).collect();

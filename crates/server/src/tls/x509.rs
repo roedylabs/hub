@@ -10,6 +10,8 @@
 //! Only ECDSA P-256 with SHA-256 is written; reading does not check
 //! signatures except where said.
 
+use std::net::IpAddr;
+
 use anyhow::{bail, ensure};
 use jiff::Timestamp;
 use ring::signature::{ECDSA_P256_SHA256_ASN1, UnparsedPublicKey};
@@ -90,9 +92,18 @@ impl Extension {
 
     /// `subjectAltName` with DNS names.
     pub fn dns_names(names: &[&str]) -> Self {
-        let names: Vec<Vec<u8>> = names
+        Self::alt_names(names, &[])
+    }
+
+    /// `subjectAltName` with DNS names and IP addresses.
+    pub fn alt_names(dns: &[&str], ips: &[IpAddr]) -> Self {
+        let names: Vec<Vec<u8>> = dns
             .iter()
             .map(|name| der::tlv(der::context_primitive(2), name.as_bytes()))
+            .chain(ips.iter().map(|ip| match ip {
+                IpAddr::V4(ip) => der::tlv(der::context_primitive(7), &ip.octets()),
+                IpAddr::V6(ip) => der::tlv(der::context_primitive(7), &ip.octets()),
+            }))
             .collect();
         let refs: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
         Self {
@@ -188,7 +199,8 @@ impl CertificateParams {
 
 /// The TLS-ALPN-01 certificate for `domain` (RFC 8737 § 3): self-signed,
 /// the domain as its only `subjectAltName` and the critical
-/// `acmeIdentifier`, valid from a day ago for a week.
+/// `acmeIdentifier`, valid from a day ago for a week. Issuer and subject
+/// carry a common name, as RFC 5280 wants of a self-signed certificate.
 pub fn alpn_challenge_certificate(
     domain: &str,
     digest: &[u8; 32],
@@ -196,10 +208,15 @@ pub fn alpn_challenge_certificate(
     now: Timestamp,
 ) -> anyhow::Result<Vec<u8>> {
     let day = jiff::SignedDuration::from_hours(24);
+    let dn = name(Some(if domain.len() <= 64 {
+        domain
+    } else {
+        "ACME TLS-ALPN-01"
+    }));
     CertificateParams {
         serial: crate::random::bytes::<16>()?.to_vec(),
-        issuer: name(None),
-        subject: name(None),
+        issuer: dn.clone(),
+        subject: dn,
         not_before: now - day,
         not_after: now + day * 7,
         spki: key.spki(),
@@ -285,7 +302,7 @@ impl CsrInfo {
                 while !extensions.is_empty() {
                     let (oid, _, value) = extension(&mut extensions)?;
                     if oid == der::oid(oids::SUBJECT_ALT_NAME) {
-                        dns_names.extend(san_dns_names(value)?);
+                        dns_names.extend(alt_names(value)?.0);
                     }
                 }
             }
@@ -332,19 +349,26 @@ fn extension<'a>(reader: &mut Reader<'a>) -> anyhow::Result<(&'a [u8], bool, &'a
     Ok((oid, critical, value))
 }
 
-/// The `dNSName`s of a `subjectAltName` value; other kinds are skipped.
-fn san_dns_names(value: &[u8]) -> anyhow::Result<Vec<String>> {
+/// The `dNSName`s and `iPAddress`es of a `subjectAltName` value; other
+/// kinds are skipped.
+fn alt_names(value: &[u8]) -> anyhow::Result<(Vec<String>, Vec<IpAddr>)> {
     let mut outer = Reader::new(value);
     let mut names = outer.expect(der::SEQUENCE)?.reader();
     outer.finish()?;
-    let mut out = Vec::new();
+    let (mut dns, mut ips) = (Vec::new(), Vec::new());
     while !names.is_empty() {
         let name = names.read()?;
         if name.tag == der::context_primitive(2) {
-            out.push(String::from_utf8(name.content.to_vec())?);
+            dns.push(String::from_utf8(name.content.to_vec())?);
+        } else if name.tag == der::context_primitive(7) {
+            if let Ok(octets) = <[u8; 4]>::try_from(name.content) {
+                ips.push(IpAddr::from(octets));
+            } else if let Ok(octets) = <[u8; 16]>::try_from(name.content) {
+                ips.push(IpAddr::from(octets));
+            }
         }
     }
-    Ok(out)
+    Ok((dns, ips))
 }
 
 /// What the hub reads from a certificate.
@@ -356,6 +380,8 @@ pub struct CertInfo {
     pub not_before: Timestamp,
     pub not_after: Timestamp,
     pub dns_names: Vec<String>,
+    /// `iPAddress` names.
+    pub ip_addresses: Vec<IpAddr>,
     /// `keyIdentifier` of the authority key identifier.
     pub authority_key_id: Option<Vec<u8>>,
     pub subject_key_id: Option<Vec<u8>>,
@@ -399,6 +425,7 @@ impl CertInfo {
             not_before,
             not_after,
             dns_names: Vec::new(),
+            ip_addresses: Vec::new(),
             authority_key_id: None,
             subject_key_id: None,
             acme_identifier: None,
@@ -425,7 +452,7 @@ impl CertInfo {
 
     fn read_extension(&mut self, oid: &[u8], critical: bool, value: &[u8]) -> anyhow::Result<()> {
         if oid == der::oid(oids::SUBJECT_ALT_NAME) {
-            self.dns_names = san_dns_names(value)?;
+            (self.dns_names, self.ip_addresses) = alt_names(value)?;
         } else if oid == der::oid(oids::AUTHORITY_KEY_ID) {
             let mut outer = Reader::new(value);
             let mut fields = outer.expect(der::SEQUENCE)?.reader();
@@ -583,7 +610,10 @@ mod tests {
             not_after: now + day * 90,
             spki: leaf_key.spki(),
             extensions: vec![
-                Extension::dns_names(&["hub.example.test"]),
+                Extension::alt_names(
+                    &["hub.example.test"],
+                    &["192.0.2.7".parse().unwrap(), "2001:db8::1".parse().unwrap()],
+                ),
                 Extension::server_auth(),
                 Extension::authority_key_id(&[7; 20]),
             ],
@@ -593,6 +623,14 @@ mod tests {
 
         let info = CertInfo::parse(&leaf).unwrap();
         assert_eq!(info.serial, [0, 0x80, 1, 2]);
+        assert_eq!(info.dns_names, ["hub.example.test"]);
+        assert_eq!(
+            info.ip_addresses,
+            [
+                "192.0.2.7".parse::<IpAddr>().unwrap(),
+                "2001:db8::1".parse().unwrap()
+            ]
+        );
         assert_eq!(info.authority_key_id, Some(vec![7; 20]));
         assert_eq!(info.ari_id().unwrap(), "BwcHBwcHBwcHBwcHBwcHBwcHBwc.AIABAg");
         info.signed_by(&ca_key.spki()).unwrap();

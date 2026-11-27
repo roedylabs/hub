@@ -342,6 +342,7 @@ impl Client {
                 Some(nonce) => nonce,
                 None => self.fresh_nonce().await?,
             };
+            check_url(url)?;
             let body = jose::sign(&self.key, signer, &nonce, url, payload)?;
             let response = self
                 .http
@@ -409,8 +410,27 @@ impl Client {
     }
 }
 
+/// Only HTTPS to the CA (RFC 8555 § 6.1), also for every URL it hands out;
+/// plain HTTP only to a test CA on loopback (`config` allows such a
+/// directory nowhere else).
+pub fn check_url(url: &str) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(url).with_context(|| format!("ACME: {url} is not a URL"))?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match parsed.scheme() {
+        "https" if parsed.host().is_some() => Ok(()),
+        "http" if loopback => Ok(()),
+        _ => bail!("ACME: refusing {url} – the CA must be reached over HTTPS"),
+    }
+}
+
 /// Reads the CA's directory (§ 7.1.1).
 pub async fn directory(http: &reqwest::Client, url: &str) -> anyhow::Result<Directory> {
+    check_url(url)?;
     let response = http
         .get(url)
         .send()
@@ -436,6 +456,7 @@ pub async fn renewal_info(
         return Ok(None);
     };
     let url = format!("{}/{cert_id}", base.trim_end_matches('/'));
+    check_url(&url)?;
     let response = http.get(&url).send().await?;
     let status = response.status();
     let headers = response.headers().clone();
@@ -560,6 +581,26 @@ mod tests {
         let problem = Problem::from_response(StatusCode::BAD_GATEWAY, &HeaderMap::new(), b"<html>");
         assert_eq!(problem.kind, "unknown");
         assert_eq!(problem.to_string(), "the CA answered 502 (unknown)");
+    }
+
+    #[test]
+    fn talks_to_the_ca_over_https_only() {
+        for good in [
+            "https://acme-v02.api.letsencrypt.org/acme/new-order",
+            "http://127.0.0.1:14000/dir",
+            "http://[::1]:14000/dir",
+            "http://localhost/dir",
+        ] {
+            check_url(good).unwrap();
+        }
+        for bad in [
+            "http://ca.example.test/acme/order/1",
+            "http://192.0.2.7/dir",
+            "ftp://ca.example.test/dir",
+            "not a url",
+        ] {
+            assert!(check_url(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

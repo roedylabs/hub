@@ -140,12 +140,17 @@ impl CertResolver {
     }
 
     /// The decision, apart from rustls' types: the SNI sent (if any) and
-    /// whether the client asks for `acme-tls/1` alone.
-    fn pick(&self, server_name: Option<&str>, acme_only: bool) -> Option<Arc<CertifiedKey>> {
+    /// what the client offers in ALPN.
+    fn pick(&self, server_name: Option<&str>, offer: Offer) -> Option<Arc<CertifiedKey>> {
         let name = server_name.map(str::to_ascii_lowercase);
-        if acme_only {
+        match offer {
             // RFC 8737 § 3: the validation sends the domain as SNI.
-            return self.challenges.alpn(name.as_deref()?);
+            Offer::AcmeOnly => return self.challenges.alpn(name.as_deref()?),
+            // `acme-tls/1` is for the validation only (RFC 8737 § 6.2): mixed
+            // with other protocols the handshake fails, as for any protocol
+            // the hub does not speak.
+            Offer::AcmeMixed => return None,
+            Offer::Other => {}
         }
         match name.as_deref() {
             Some(name) if name == self.host => self.current(),
@@ -159,11 +164,30 @@ impl CertResolver {
 
 impl ResolvesServerCert for CertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        let acme_only = client_hello.alpn().is_some_and(|mut protocols| {
-            protocols.next() == Some(ACME_TLS_ALPN) && protocols.next().is_none()
-        });
-        self.pick(client_hello.server_name(), acme_only)
+        let offer = match client_hello.alpn() {
+            Some(protocols) => {
+                let protocols: Vec<&[u8]> = protocols.collect();
+                match protocols.iter().filter(|p| **p == ACME_TLS_ALPN).count() {
+                    0 => Offer::Other,
+                    _ if protocols.len() == 1 => Offer::AcmeOnly,
+                    _ => Offer::AcmeMixed,
+                }
+            }
+            None => Offer::Other,
+        };
+        self.pick(client_hello.server_name(), offer)
     }
+}
+
+/// What a client offers in ALPN, as far as the resolver cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    /// No ALPN, or protocols without `acme-tls/1`.
+    Other,
+    /// `acme-tls/1` alone: a TLS-ALPN-01 validation.
+    AcmeOnly,
+    /// `acme-tls/1` together with other protocols.
+    AcmeMixed,
 }
 
 /// The server configuration: TLS 1.3 and 1.2 with ring's default suites
@@ -251,11 +275,11 @@ impl Tls {
     }
 
     /// Starts what keeps the certificate current: the first issuance and
-    /// renewals' retries (`acme`), or watching the files (`files`). Abort
-    /// the task on shutdown.
+    /// the retries of failed renewals (`acme`), or watching the files
+    /// (`files`). Abort the task on shutdown.
     pub fn start(&self) -> Option<tokio::task::JoinHandle<()>> {
         if let Some(issuer) = &self.issuer {
-            return Some(tokio::spawn(issuer.clone().run_until_valid()));
+            return Some(tokio::spawn(issuer.clone().keep_valid()));
         }
         self.files
             .clone()
@@ -283,10 +307,7 @@ pub async fn prepare(
             let (Some(cert), Some(key)) = (&config.tls_cert_file, &config.tls_key_file) else {
                 anyhow::bail!("ROEDY_TLS=files needs ROEDY_TLS_CERT_FILE and ROEDY_TLS_KEY_FILE");
             };
-            let files = files::Files {
-                cert: cert.clone(),
-                key: key.clone(),
-            };
+            let files = files::Files::new(cert.clone(), key.clone());
             let info = files.load(&tls.resolver).map_err(|e| {
                 anyhow::anyhow!("TLS certificate not usable (ROEDY_TLS=files): {e:#}")
             })?;
@@ -351,30 +372,54 @@ mod tests {
         let challenges = Arc::new(Challenges::default());
         let resolver = CertResolver::new("Hub.Example.test", challenges.clone());
         assert!(
-            resolver.pick(Some("hub.example.test"), false).is_none(),
+            resolver
+                .pick(Some("hub.example.test"), Offer::Other)
+                .is_none(),
             "no cert yet"
         );
         let current = key();
         resolver.set(current.clone());
-        let picked = resolver.pick(Some("HUB.example.test"), false).unwrap();
+        let picked = resolver
+            .pick(Some("HUB.example.test"), Offer::Other)
+            .unwrap();
         assert!(Arc::ptr_eq(&picked, &current));
-        assert!(resolver.pick(Some("other.example.test"), false).is_none());
-        assert!(resolver.pick(None, false).is_none(), "no SNI");
+        assert!(
+            resolver
+                .pick(Some("other.example.test"), Offer::Other)
+                .is_none()
+        );
+        assert!(resolver.pick(None, Offer::Other).is_none(), "no SNI");
 
         // `acme-tls/1` alone: the challenge certificate, never the current one.
-        assert!(resolver.pick(Some("hub.example.test"), true).is_none());
+        assert!(
+            resolver
+                .pick(Some("hub.example.test"), Offer::AcmeOnly)
+                .is_none()
+        );
         let challenge = key();
         challenges.add_alpn("hub.example.test", challenge.clone());
-        let picked = resolver.pick(Some("hub.example.test"), true).unwrap();
+        let picked = resolver
+            .pick(Some("hub.example.test"), Offer::AcmeOnly)
+            .unwrap();
         assert!(Arc::ptr_eq(&picked, &challenge));
-        assert!(resolver.pick(None, true).is_none());
+        assert!(resolver.pick(None, Offer::AcmeOnly).is_none());
+        // Offered with other protocols: no certificate at all.
+        assert!(
+            resolver
+                .pick(Some("hub.example.test"), Offer::AcmeMixed)
+                .is_none()
+        );
         challenges.remove_alpn("hub.example.test");
-        assert!(resolver.pick(Some("hub.example.test"), true).is_none());
+        assert!(
+            resolver
+                .pick(Some("hub.example.test"), Offer::AcmeOnly)
+                .is_none()
+        );
 
         // An IP address as host: clients send no SNI.
         let resolver = CertResolver::new("192.0.2.7", challenges);
         resolver.set(current);
-        assert!(resolver.pick(None, false).is_some());
+        assert!(resolver.pick(None, Offer::Other).is_some());
     }
 
     #[test]

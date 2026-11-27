@@ -116,11 +116,13 @@ mod tests {
     #[test]
     fn signs_a_flattened_jws() {
         let key = P256Key::generate().unwrap();
+        // The CA's nonce, random as a CA's would be.
+        let nonce = b64(&crate::random::bytes::<16>().unwrap());
         let url = "https://ca.example.test/acme/new-order";
         let jws = sign(
             &key,
             Signer::Kid("https://ca.example.test/acct/1"),
-            "n0nce",
+            &nonce,
             url,
             Some(&json!({"a": 1})),
         )
@@ -130,7 +132,7 @@ mod tests {
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(protected).unwrap()).unwrap();
         assert_eq!(
             header,
-            json!({ "alg": "ES256", "nonce": "n0nce", "url": url, "kid": "https://ca.example.test/acct/1" })
+            json!({ "alg": "ES256", "nonce": nonce, "url": url, "kid": "https://ca.example.test/acct/1" })
         );
         let payload = jws["payload"].as_str().unwrap();
         assert_eq!(URL_SAFE_NO_PAD.decode(payload).unwrap(), br#"{"a":1}"#);
@@ -142,7 +144,7 @@ mod tests {
             .unwrap();
 
         // New account: the JWK instead of `kid`; POST-as-GET: empty payload.
-        let jws = sign(&key, Signer::Jwk, "n", url, None).unwrap();
+        let jws = sign(&key, Signer::Jwk, &nonce, url, None).unwrap();
         let header: Value = serde_json::from_slice(
             &URL_SAFE_NO_PAD
                 .decode(jws["protected"].as_str().unwrap())

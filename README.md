@@ -28,8 +28,9 @@ Browser ──HTTPS──► roedy-hub ─┬─ /, /login, /account, /admin, /a
                               └─ /contacts/…  ──► roedy-contacts
 ```
 
-All apps share one origin. The hub terminates TLS itself and gets its certificate from Let's Encrypt (or another ACME
-CA) on its own ([TLS](docs/ops.md#tls)). Install only apps you trust as much as the hub itself
+All apps share one origin. The diagram shows a deployment with `ROEDY_TLS=acme`: the hub terminates TLS itself and gets
+its certificate from Let's Encrypt (or another ACME CA) on its own. It can also serve a certificate from files, or speak
+plain HTTP behind a proxy of your own (the default) – see [TLS](docs/ops.md#tls). Install only apps you trust as much as the hub itself
 ([trust model](docs/app-contract.md#2-trust-model)).
 
 ## Development

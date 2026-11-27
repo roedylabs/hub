@@ -121,6 +121,13 @@ pub fn time(at: Timestamp) -> Vec<u8> {
 
 /// Reads a time written as UTCTime or GeneralizedTime (UTC, whole seconds).
 pub fn parse_time(tag: u8, content: &[u8]) -> anyhow::Result<Timestamp> {
+    // Digits and a final `Z` only, so that the fixed slices below never fall
+    // inside a multi-byte character.
+    let (digits, zone) = content.split_at(content.len().saturating_sub(1));
+    ensure!(
+        zone == b"Z" && digits.iter().all(u8::is_ascii_digit),
+        "unsupported time format"
+    );
     let text = std::str::from_utf8(content)?;
     let (year, rest) = match (tag, text.len()) {
         (UTC_TIME, 13) => {
@@ -326,5 +333,9 @@ mod tests {
         }
         assert!(parse_time(UTC_TIME, b"2611271020Z").is_err());
         assert!(parse_time(UTC_TIME, b"261127102030+").is_err());
+        // Multi-byte characters of the right length: an error, no panic.
+        assert!(parse_time(UTC_TIME, "2ü1127102030".as_bytes()).is_err());
+        assert!(parse_time(GENERALIZED_TIME, "20ü61127102030".as_bytes()).is_err());
+        assert!(parse_time(UTC_TIME, b"").is_err());
     }
 }

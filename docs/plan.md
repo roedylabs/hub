@@ -593,7 +593,8 @@ checks pass in every PR; every PR has tests for what it adds.
       `replaces`. Renewal 30 days before the end (two thirds of a shorter
       lifetime) or by ARI in the daily job `certificate_renewal`; first
       issuance in the background at start while the HTTPS port answers only
-      TLS-ALPN-01. Failures wait 1 min, 5 min, 15 min, 1 h, then 3 h, or
+      TLS-ALPN-01; a background task retries every failed attempt, also a
+      failed renewal. Failures wait 1 min, 5 min, 15 min, 1 h, then 3 h, or
       longer by `Retry-After`; the next attempt is stored, so restarts do not
       hammer the CA. Migration 0009: `acme_accounts`, `tls_certificates`,
       keys sealed with the instance key (another instance key: new account

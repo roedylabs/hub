@@ -1,9 +1,10 @@
 //! `ROEDY_TLS=acme`: gets and renews the certificate for the public host.
 //!
 //! - **At start** [`Issuer::load`] serves the stored certificate, if there
-//!   is one, and [`Issuer::run_until_valid`] gets a first one (or renews a
-//!   due one) in the background, retrying until it succeeds. Meanwhile the
-//!   HTTPS listener answers only TLS-ALPN-01 validations.
+//!   is one, and [`Issuer::keep_valid`] gets a first one (or renews a due
+//!   one) in the background, retrying until it succeeds. Meanwhile the
+//!   HTTPS listener answers only TLS-ALPN-01 validations. Afterwards it
+//!   retries every failed renewal on the same schedule.
 //! - **Daily** (`jobs::certificate_renewal`) [`Issuer::run_once`] renews
 //!   30 days before the end (a third of the lifetime for shorter
 //!   certificates), or earlier when the CA's renewal info (ARI, RFC 9773)
@@ -138,6 +139,8 @@ pub struct Issuer {
     backoff: Vec<Duration>,
     /// Try HTTP-01 first (after a failed TLS-ALPN-01, and the other way).
     prefer_http: AtomicBool,
+    /// A run failed: [`Self::keep_valid`] takes over the retries.
+    failed: tokio::sync::Notify,
 }
 
 impl Issuer {
@@ -159,6 +162,7 @@ impl Issuer {
             running: tokio::sync::Mutex::new(()),
             backoff: BACKOFF.to_vec(),
             prefer_http: AtomicBool::new(false),
+            failed: tokio::sync::Notify::new(),
         }
     }
 
@@ -184,18 +188,21 @@ impl Issuer {
         Ok(Some(info.not_after))
     }
 
-    /// Runs until there is a valid certificate, waiting after failures.
-    /// Ends only with success; the caller aborts the task on shutdown.
-    pub async fn run_until_valid(self: Arc<Self>) {
+    /// Runs for the life of the server: gets a valid certificate, waiting
+    /// after failures, then sleeps until a run elsewhere (the daily job)
+    /// fails and retries that on the backoff schedule as well.
+    pub async fn keep_valid(self: Arc<Self>) {
         loop {
             match self.run_once().await {
                 Ok(Outcome::Waiting { until }) => {
                     tracing::info!(%until, "next certificate attempt waits");
                     tokio::time::sleep(until_now(until)).await;
                 }
-                Ok(_) => return,
-                // `run_once` logged it and stored when to try again.
-                Err(_) => {}
+                Ok(_) => self.failed.notified().await,
+                // Usually `run_once` stored when to try again and the next
+                // round waits for it; but it may have failed before that (the
+                // database), so never retry at once.
+                Err(_) => tokio::time::sleep(self.backoff[0]).await,
             }
         }
     }
@@ -638,6 +645,7 @@ mod tests {
             not_before: not_before.parse().unwrap(),
             not_after: not_after.parse().unwrap(),
             dns_names: Vec::new(),
+            ip_addresses: Vec::new(),
             authority_key_id: None,
             subject_key_id: None,
             acme_identifier: None,

@@ -105,13 +105,20 @@ pub struct Log {
     /// Validations: challenge type and whether it passed.
     pub validations: Vec<(String, bool)>,
     pub issued: usize,
+    /// ARI IDs of the issued certificates, built from the serial bytes the
+    /// fake signed (not with the hub's parser), in order.
+    pub issued_ids: Vec<String>,
     pub ari_requests: usize,
+    /// When the rate limit was sent, and when each new order arrived.
+    pub rate_limited_at: Vec<std::time::Instant>,
+    pub order_at: Vec<std::time::Instant>,
 }
 
 struct Account {
     url: String,
     jwk: Value,
     thumbprint: String,
+    contact: Vec<String>,
 }
 
 struct Challenge {
@@ -286,6 +293,7 @@ impl FakeAcme {
         uri: &Uri,
         body: &[u8],
         new_account: bool,
+        expect: Expect,
     ) -> Result<(Value, Signer), Response> {
         let malformed = |detail: &str| self.problem(StatusCode::BAD_REQUEST, "malformed", detail);
         let jws: Value = serde_json::from_slice(body).map_err(|_| malformed("not JSON"))?;
@@ -363,14 +371,17 @@ impl FakeAcme {
         UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, &point)
             .verify(format!("{protected}.{payload}").as_bytes(), &signature)
             .map_err(|_| self.problem(StatusCode::BAD_REQUEST, "malformed", "bad signature"))?;
-        let payload = if payload.is_empty() {
-            Value::Null
-        } else {
-            URL_SAFE_NO_PAD
+        // RFC 8555 § 6.3: a read has an empty payload, everything else a
+        // JSON object (an acknowledgment is `{}`).
+        let payload = match expect {
+            Expect::Read if payload.is_empty() => Value::Null,
+            Expect::Read => return Err(malformed("POST-as-GET needs an empty payload")),
+            Expect::Object => URL_SAFE_NO_PAD
                 .decode(payload)
                 .ok()
-                .and_then(|p| serde_json::from_slice(&p).ok())
-                .ok_or_else(|| malformed("payload"))?
+                .and_then(|p| serde_json::from_slice::<Value>(&p).ok())
+                .filter(Value::is_object)
+                .ok_or_else(|| malformed("payload must be a JSON object"))?,
         };
         Ok((payload, signer))
     }
@@ -495,6 +506,15 @@ enum Signer {
     Account(usize),
 }
 
+/// What a request must carry.
+#[derive(Clone, Copy)]
+enum Expect {
+    /// POST-as-GET: an empty payload.
+    Read,
+    /// A JSON object.
+    Object,
+}
+
 fn point(jwk: &Value) -> Option<Vec<u8>> {
     if jwk["kty"] != "EC" || jwk["crv"] != "P-256" {
         return None;
@@ -544,7 +564,7 @@ async fn new_nonce(State(fake): State<FakeAcme>) -> Response {
 }
 
 async fn new_account(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Response {
-    let (payload, signer) = match fake.verify(&uri, &body, true) {
+    let (payload, signer) = match fake.verify(&uri, &body, true, Expect::Object) {
         Ok(verified) => verified,
         Err(response) => return response,
     };
@@ -576,8 +596,12 @@ async fn new_account(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Res
             .map(|a| a.url.clone())
     };
     if let Some(url) = existing {
-        // RFC 8555 § 7.3.1: the existing account, its old contact.
-        let old = fake.lock().log.contacts.last().cloned().unwrap_or_default();
+        // RFC 8555 § 7.3.1: the existing account, with its own contact.
+        let old = {
+            let inner = fake.lock();
+            let account = inner.accounts.iter().find(|a| a.url == url);
+            account.map(|a| a.contact.clone()).unwrap_or_default()
+        };
         return fake.reply(
             StatusCode::OK,
             Some(url),
@@ -591,6 +615,7 @@ async fn new_account(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Res
             url: url.clone(),
             jwk,
             thumbprint: thumb,
+            contact: contact.clone(),
         });
         inner.log.accounts.push(url.clone());
         inner.log.contacts.push(contact.clone());
@@ -603,22 +628,27 @@ async fn new_account(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Res
 }
 
 async fn account(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Response {
-    let (payload, _) = match fake.verify(&uri, &body, false) {
+    let (payload, signer) = match fake.verify(&uri, &body, false, Expect::Object) {
         Ok(verified) => verified,
         Err(response) => return response,
+    };
+    let Signer::Account(index) = signer else {
+        unreachable!()
     };
     if let Some(contact) = payload["contact"].as_array() {
         let contact: Vec<String> = contact
             .iter()
             .filter_map(|v| v.as_str().map(str::to_owned))
             .collect();
-        fake.lock().log.contacts.push(contact);
+        let mut inner = fake.lock();
+        inner.accounts[index].contact = contact.clone();
+        inner.log.contacts.push(contact);
     }
     fake.reply(StatusCode::OK, None, json!({ "status": "valid" }))
 }
 
 async fn new_order(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Response {
-    let (payload, signer) = match fake.verify(&uri, &body, false) {
+    let (payload, signer) = match fake.verify(&uri, &body, false, Expect::Object) {
         Ok(verified) => verified,
         Err(response) => return response,
     };
@@ -630,6 +660,7 @@ async fn new_order(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Respo
         if inner.knobs.rate_limited > 0 {
             inner.knobs.rate_limited -= 1;
             inner.log.rate_limits_sent += 1;
+            inner.log.rate_limited_at.push(std::time::Instant::now());
             let retry_after = inner.knobs.retry_after;
             drop(inner);
             let mut response = fake.problem(
@@ -670,6 +701,7 @@ async fn new_order(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Respo
     {
         let mut inner = fake.lock();
         inner.log.orders.push(replaces);
+        inner.log.order_at.push(std::time::Instant::now());
         inner.authz.insert(
             authz_id,
             Authz {
@@ -722,7 +754,7 @@ async fn order(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = fake.verify(&uri, &body, false) {
+    if let Err(response) = fake.verify(&uri, &body, false, Expect::Read) {
         return response;
     }
     let (body, processing) = {
@@ -761,7 +793,7 @@ async fn authz(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = fake.verify(&uri, &body, false) {
+    if let Err(response) = fake.verify(&uri, &body, false, Expect::Read) {
         return response;
     }
     let body = {
@@ -781,7 +813,7 @@ async fn challenge(
     Path((id, index)): Path<(String, usize)>,
     body: Bytes,
 ) -> Response {
-    let (_, signer) = match fake.verify(&uri, &body, false) {
+    let (_, signer) = match fake.verify(&uri, &body, false, Expect::Object) {
         Ok(verified) => verified,
         Err(response) => return response,
     };
@@ -836,7 +868,7 @@ async fn finalize(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    let (payload, _) = match fake.verify(&uri, &body, false) {
+    let (payload, _) = match fake.verify(&uri, &body, false, Expect::Object) {
         Ok(verified) => verified,
         Err(response) => return response,
     };
@@ -900,6 +932,14 @@ async fn finalize(
     let body = {
         let mut inner = fake.lock();
         inner.log.issued += 1;
+        // RFC 9773 § 4.1 from the bytes signed above: the serial is ASCII
+        // digits, so its DER content is those bytes as they are.
+        let ari_id = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(CA_KEY_ID),
+            URL_SAFE_NO_PAD.encode(serial.as_bytes())
+        );
+        inner.log.issued_ids.push(ari_id);
         let cert_id = serial;
         inner.certificates.insert(cert_id.clone(), pem);
         let order = inner.orders.get_mut(&id).unwrap();
@@ -922,7 +962,7 @@ async fn certificate(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = fake.verify(&uri, &body, false) {
+    if let Err(response) = fake.verify(&uri, &body, false, Expect::Read) {
         return response;
     }
     let pem = fake.lock().certificates.get(&id).cloned();
@@ -947,9 +987,8 @@ async fn renewal_info(State(fake): State<FakeAcme>, Path(id): Path<String>) -> R
     let Some((start, end)) = inner.knobs.ari else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    // The ID must be the AKI and a serial of a certificate issued here.
-    let aki = URL_SAFE_NO_PAD.encode(CA_KEY_ID);
-    if !id.starts_with(&format!("{aki}.")) {
+    // Only for a certificate issued here.
+    if !inner.log.issued_ids.contains(&id) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let now = Timestamp::now();
