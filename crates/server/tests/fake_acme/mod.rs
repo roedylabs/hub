@@ -71,6 +71,8 @@ pub struct Knobs {
     pub ari: Option<(SignedDuration, SignedDuration)>,
     /// Validations of these types fail.
     pub fail: Vec<&'static str>,
+    /// New orders (after a rate limit) wait while this is set.
+    pub hold_orders: bool,
 }
 
 impl Default for Knobs {
@@ -89,6 +91,7 @@ impl Default for Knobs {
                 SignedDuration::from_hours(62 * 24),
             )),
             fail: Vec::new(),
+            hold_orders: false,
         }
     }
 }
@@ -673,6 +676,11 @@ async fn new_order(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Respo
                 .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
             return response;
         }
+        // When the order arrived, before any hold.
+        inner.log.order_at.push(std::time::Instant::now());
+    }
+    while fake.lock().knobs.hold_orders {
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let identifiers = payload["identifiers"]
         .as_array()
@@ -701,7 +709,6 @@ async fn new_order(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Respo
     {
         let mut inner = fake.lock();
         inner.log.orders.push(replaces);
-        inner.log.order_at.push(std::time::Instant::now());
         inner.authz.insert(
             authz_id,
             Authz {

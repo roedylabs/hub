@@ -358,14 +358,16 @@ async fn waits_as_the_ca_says_and_records_one_failure() {
         k.rate_limited = 1;
         k.retry_after = 2;
         k.finalize_error = Some("badCSR");
+        // The next attempt waits until the checks without a certificate
+        // are done, however slow the runner.
+        k.hold_orders = true;
     });
     let tmp = tempfile::tempdir().unwrap();
     let started = tokio::time::Instant::now();
     let hub = start(&fake, tmp.path(), SecretKey::random().unwrap()).await;
 
     // No certificate yet: no TLS handshake, the healthcheck fails.
-    // Wait for the rate limit to be recorded; the next attempt waits the
-    // CA's two seconds, which leaves ample time for the checks below.
+    // Wait for the rate limit to be recorded.
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let retry = loop {
         if let Some(retry) = retry_state(&hub).await {
@@ -385,6 +387,7 @@ async fn waits_as_the_ca_says_and_records_one_failure() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no TLS connection"), "{err}");
+    fake.knobs(|k| k.hold_orders = false);
 
     hub.wait_for_certificate().await;
     assert!(
