@@ -18,6 +18,7 @@ Sister project: `../mail` (Roedy Mail), read-only from here.
 - Checks (all must pass before a PR): `pnpm lint`, `pnpm check`, `pnpm test`,
   `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - Single tests: `pnpm --filter @roedy/hub-web exec vitest run <file>`, `cargo test -p roedy-hub-server <filter>`.
+- End-to-end (`apps/e2e`, CI job "End-to-end"): `scripts/e2e.sh` needs Docker; without it `scripts/e2e.sh --host`.
 - `just check` (`pnpm exec just …` without just).
 
 ## Conventions (details in CONTRIBUTING.md)

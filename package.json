@@ -18,6 +18,8 @@
     "format": "pnpm --filter @roedy/hub-web sync && prettier --write apps packages scripts *.js *.json && eslint --fix .",
     "test": "pnpm -r --if-present run test && node --test scripts/",
     "build": "pnpm -r --if-present run build",
+    "e2e": "scripts/e2e.sh",
+    "e2e:host": "scripts/e2e.sh --host",
     "licenses:server": "mkdir -p target && cargo about generate --format json --locked -o target/licenses-server.json"
   },
   "devDependencies": {

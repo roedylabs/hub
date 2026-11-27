@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs a Playwright script against the Vite dev server of the web app, for
 # visual checks, screenshots and the accessibility audit (scripts/a11y/).
-# Taken over from Roedy Mail (scripts/dev/browser.sh); the hub has no E2E
-# suite yet, so the Playwright version is pinned here. Playwright with Chromium
+# Taken over from Roedy Mail (scripts/dev/browser.sh), with the Playwright
+# version of the end-to-end suite (apps/e2e/package.json). Playwright with Chromium
 # (headless) and axe-core are installed under $TMPDIR, outside the repository.
 # `run` starts the dev server, runs the script and stops the server again.
 #
@@ -24,9 +24,9 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# The same version as Roedy Mail's; with the E2E suite (docs/plan.md, milestone 6)
-# it moves to @playwright/test in apps/web/package.json.
-PLAYWRIGHT_VERSION=1.65.1
+# The version of the end-to-end suite, so that both use the same browser
+# (scripts/e2e.sh finds the one installed here).
+PLAYWRIGHT_VERSION="$(node -p 'require(process.argv[1]).devDependencies["@playwright/test"]' "$REPO/apps/e2e/package.json")"
 # axe-core (MPL-2.0) for the accessibility audit (scripts/a11y/); not part of the bundle.
 # The same version as the component tests' (apps/web/package.json), so both report the same rules.
 AXE_VERSION="$(node -p 'require(process.argv[1]).devDependencies["axe-core"]' "$REPO/apps/web/package.json")"

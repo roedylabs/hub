@@ -33,6 +33,7 @@ Common tasks are in the [`justfile`](justfile) (`pnpm exec just …` if [just](h
 | `just dist [<targets>]` | Web app and static musl binaries to `dist/` (needs Zig, cargo-zigbuild, cargo-auditable and the rustup targets) |
 | `just image` / `just smoke` | Image for the local platform from `dist/` and its smoke test with the budgets |
 | `just dist-example`, `just image-example`, `just smoke-compose` | The example app's image and the smoke test of `deploy/compose.yml` (the smoke tests need curl, openssl and, for Compose, jq) |
+| `just e2e` / `just e2e-host` | The [end-to-end suite](#end-to-end-suite) against the Compose test setup or against debug binaries on the host |
 | `just release <version>` / `just release-tag <version>` | Release PR, then the tag on `main` ([`release.yml`](.github/workflows/release.yml)) |
 
 ## Checks
@@ -51,6 +52,43 @@ pnpm test             # Vitest and script tests
 CI also runs Clippy and the tests with `--all-features`, which embeds `apps/web/build` (`embed-web`); run `pnpm build` first to do the same locally.
 
 While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vitest run <file>` or `cargo test -p roedy-hub-server <filter>`.
+
+### End-to-end suite
+
+[`apps/e2e`](apps/e2e) is a Playwright suite with axe against the hub and the example app as
+[`deploy/compose.test.yml`](deploy/compose.test.yml) runs them: HTTPS with a self-signed certificate for `localhost`
+on `127.0.0.1:8443`, plain HTTP on `127.0.0.1:8080`. One serial flow builds on itself: the redirect to HTTPS and
+HSTS, the setup with the authenticator app (codes from the shown key), sign-in with password and code, pairing the
+example app from Administration › Apps, its tile on the home page opening it through the gateway with the identity,
+SSE and WebSocket in the browser, a user without access getting the 403 page, every page state on desktop and mobile
+in light and dark, and sign-out closing the app's streams with `Clear-Site-Data`. axe checks every page state with
+the rule set of the Chromium audit (`scripts/a11y/`). CI runs it in the job "End-to-end" against the images the job
+"Image" built.
+
+[`scripts/e2e.sh`](scripts/e2e.sh) starts everything, passes it to the suite and stops it again; never run
+`playwright test` directly. Once, install the browser:
+`pnpm --filter @roedy/hub-e2e exec playwright install chromium-headless-shell` (or `scripts/dev/browser.sh install`,
+whose browser the script finds as well). Ports 8443 and 8080 on `127.0.0.1` must be free.
+
+```sh
+# Against the containers, as in CI (needs Docker with Compose, or Podman: ROEDY_E2E_COMPOSE="podman compose")
+just dist x86_64-unknown-linux-musl && just dist-example x86_64-unknown-linux-musl
+just image && just image-example
+pnpm e2e                         # = scripts/e2e.sh
+
+# Without containers: debug binaries in target/e2e (also uses 8081 and 8090)
+pnpm e2e:host                    # builds the web app, the hub and the example app first
+scripts/e2e.sh --host --no-build -g 'setup|sign-in|pairing|sign-out'   # reuse the binaries; arguments go to `playwright test`
+```
+
+The browser trusts the test certificate only (`--ignore-certificate-errors-spki-list` with its key's hash) and Node
+gets it as `NODE_EXTRA_CA_CERTS`; TLS checks stay on. The example app pairs through `ROEDY_E2E_PAIR`, a command
+the script sets (`docker compose up` with the code, or a restart of the binary). On a failure,
+`apps/e2e/test-results/` holds a trace, a screenshot and the page's accessibility snapshot per failed test plus the
+hub's and the example's log (`compose.log` or `host.log`); CI uploads it as the artifact `e2e-results`. Open a trace
+with `pnpm --filter @roedy/hub-e2e exec playwright show-trace <trace.zip>`; add `--headed` or `--debug` to watch a
+run locally. The tests build on each other against one fresh hub: with `-g`, also select the ones a test needs (as in
+the example above for the sign-out).
 
 ## Releases
 
@@ -74,6 +112,7 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 | `crates/contract` | The app contract's types, signing and verification (`roedy-hub-contract`); makes and checks the test vectors in `docs/app-contract/vectors.json` |
 | `crates/example-app` | The example app (`roedy-hub-example`): a test app that implements the contract, for the hub's tests; not part of the image |
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
+| `apps/e2e` | End-to-end suite (Playwright with axe) against the hub and the example app |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
 | `deploy/` | Docker Compose setup (`compose.yml`, `.env.example`; the hub with built-in TLS, no proxy), `restore.sh` for backups, the test override with the example app and TLS from a test certificate |

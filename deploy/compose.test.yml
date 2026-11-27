@@ -3,7 +3,8 @@
 # localhost) on 127.0.0.1:8443 (HTTPS) and 127.0.0.1:8080 (HTTP: redirect and
 # ACME HTTP-01 only) instead of 443/80, and the example app (crates/example-app)
 # at <ROEDY_PUBLIC_URL>/example. For the smoke test in CI
-# (scripts/compose-smoke.sh) and the end-to-end tests; never for production.
+# (scripts/compose-smoke.sh) and the end-to-end suite (scripts/e2e.sh,
+# apps/e2e); never for production.
 #
 #   just dist x86_64-unknown-linux-musl && just dist-example x86_64-unknown-linux-musl
 #   just image && just image-example

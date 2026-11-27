@@ -1,7 +1,8 @@
 name: CI
 
 # Lint, type check, tests and dependency policy of the web app and the server,
-# the container image with its budgets and the Compose setup.
+# the container image with its budgets and the Compose setup, and the
+# end-to-end suite against that image.
 # "CI passed" is the single required check for these jobs (ruleset of main).
 #
 # Triggers: pull requests, merge queue, main, weekly (new Rust/Node versions,
@@ -192,13 +193,75 @@ jobs:
         run: scripts/image-smoke.sh roedy-hub:dev
       - name: Compose smoke test
         run: scripts/compose-smoke.sh
+      # The same images for the end-to-end suite (job "End-to-end").
+      - name: Save images
+        run: docker save roedy-hub:dev roedy-hub-example:dev | gzip -1 >"$RUNNER_TEMP/images.tar.gz"
+      - name: Upload images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images
+          path: ${{ runner.temp }}/images.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  # Playwright with axe against the hub and the example app on
+  # deploy/compose.test.yml (scripts/e2e.sh), with the images the job "Image"
+  # built and checked: setup, sign-in, pairing, the gateway with SSE and
+  # WebSocket, no access, sign-out, desktop and mobile, light and dark. Part of
+  # "CI passed": it is the only test of the flows across hub, gateway and app
+  # in a browser, and it adds a few minutes after "Image" only.
+  e2e:
+    name: End-to-end
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: ./.github/actions/setup-node
+
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p 'require("./apps/e2e/package.json").devDependencies["@playwright/test"]')" >>"$GITHUB_OUTPUT"
+      - name: Cache the browser
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-headless-shell
+      # Downloads only without a cached browser; the system libraries always.
+      - name: Install the browser
+        run: pnpm --filter @roedy/hub-e2e exec playwright install --with-deps --only-shell chromium
+
+      - name: Download images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: ${{ runner.temp }}
+      - name: Load images
+        run: gunzip -c "$RUNNER_TEMP/images.tar.gz" | docker load
+
+      - name: Suite
+        run: scripts/e2e.sh
+      # Traces, screenshots and the container logs of a failure. They hold the
+      # run's passwords and TOTP secrets, which belong to a throwaway hub.
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-results
+          path: apps/e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Single required status check for the ruleset of main: fails unless every
   # job above succeeded (also when one was skipped or cancelled).
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, web, server, dependencies, image]
+    needs: [lint, web, server, dependencies, image, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
