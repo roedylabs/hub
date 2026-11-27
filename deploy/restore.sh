@@ -68,6 +68,8 @@ if [ "$mode" = recover ]; then
     rm -rf "$D/.restore-new"
     echo "nothing to recover"
   fi
+  # Also after a restore that crashed between the swap and its chown.
+  chown -R "$OWNER" "$D"
   exit 0
 fi
 
@@ -102,9 +104,11 @@ if ! move_all "$D/.restore-new" "$D"; then
   echo "moving the archive's data in failed; the previous data is back" >&2
   exit 1
 fi
+# The owner first, while the previous data still exists: a crash after this
+# point leaves data the hub can open.
+chown -R "$OWNER" "$D"
 rmdir "$D/.restore-new"
 rm -rf "$D/.before-restore"
-chown -R "$OWNER" "$D"
 echo "restored"
 EOF
 )

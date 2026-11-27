@@ -285,10 +285,10 @@ The volume needs free space for a second copy of the database.
 
 **Interrupted restore** (the helper was killed, the host went down): the previous data is in `.before-restore` in the
 volume, and a new restore refuses to start. `./restore.sh --recover` puts it back (and removes a half-copied archive),
-then starts the hub; run the restore again afterwards. If the host went down during the restore, its lock
-`.roedy-restore.lock` is left next to `compose.yml` as well, and the script refuses to start. Make sure no restore is
-running (no `restore.sh` in `ps -ef`, no helper container in `docker ps`), then remove the lock with `rmdir
-.roedy-restore.lock` and run `--recover`. Never remove it while a restore runs.
+sets the owner (`ROEDY_UID`/`ROEDY_GID`) and then starts the hub; run the restore again afterwards. If the host went
+down during the restore, its lock `.roedy-restore.lock` is left next to `compose.yml` as well, and the script refuses to
+start. Make sure no restore is running (no `restore.sh` in `ps -ef`, no helper container in `docker ps`), then remove
+the lock with `rmdir .roedy-restore.lock` and run `--recover`. Never remove it while a restore runs.
 
 On a new host start with the same key (`ROEDY_SECRET_KEY` in `.env`, or `secret.key` restored into the volume). If
 the archive is older than the program version, the start applies the missing migrations. Everything since the backup
