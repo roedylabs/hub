@@ -9,8 +9,9 @@
 //! - [`listener`] accepts TLS connections for axum; [`redirect`] is the
 //!   plain HTTP listener with HTTP-01 challenges and the redirect.
 //! - [`issuer`] runs ACME ([`acme`]: the hub's own RFC 8555 client with
-//!   [`jose`], [`x509`] and [`der`]); [`files`] reads and reloads a
-//!   certificate from files.
+//!   [`jose`], [`x509`] and [`der`]); with `ROEDY_ACME_CHALLENGE=dns-01` it
+//!   validates through a TXT record at deSEC ([`dns01`], [`desec`], [`dns`]).
+//!   [`files`] reads and reloads a certificate from files.
 //!
 //! ALPN offers `http/1.1` only: axum serves HTTP/1.1 here (no `http2`
 //! feature), and the gateway's WebSocket tunnel uses HTTP/1.1's `Upgrade`;
@@ -18,6 +19,9 @@
 
 pub mod acme;
 pub mod der;
+pub mod desec;
+pub mod dns;
+pub mod dns01;
 pub mod files;
 pub mod issuer;
 pub mod jose;
@@ -41,7 +45,7 @@ use rustls::{
 };
 
 use crate::{
-    config::{Config, TlsMode},
+    config::{AcmeChallenge, Config, TlsMode},
     crypto::SecretKey,
     db::Db,
 };
@@ -324,6 +328,10 @@ pub async fn prepare(
                         .map(|email| format!("mailto:{email}"))
                         .collect(),
                     domain: host,
+                    dns01: match config.acme_challenge {
+                        AcmeChallenge::TlsAlpn01 => None,
+                        AcmeChallenge::Dns01 => Some(dns01::Settings::desec(config.desec_token()?)),
+                    },
                 },
                 issuer::http_client()?,
                 db.clone(),
@@ -331,6 +339,14 @@ pub async fn prepare(
                 tls.resolver.clone(),
                 tls.challenges.clone(),
             );
+            match config.acme_challenge {
+                AcmeChallenge::TlsAlpn01 => {
+                    tracing::info!("ACME validation: TLS-ALPN-01, HTTP-01 after a failure");
+                }
+                AcmeChallenge::Dns01 => {
+                    tracing::info!("ACME validation: DNS-01 with a TXT record at deSEC");
+                }
+            }
             match issuer.load().await? {
                 Some(not_after) => {
                     tracing::info!(%not_after, "stored TLS certificate loaded");

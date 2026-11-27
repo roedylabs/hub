@@ -207,10 +207,14 @@ Roedy Mail.
 | `ROEDY_SECRET_KEY` | – | Instance key for secrets in the database: 32 bytes as 64 hex characters (`openssl rand -hex 32`) or Base64 (`openssl rand -base64 32`). If it is missing as well as `ROEDY_SECRET_KEY_FILE`, the first start creates `<ROEDY_DATA_DIR>/secret.key` (`0600`) and uses it afterwards. Without the key the encrypted values can no longer be read; keep a copy outside the data directory. The keys that sign the identities for the apps are encrypted with it as well: with another instance key the hub replaces them at the next start, and paired apps fetch the new one on their own. |
 | `ROEDY_SECRET_KEY_FILE` | – | File with this key, e.g. a Docker secret (`/run/secrets/roedy_secret_key`). Not together with `ROEDY_SECRET_KEY`. |
 | `ROEDY_TLS` | `off` | Built-in TLS ([TLS](#tls)): `off` (plain HTTP on `ROEDY_LISTEN`), `acme` (certificates from an ACME CA) or `files` (a certificate from files). With `acme` or `files`, `ROEDY_PUBLIC_URL` must start with `https://`; the certificate is for its host. |
-| `ROEDY_HTTP_LISTEN` | `0.0.0.0:8080` | With TLS on: address and port of the plain HTTP server, which only answers ACME HTTP-01 challenges and redirects everything else (`308`) to the same path under `ROEDY_PUBLIC_URL` – no web app, no API. Unused with `ROEDY_TLS=off`. Must not overlap with `ROEDY_LISTEN` or `ROEDY_INTERNAL_LISTEN`. |
+| `ROEDY_HTTP_LISTEN` | `0.0.0.0:8080` | With TLS on: address and port of the plain HTTP server, which only answers ACME HTTP-01 challenges and redirects everything else (`308`) to the same path under `ROEDY_PUBLIC_URL` – no web app, no API. Unused with `ROEDY_TLS=off`. Must not overlap with `ROEDY_LISTEN` or `ROEDY_INTERNAL_LISTEN`. With `ROEDY_ACME_CHALLENGE=dns-01` it only redirects; publishing it is optional. |
 | `ROEDY_ACME_DIRECTORY` | `https://acme-v02.api.letsencrypt.org/directory` | `acme`: the CA's directory. Let's Encrypt's staging directory (`https://acme-staging-v02.api.letsencrypt.org/directory`) is for trying a setup out; its certificates are not trusted by browsers. `http://` only for a test CA on loopback. Changing it gets a new certificate from the new CA at the next start. |
 | `ROEDY_ACME_EMAIL` | – | `acme`: contact address for the account at the CA (optional; Let's Encrypt sends no expiry mails anymore). |
 | `ROEDY_ACME_AGREE_TOS` | `false` | `acme`: **required** `true` – you accept the CA's terms of service (Let's Encrypt: the Subscriber Agreement linked from its directory). Without it, `serve` refuses to start and says so. |
+| `ROEDY_ACME_CHALLENGE` | `tls-alpn-01` | `acme`: how the CA validates the domain. `tls-alpn-01`: the CA connects to the hub – TLS-ALPN-01 on the HTTPS port, HTTP-01 on `ROEDY_HTTP_LISTEN` after a failed validation. `dns-01`: the hub puts a TXT record at `_acme-challenge.<host>` with its DNS provider and the CA looks it up; no port has to be reachable from the CA ([DNS-01 with deSEC](#dns-01-with-desec)). |
+| `ROEDY_ACME_DNS_PROVIDER` | – | `dns-01`: **required**, the DNS provider that hosts the domain. Only `desec` ([deSEC](https://desec.io)) so far. |
+| `ROEDY_DESEC_TOKEN_FILE` | – | `desec`: file with deSEC's API token, e.g. a Docker secret (`/run/secrets/desec_token`); read at the start. Use a [scoped token](#dns-01-with-desec). The token never appears in the log, in error messages or in the audit log. |
+| `ROEDY_DESEC_TOKEN` | – | `desec`: the token itself, instead of `ROEDY_DESEC_TOKEN_FILE` (not both). Prefer the file: environment variables are visible to everyone who may inspect the container. |
 | `ROEDY_TLS_CERT_FILE` | – | `files`: the certificate chain in PEM, leaf first. Reloaded within 10 seconds when its content changes, without a restart; a replacement that cannot be used yet (not valid before a later time) or at all is logged and the previous certificate stays until it can. |
 | `ROEDY_TLS_KEY_FILE` | – | `files`: its private key in PEM (PKCS#8, SEC1 or PKCS#1; ECDSA, Ed25519 or RSA). |
 
@@ -246,11 +250,12 @@ the gateway's WebSockets use HTTP/1.1's `Upgrade`.
 **Ports and firewall.** In the container the hub runs as an unprivileged user and listens on `8443` (HTTPS) and `8080`
 (HTTP); publish them as `443` and `80`, e.g. `ports: ["443:8443", "80:8080"]` in Compose. Open both in the firewall.
 Port 80 is optional: the hub validates with TLS-ALPN-01 on port 443 first and falls back to HTTP-01 on port 80 only if
-that fails; without port 80 there is no redirect from `http://` either. Never publish the internal port `8081`.
+that fails; without port 80 there is no redirect from `http://` either. With `ROEDY_ACME_CHALLENGE=dns-01` the CA does
+not connect at all, and port 80 only serves the redirect. Never publish the internal port `8081`.
 
 **DNS.** Before the first start, the host of `ROEDY_PUBLIC_URL` must resolve (`A`, and `AAAA` if the server has IPv6)
-to the server, and ports 443 (and 80) must reach the hub from the internet: the CA connects to them to validate. A
-CAA record, if you have one, must allow the CA (`letsencrypt.org`).
+to the server, and ports 443 (and 80) must reach the hub from the internet: the CA connects to them to validate
+(not with DNS-01). A CAA record, if you have one, must allow the CA (`letsencrypt.org`).
 
 **Terms of service.** `ROEDY_TLS=acme` needs `ROEDY_ACME_AGREE_TOS=true`: by setting it you accept the CA's terms of
 service. The hub logs their address when it registers the account.
@@ -281,6 +286,67 @@ name) and be valid now; the start fails otherwise. The HTTP port only redirects 
 
 **Behind your own proxy.** Keep `ROEDY_TLS=off`, let the proxy terminate TLS and forward to `ROEDY_LISTEN`, and set
 `ROEDY_TRUST_PROXY`.
+
+### DNS-01 with deSEC
+
+With `ROEDY_ACME_CHALLENGE=dns-01` the CA validates the domain through a TXT record instead of connecting to the hub:
+the hub needs no open port for the CA – useful behind a firewall, before the DNS name points to the server, or
+without port 80. The domain must be hosted at [deSEC](https://desec.io) (the only DNS provider so far):
+
+```
+ROEDY_TLS=acme
+ROEDY_ACME_AGREE_TOS=true
+ROEDY_ACME_CHALLENGE=dns-01
+ROEDY_ACME_DNS_PROVIDER=desec
+ROEDY_DESEC_TOKEN_FILE=/run/secrets/desec_token
+```
+
+For each certificate the hub asks deSEC which of the account's domains owns `_acme-challenge.<host>`, adds the
+challenge value to that TXT record set (with the domain's minimum TTL), asks deSEC's name servers (the domain's `NS`
+records, directly on port 53 over UDP and TCP) until every one of them serves it – at most 5 minutes – and only then
+tells the CA to look. Afterwards, also after a failure, it removes its value again; other values in the record set
+stay. deSEC's throttling (`429`) is waited out for up to a minute; a longer wait (its hourly and daily limits) moves the
+attempt to the backoff above. The hub therefore needs outgoing HTTPS to `desec.io` and outgoing DNS (port 53) to
+deSEC's name servers.
+
+**A scoped token.** Give the hub a token that may write only this one record set, not the whole account. deSEC's
+token policies do this: create a token, give it a default policy without write permission, and a policy that allows
+writing the TXT records of `_acme-challenge.<host>` – the subname is the part before the domain, e.g.
+`_acme-challenge.hub` for `hub.example.com` in the domain `example.com` (`_acme-challenge` if the hub's host is the
+domain itself). With a token that may manage tokens (`$ADMIN_TOKEN`, e.g. from the deSEC web interface):
+
+```sh
+# The new token: its "id" and, only now, its secret ("token")
+curl -sS https://desec.io/api/v1/auth/tokens/ -H "Authorization: Token $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name": "roedy-hub acme"}'
+# Default policy first: read only
+curl -sS https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ -H "Authorization: Token $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"domain": null, "subname": null, "type": null}'
+# Then the one record set it may write
+curl -sS https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ -H "Authorization: Token $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"domain": "example.com", "subname": "_acme-challenge.hub", "type": "TXT", "perm_write": true}'
+```
+
+Such a token can still read the account's domains and records (the hub needs that to find the domain and its name
+servers), but change nothing else. You may also limit it to the server's addresses (`allowed_subnets` when creating
+it). Store its secret in a file readable only by the hub's user (`0400`, owner `65532` in the image) and pass it as a
+Docker secret:
+
+```yaml
+services:
+  roedy-hub:
+    environment:
+      ROEDY_DESEC_TOKEN_FILE: /run/secrets/desec_token
+    secrets: [desec_token]
+secrets:
+  desec_token:
+    file: ./desec_token
+```
+
+The hub reads the file at the start; after replacing the token, restart it. If deSEC refuses the token, the log says
+`deSEC answered 401 (the token is not valid)` or `403 (the token may not do this)` – check the policy's domain and
+subname.
 
 ## Data directory
 

@@ -3,8 +3,9 @@
 //! (nonces, JWS signatures, `url`, `kid`), and real validations – HTTP-01
 //! fetches the key authorization from the hub's HTTP listener, TLS-ALPN-01
 //! connects to its HTTPS listener with `acme-tls/1` and reads the challenge
-//! certificate. Knobs ([`Knobs`]) inject `badNonce`, rate limits and error
-//! documents, and set lifetimes and ARI windows.
+//! certificate, DNS-01 looks the TXT record up through the test's lookup
+//! ([`FakeAcme::dns`]). Knobs ([`Knobs`]) inject `badNonce`, rate limits and
+//! error documents, and set lifetimes and ARI windows.
 
 #![allow(dead_code, reason = "each test uses its own part")]
 #![allow(
@@ -162,7 +163,11 @@ struct Inner {
     /// Where the hub listens: HTTP (HTTP-01) and HTTPS (TLS-ALPN-01).
     http_target: Option<SocketAddr>,
     tls_target: Option<SocketAddr>,
+    /// DNS-01: the TXT records of a name.
+    dns: Option<DnsLookup>,
 }
+
+type DnsLookup = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct FakeAcme {
@@ -203,6 +208,7 @@ impl FakeAcme {
                 certificates: HashMap::new(),
                 http_target: None,
                 tls_target: None,
+                dns: None,
             })),
             ca_key: Arc::new(ca_key),
             ca_cert,
@@ -232,6 +238,11 @@ impl FakeAcme {
         let mut inner = self.lock();
         inner.http_target = http;
         inner.tls_target = tls;
+    }
+
+    /// How DNS-01 looks up TXT records.
+    pub fn dns(&self, lookup: impl Fn(&str) -> Vec<String> + Send + Sync + 'static) {
+        self.lock().dns = Some(Arc::new(lookup));
     }
 
     pub fn knobs(&self, change: impl FnOnce(&mut Knobs)) {
@@ -435,11 +446,12 @@ impl FakeAcme {
         key_authorization: &str,
         token: &str,
     ) -> Result<(), String> {
-        let (http_target, tls_target, fail) = {
+        let (http_target, tls_target, dns, fail) = {
             let inner = self.lock();
             (
                 inner.http_target,
                 inner.tls_target,
+                inner.dns.clone(),
                 inner.knobs.fail.contains(&kind),
             )
         };
@@ -501,6 +513,16 @@ impl FakeAcme {
                     return Err("wrong or non-critical acmeIdentifier".into());
                 }
                 info.signed_by(&info.spki).map_err(|e| e.to_string())
+            }
+            "dns-01" => {
+                let lookup = dns.ok_or("no DNS")?;
+                let name = format!("_acme-challenge.{domain}");
+                let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(key_authorization.as_bytes()));
+                let found = lookup(&name);
+                found
+                    .contains(&expected)
+                    .then_some(())
+                    .ok_or_else(|| format!("no TXT record with the digest at {name}: {found:?}"))
             }
             other => Err(format!("unknown type {other}")),
         }
