@@ -325,6 +325,29 @@ describe('Administration › Apps › an app', () => {
     expect(p.app?.access_default).toBe('selected');
   });
 
+  it('waits for a pending default save before reloading after a failed new code', async () => {
+    let save: (a: { body: unknown }) => void = () => {};
+    const { p, calls } = await app({
+      'GET admin/apps/mail': [
+        { body: { app: pairedApp() } },
+        { body: { app: pairedApp({ access_default: 'selected' }) } },
+      ],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [() => new Promise((r) => (save = r))],
+      'POST admin/apps/mail/pairing-code': [{ status: 500, body: { error: 'internal' } }],
+    });
+    const gets = () => calls.filter((c) => c.method === 'GET' && c.path === 'admin/apps/mail').length;
+    p.setDefault('selected');
+    await p.newCode();
+    expect(ui.toast).toMatchObject({ error: true });
+    // The save is still on its way: a reload now could read the old default and overwrite the saved one.
+    expect(gets()).toBe(1);
+    save({ body: { app: pairedApp({ access_default: 'selected' }) } });
+    await vi.waitFor(() => expect(gets()).toBe(2));
+    await tick();
+    expect(p.app?.access_default).toBe('selected');
+  });
+
   it('drops a load that started before a default change', async () => {
     let late: (a: { body: unknown }) => void = () => {};
     const { p } = await app({
