@@ -1,7 +1,10 @@
-//! Table `app_access`: which user may use which app, with which role from
-//! the app's manifest (docs/app-contract.md › Access and roles). No row, no
-//! access. Every change gives the app `access.changed` (`events`) in the
-//! same transaction.
+//! Tables `app_access` and `invitation_access`: which user may use which
+//! app, with which role from the app's manifest (docs/app-contract.md ›
+//! Access and roles), and what an invitation will give. No row in
+//! `app_access`, no access. Every change gives the app `access.changed`
+//! (`events`) in the same transaction.
+
+use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::{Connection, OptionalExtension as _};
 
@@ -10,6 +13,7 @@ use roedy_hub_contract::Manifest;
 use crate::db::{
     self,
     repo::{
+        apps::{self, AccessDefault, App, Status},
         events,
         users::{self, Profile},
     },
@@ -201,6 +205,225 @@ pub fn role_of(conn: &Connection, user_id: &str, app_id: &str) -> rusqlite::Resu
         |row| row.get(0),
     )
     .optional()
+}
+
+/// What [`set`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The access was already as asked.
+    Unchanged,
+    /// Changed; the role before (`None`: no access before).
+    Changed { previous: Option<String> },
+}
+
+/// Sets one user's access to one app: with `role` access with that role,
+/// without none. Gives the app `access.changed` when anything changed. The
+/// caller checks that the app is paired and has the role.
+pub fn set(
+    conn: &Connection,
+    user_id: &str,
+    app_id: &str,
+    role: Option<&str>,
+) -> rusqlite::Result<Outcome> {
+    db::atomic(conn, |conn| {
+        let previous = role_of(conn, user_id, app_id)?;
+        if previous.as_deref() == role {
+            return Ok(Outcome::Unchanged);
+        }
+        match role {
+            Some(role) => conn.execute(
+                "INSERT INTO app_access (user_id, app_id, app_role) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (user_id, app_id) DO UPDATE SET app_role = excluded.app_role",
+                (user_id, app_id, role),
+            )?,
+            None => conn.execute(
+                "DELETE FROM app_access WHERE user_id = ?1 AND app_id = ?2",
+                (user_id, app_id),
+            )?,
+        };
+        events::access_changed(conn, app_id, user_id, role)?;
+        Ok(Outcome::Changed { previous })
+    })
+}
+
+/// Every user's roles in the paired apps: user ID → slug → role.
+pub fn all_by_user(
+    conn: &Connection,
+) -> rusqlite::Result<HashMap<String, BTreeMap<String, String>>> {
+    let mut all: HashMap<String, BTreeMap<String, String>> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT x.user_id, a.slug, x.app_role FROM app_access x \
+         JOIN apps a ON a.id = x.app_id WHERE a.state = 'paired'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (user, slug, role) = row?;
+        all.entry(user).or_default().insert(slug, role);
+    }
+    Ok(all)
+}
+
+/// One user's roles in the paired apps: slug → role.
+pub fn of_user(conn: &Connection, user_id: &str) -> rusqlite::Result<BTreeMap<String, String>> {
+    conn.prepare(
+        "SELECT a.slug, x.app_role FROM app_access x \
+         JOIN apps a ON a.id = x.app_id WHERE a.state = 'paired' AND x.user_id = ?1",
+    )?
+    .query_map([user_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
+/// The number of users with access, by app ID.
+pub fn counts(conn: &Connection) -> rusqlite::Result<HashMap<String, u64>> {
+    conn.prepare("SELECT app_id, count(*) FROM app_access GROUP BY app_id")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+            ))
+        })?
+        .collect()
+}
+
+/// A user and their role in one app (`None`: no access).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserAccess {
+    pub profile: Profile,
+    pub active: bool,
+    pub app_role: Option<String>,
+}
+
+/// Every user (active and locked) with their role in the app, ordered by
+/// name.
+pub fn users_of(conn: &Connection, app_id: &str) -> rusqlite::Result<Vec<UserAccess>> {
+    conn.prepare(
+        "SELECT u.id, u.username, u.email, u.display_name, u.role, u.status, x.app_role \
+         FROM users u LEFT JOIN app_access x ON x.user_id = u.id AND x.app_id = ?1 \
+         ORDER BY u.display_name COLLATE NOCASE, u.id",
+    )?
+    .query_map([app_id], |row| {
+        let (profile, active) = users::profile(row)?;
+        Ok(UserAccess {
+            profile,
+            active,
+            app_role: row.get(6)?,
+        })
+    })?
+    .collect()
+}
+
+/// What an invitation chose per app ID: a role or `None` for "no access".
+/// Apps without an entry get their default.
+pub type Choices = HashMap<String, Option<String>>;
+
+/// The choices of one invitation.
+pub fn choices(conn: &Connection, invitation_id: &str) -> rusqlite::Result<Choices> {
+    conn.prepare("SELECT app_id, app_role FROM invitation_access WHERE invitation_id = ?1")?
+        .query_map([invitation_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+
+/// The choices of every invitation, by invitation ID.
+pub fn all_choices(conn: &Connection) -> rusqlite::Result<HashMap<String, Choices>> {
+    let mut all: HashMap<String, Choices> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT invitation_id, app_id, app_role FROM invitation_access")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (invitation, app, role) = row?;
+        all.entry(invitation).or_default().insert(app, role);
+    }
+    Ok(all)
+}
+
+/// Stores the invitation's choice for one app; returns the access the
+/// invitation gave before ([`effective`] for that app) if it changes.
+pub fn set_choice(
+    conn: &Connection,
+    invitation_id: &str,
+    app: &App,
+    role: Option<&str>,
+) -> rusqlite::Result<Outcome> {
+    db::atomic(conn, |conn| {
+        let before = choices(conn, invitation_id)?;
+        let previous = effective_for(app, before.get(&app.id));
+        conn.execute(
+            "INSERT INTO invitation_access (invitation_id, app_id, app_role) VALUES (?1, ?2, ?3) \
+             ON CONFLICT (invitation_id, app_id) DO UPDATE SET app_role = excluded.app_role",
+            (invitation_id, &app.id, role),
+        )?;
+        Ok(if previous.as_deref() == role {
+            Outcome::Unchanged
+        } else {
+            Outcome::Changed { previous }
+        })
+    })
+}
+
+/// The role the choice gives in a paired app: the chosen role while the
+/// manifest still has it (else its default role), none for "no access",
+/// and without a choice the app's default ("everyone": the default role).
+pub fn effective_for(app: &App, choice: Option<&Option<String>>) -> Option<String> {
+    let manifest = app
+        .manifest
+        .as_ref()
+        .filter(|_| app.status == Status::Paired)?;
+    let default = || manifest.default_role().map(|role| role.id.clone());
+    match choice {
+        Some(Some(role)) if manifest.has_role(role) => Some(role.clone()),
+        Some(Some(_)) => default(),
+        Some(None) => None,
+        None if app.access_default == AccessDefault::All => default(),
+        None => None,
+    }
+}
+
+/// What the choices give in the paired apps of `apps`: slug → role.
+pub fn effective(apps: &[App], choices: Option<&Choices>) -> BTreeMap<String, String> {
+    apps.iter()
+        .filter_map(|app| {
+            let choice = choices.and_then(|choices| choices.get(&app.id));
+            effective_for(app, choice).map(|role| (app.slug.clone(), role))
+        })
+        .collect()
+}
+
+/// Access for a user who accepted an invitation: what the invitation chose,
+/// the default for the other apps (instead of [`grant_to_new_user`]).
+/// Returns slug → role of the access granted.
+pub fn grant_invited(
+    conn: &Connection,
+    user_id: &str,
+    invitation_id: &str,
+) -> rusqlite::Result<BTreeMap<String, String>> {
+    db::atomic(conn, |conn| {
+        let chosen = choices(conn, invitation_id)?;
+        let mut granted = BTreeMap::new();
+        let mut paired: Vec<App> = apps::list(conn)?
+            .into_iter()
+            .filter(|app| app.status == Status::Paired)
+            .collect();
+        // Events in the order of `grant_to_new_user`: by app ID.
+        paired.sort_by(|a, b| a.id.cmp(&b.id));
+        for app in &paired {
+            if let Some(role) = effective_for(app, chosen.get(&app.id)) {
+                set(conn, user_id, &app.id, Some(&role))?;
+                granted.insert(app.slug.clone(), role);
+            }
+        }
+        Ok(granted)
+    })
 }
 
 #[cfg(test)]

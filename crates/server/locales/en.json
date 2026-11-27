@@ -1,5 +1,13 @@
 {
+  "audit.apps.access_default.all": " set {slug} to give every new user access",
+  "audit.apps.access_default.selected": " set {slug} to give new users access only when chosen",
+  "audit.apps.access_grant": " gave {name} access to {slug} with the role {app_role}",
+  "audit.apps.access_revoke": " removed the access of {name} to {slug}",
+  "audit.apps.access_role": " changed the role of {name} in {slug} to {app_role}",
   "audit.apps.create": " added the app {slug}",
+  "audit.apps.invite_access": " set the invitation to {email} to give access to {slug} with the role {app_role}",
+  "audit.apps.invite_access.none": " set the invitation to {email} to give no access to {slug}",
+  "audit.apps.order": " changed the order of the apps",
   "audit.apps.pair": ": App {slug} paired, version {version}",
   "audit.apps.pairing_code": " created a pairing code for {slug}",
   "audit.apps.remove": " removed the app {slug}",

@@ -3,8 +3,10 @@
 //! - [`SessionCache`]: the signed-in user of a session cookie with their
 //!   language and roles in the apps, kept for [`TTL`], so that the requests
 //!   for an app's assets do not each cost a database round trip.
-//! - [`Streams`]: the open responses and WebSockets per session. Ending a
-//!   session ([`Streams::end_session`], [`Streams::end_user`]) closes them;
+//! - [`Streams`]: the open responses and WebSockets per session and app.
+//!   Ending a session ([`Streams::end_session`], [`Streams::end_user`])
+//!   closes them, losing the access to an app ([`Streams::end_user_app`])
+//!   those to that app;
 //!   the job `gateway_streams` ends those of sessions that ended without the
 //!   hub's API (expiry, `roedy-hub reset-admin`, the limit of sessions per
 //!   user) within seconds (contract § 3.5: within 5 s).
@@ -126,17 +128,29 @@ impl SessionCache {
 }
 
 struct Open {
-    /// Tells this entry from a later one of the same session.
+    /// Tells this entry from a later one of the same session and app.
     id: u64,
     user_id: String,
-    /// Responses and WebSockets of the session that are still open.
+    /// Responses and WebSockets of the session to the app that are still
+    /// open.
     count: usize,
     ended: watch::Sender<bool>,
 }
 
-/// Open responses and WebSockets by session ID.
+/// Session ID and app ID of a stream.
+type Key = (String, String);
+
+/// Who a stream belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Owner<'a> {
+    pub sid: &'a str,
+    pub user_id: &'a str,
+    pub app_id: &'a str,
+}
+
+/// Open responses and WebSockets by session and app.
 pub struct Streams {
-    open: Mutex<HashMap<String, Open>>,
+    open: Mutex<HashMap<Key, Open>>,
     next_id: AtomicU64,
     /// `true` once the server shuts down: every stream ends.
     shutdown: watch::Sender<bool>,
@@ -153,20 +167,21 @@ impl Default for Streams {
 }
 
 impl Streams {
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, Open>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<Key, Open>> {
         self.open.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Registers a stream of the session `sid` of `user_id` (or of a request
-    /// without a session); the stream ends when [`Watch::ended`] does.
-    pub fn watch(self: &Arc<Self>, session: Option<(&str, &str)>) -> Watch {
+    /// Registers a stream of a session to an app (`None`: a request without
+    /// a session); the stream ends when [`Watch::ended`] does.
+    pub fn watch(self: &Arc<Self>, owner: Option<Owner<'_>>) -> Watch {
         let shutdown = self.shutdown.subscribe();
-        let (session_ended, guard) = match session {
-            Some((sid, user_id)) => {
+        let (session_ended, guard) = match owner {
+            Some(owner) => {
+                let key = (owner.sid.to_owned(), owner.app_id.to_owned());
                 let mut open = self.lock();
-                let entry = open.entry(sid.to_owned()).or_insert_with(|| Open {
+                let entry = open.entry(key.clone()).or_insert_with(|| Open {
                     id: self.next_id.fetch_add(1, Ordering::Relaxed),
-                    user_id: user_id.to_owned(),
+                    user_id: owner.user_id.to_owned(),
                     count: 0,
                     ended: watch::Sender::new(false),
                 });
@@ -176,7 +191,7 @@ impl Streams {
                     Some(receiver),
                     Some(Guard {
                         streams: self.clone(),
-                        sid: sid.to_owned(),
+                        key,
                         id: entry.id,
                     }),
                 )
@@ -205,23 +220,31 @@ impl Streams {
         }
     }
 
+    /// Ends the streams that `ends` selects.
+    fn end(&self, ends: impl Fn(&Key, &Open) -> bool) {
+        self.lock().retain(|key, open| {
+            let ending = ends(key, open);
+            if ending {
+                open.ended.send_replace(true);
+            }
+            !ending
+        });
+    }
+
     /// Ends the streams of the session `sid`.
     pub fn end_session(&self, sid: &str) {
-        if let Some(open) = self.lock().remove(sid) {
-            open.ended.send_replace(true);
-        }
+        self.end(|(open_sid, _), _| open_sid == sid);
     }
 
     /// Ends the streams of every session of `user_id` except `keep`.
     pub fn end_user(&self, user_id: &str, keep: Option<&str>) {
-        let mut open = self.lock();
-        open.retain(|sid, open| {
-            let ends = open.user_id == user_id && Some(sid.as_str()) != keep;
-            if ends {
-                open.ended.send_replace(true);
-            }
-            !ends
-        });
+        self.end(|(sid, _), open| open.user_id == user_id && Some(sid.as_str()) != keep);
+    }
+
+    /// Ends the streams of every session of `user_id` to the app `app_id`:
+    /// the user lost the access to it.
+    pub fn end_user_app(&self, user_id: &str, app_id: &str) {
+        self.end(|(_, app), open| open.user_id == user_id && app == app_id);
     }
 
     /// Ends every stream (shutdown).
@@ -232,26 +255,29 @@ impl Streams {
         }
     }
 
-    /// The sessions with open streams.
+    /// The sessions with open streams, sorted.
     pub fn sessions(&self) -> Vec<String> {
-        self.lock().keys().cloned().collect()
+        let mut sessions: Vec<String> = self.lock().keys().map(|(sid, _)| sid.clone()).collect();
+        sessions.sort();
+        sessions.dedup();
+        sessions
     }
 }
 
-/// Removes a session's entry once its last stream is gone.
+/// Removes an entry once its last stream is gone.
 struct Guard {
     streams: Arc<Streams>,
-    sid: String,
+    key: Key,
     id: u64,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
         let mut open = self.streams.lock();
-        if let Some(entry) = open.get_mut(&self.sid).filter(|entry| entry.id == self.id) {
+        if let Some(entry) = open.get_mut(&self.key).filter(|entry| entry.id == self.id) {
             entry.count = entry.count.saturating_sub(1);
             if entry.count == 0 {
-                open.remove(&self.sid);
+                open.remove(&self.key);
             }
         }
     }
@@ -336,17 +362,26 @@ mod tests {
         watch.poll_ended(&mut Context::from_waker(waker)).is_ready()
     }
 
+    fn owner<'a>(sid: &'a str, user_id: &'a str) -> Option<Owner<'a>> {
+        Some(Owner {
+            sid,
+            user_id,
+            app_id: "app",
+        })
+    }
+
     #[test]
     fn streams_end_with_their_session() {
         let streams = Arc::new(Streams::default());
-        let mut a1 = streams.watch(Some(("s1", "u1")));
-        let mut a2 = streams.watch(Some(("s1", "u1")));
-        let mut b = streams.watch(Some(("s2", "u1")));
-        let mut c = streams.watch(Some(("s3", "u2")));
+        let mut a1 = streams.watch(owner("s1", "u1"));
+        let mut a2 = streams.watch(Some(Owner {
+            app_id: "other",
+            ..owner("s1", "u1").unwrap()
+        }));
+        let mut b = streams.watch(owner("s2", "u1"));
+        let mut c = streams.watch(owner("s3", "u2"));
         let mut anonymous = streams.watch(None);
-        let mut open = streams.sessions();
-        open.sort();
-        assert_eq!(open, ["s1", "s2", "s3"]);
+        assert_eq!(streams.sessions(), ["s1", "s2", "s3"]);
         assert!(!ended(&mut a1) && !ended(&mut anonymous));
 
         streams.end_session("s1");
@@ -369,19 +404,35 @@ mod tests {
     }
 
     #[test]
+    fn streams_end_with_the_access_to_their_app() {
+        let streams = Arc::new(Streams::default());
+        let mut a = streams.watch(owner("s1", "u1"));
+        let mut b = streams.watch(owner("s2", "u1"));
+        let mut other = streams.watch(Some(Owner {
+            app_id: "other",
+            ..owner("s1", "u1").unwrap()
+        }));
+        let mut c = streams.watch(owner("s3", "u2"));
+        streams.end_user_app("u1", "app");
+        assert!(ended(&mut a) && ended(&mut b));
+        assert!(!ended(&mut other) && !ended(&mut c));
+        assert_eq!(streams.sessions(), ["s1", "s3"]);
+    }
+
+    #[test]
     fn closed_streams_unregister() {
         let streams = Arc::new(Streams::default());
-        let a = streams.watch(Some(("s1", "u1")));
-        let b = streams.watch(Some(("s1", "u1")));
+        let a = streams.watch(owner("s1", "u1"));
+        let b = streams.watch(owner("s1", "u1"));
         drop(a);
         assert_eq!(streams.sessions(), ["s1"]);
         drop(b);
         assert!(streams.sessions().is_empty());
         // A stream that outlives the end of its session unregisters
         // without touching a newer entry of the same ID.
-        let old = streams.watch(Some(("s1", "u1")));
+        let old = streams.watch(owner("s1", "u1"));
         streams.end_session("s1");
-        let _new = streams.watch(Some(("s1", "u1")));
+        let _new = streams.watch(owner("s1", "u1"));
         drop(old);
         assert_eq!(streams.sessions(), ["s1"]);
     }

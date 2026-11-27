@@ -12,6 +12,7 @@ pub mod branding;
 pub mod email;
 pub mod error;
 pub mod health;
+pub mod home;
 pub mod invites;
 pub mod me;
 pub mod mfa;
@@ -62,6 +63,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(public::routes())
         .merge(system_mail::routes())
         .merge(session::routes())
+        .merge(home::routes())
         .merge(me::routes())
         .merge(mfa::routes())
         .merge(sessions::routes())

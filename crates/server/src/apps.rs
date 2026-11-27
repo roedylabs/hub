@@ -44,6 +44,8 @@ pub struct App {
     pub manifest: Option<Arc<Manifest>>,
     pub access_default: AccessDefault,
     pub health: Option<Health>,
+    /// [`icon_version`] of the manifest's icon; `None` while pending.
+    pub icon_version: Option<String>,
 }
 
 impl App {
@@ -63,6 +65,7 @@ impl App {
             slug: row.slug,
             internal_url,
             status: row.status,
+            icon_version: row.manifest.as_ref().map(icon_version),
             manifest: row.manifest.map(Arc::new),
             access_default: row.access_default,
             health: row.health,
@@ -127,6 +130,27 @@ impl AppTable {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// The version of the manifest's (sanitized) icon for `?v=` in its URL: the
+/// first 16 hex digits of its SHA-256, so that the URL changes with the
+/// icon.
+pub fn icon_version(manifest: &Manifest) -> String {
+    use std::fmt::Write as _;
+
+    Sha256::digest(manifest.icon.as_bytes())
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
+/// The browser's address of the app's icon (contract § 6), with the
+/// version: `/api/v1/apps/<slug>/icon.svg?v=<version>`.
+pub fn icon_url(slug: &str, manifest: &Manifest) -> String {
+    format!("/api/v1/apps/{slug}/icon.svg?v={}", icon_version(manifest))
 }
 
 /// Why a slug is not accepted: `invalid` (format) or `reserved`.

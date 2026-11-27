@@ -82,7 +82,8 @@ pub fn invalid_credentials() -> ApiError {
 /// The paired app whose secret the request carries
 /// (`Authorization: Bearer rhs_…`), and the secret's hash – a change checks
 /// it again in its transaction, since pairing anew replaces the secret;
-/// otherwise [`invalid_credentials`].
+/// otherwise [`invalid_credentials`]. Records the contact
+/// (`apps.contacted_at`, at most once a minute).
 #[derive(Debug, Clone)]
 pub struct PairedApp(pub App, pub [u8; 32]);
 
@@ -107,7 +108,12 @@ impl FromRequestParts<AppState> for PairedApp {
             .ok_or_else(invalid_credentials)?;
         let hash = apps::hash(secret);
         db::call(&state.db, move |conn| {
-            Ok(db::repo::apps::by_secret_hash(conn, &hash)?)
+            let app = db::repo::apps::by_secret_hash(conn, &hash)?;
+            // "Last contact" in the administration.
+            if let Some(app) = &app {
+                db::repo::apps::touch_contact(conn, &app.id)?;
+            }
+            Ok(app)
         })
         .await?
         .map(|app| Self(app, hash))

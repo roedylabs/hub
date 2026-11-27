@@ -60,7 +60,7 @@ use url::Url;
 use self::{
     client::{AppClient, Upload},
     headers::Forward,
-    sessions::{SessionCache, Signed, Streams, Watch},
+    sessions::{Owner, SessionCache, Signed, Streams, Watch},
 };
 use crate::{
     app::AppState,
@@ -539,15 +539,17 @@ async fn forward(
         );
         return Err(GatewayError::Unreachable);
     }
-    let watch = gateway
-        .streams
-        .watch(signed.map(|signed| (signed.user.session_id.as_str(), signed.user.id.as_str())));
-    // A session that ended since it was read (while the app answered) had
-    // no stream to close yet.
+    let watch = gateway.streams.watch(signed.map(|signed| Owner {
+        sid: &signed.user.session_id,
+        user_id: &signed.user.id,
+        app_id: &app.id,
+    }));
+    // A session that ended, or an access that went, since it was read
+    // (while the app answered) had no stream to close yet.
     if let Some(signed) = signed
         && gateway.sessions.generation() != generation
     {
-        still_valid(state, &signed.user.session_id).await;
+        still_valid(state, app, signed).await;
     }
     let app_upgrade = switching.then(|| hyper::upgrade::on(&mut from_app));
     let (mut parts, incoming) = from_app.into_parts();
@@ -577,15 +579,29 @@ async fn forward(
     Ok(response)
 }
 
-/// A session ended while its request waited for the app – before its
-/// stream was registered, so nothing closed it: checks the session and ends
-/// it (and the new stream) if it is no longer valid. If the check fails, the
-/// stream ends too.
-async fn still_valid(state: &AppState, sid: &str) {
-    let id = vec![sid.to_owned()];
-    let valid = db::call(&state.db, move |conn| Ok(repo::valid_among(conn, &id)?)).await;
+/// A session ended, or the user lost the access to the app, while its
+/// request waited for the app – before its stream was registered, so
+/// nothing closed it: checks the session and the access and ends the
+/// session (and the new stream), or the user's streams to the app, if they
+/// no longer hold. If the check fails, the stream ends too.
+async fn still_valid(state: &AppState, app: &App, signed: &Signed) {
+    let sid = signed.user.session_id.as_str();
+    let ids = vec![sid.to_owned()];
+    let (user_id, app_id) = (signed.user.id.clone(), app.id.clone());
+    // A pending app has no access entries: hub administrators reach it.
+    let paired = app.status == Status::Paired;
+    let valid = db::call(&state.db, move |conn| {
+        let session = repo::valid_among(conn, &ids)?;
+        let access = !paired || app_access::role_of(conn, &user_id, &app_id)?.is_some();
+        Ok((session, access))
+    })
+    .await;
     match valid {
-        Ok(valid) if valid.contains(sid) => {}
+        Ok((valid, access)) if valid.contains(sid) => {
+            if !access {
+                state.gateway.streams.end_user_app(&signed.user.id, &app.id);
+            }
+        }
         Ok(_) => state.end_session(sid),
         Err(error) => {
             tracing::warn!("session not checked again, stream closed: {error:#}");
@@ -802,6 +818,7 @@ mod tests {
             manifest: None,
             access_default: crate::db::repo::apps::AccessDefault::All,
             health: None,
+            icon_version: None,
         }
     }
 

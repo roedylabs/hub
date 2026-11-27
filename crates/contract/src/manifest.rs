@@ -186,6 +186,11 @@ impl Manifest {
     pub fn name_in(&self, lang: &str) -> &str {
         text_in(&self.name, lang)
     }
+
+    /// The description in `lang`, else in English.
+    pub fn description_in(&self, lang: &str) -> &str {
+        text_in(&self.description, lang)
+    }
 }
 
 /// The text in `lang`, else in English (always there after

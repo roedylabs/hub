@@ -277,6 +277,59 @@ fn known(row: &Row, lang: Language) -> Option<Line> {
         )
         .warn(),
         "apps.remove" => with("ti-trash", "slug", &p.text("slug")?),
+        "apps.order" => plain("ti-arrows-sort"),
+        "apps.access_default" => Line::new(
+            "ti-users-group",
+            act(
+                match p.text("access_default")? {
+                    variant @ ("all" | "selected") => Some(variant),
+                    _ => return None,
+                },
+                &[("slug", &p.text("slug")?)],
+            ),
+        ),
+        "apps.access_grant" | "apps.access_role" => Line::new(
+            if action == "apps.access_grant" {
+                "ti-user-plus"
+            } else {
+                "ti-user-cog"
+            },
+            act(
+                None,
+                &[
+                    ("name", &p.text("name")?),
+                    ("slug", &p.text("slug")?),
+                    ("app_role", &p.text("app_role")?),
+                ],
+            ),
+        ),
+        "apps.access_revoke" => Line::new(
+            "ti-user-minus",
+            act(
+                None,
+                &[("name", &p.text("name")?), ("slug", &p.text("slug")?)],
+            ),
+        ),
+        "apps.invite_access" => match p.text("app_role") {
+            Some(app_role) => Line::new(
+                "ti-user-cog",
+                act(
+                    None,
+                    &[
+                        ("email", &p.text("email")?),
+                        ("slug", &p.text("slug")?),
+                        ("app_role", &app_role),
+                    ],
+                ),
+            ),
+            None => Line::new(
+                "ti-user-cog",
+                act(
+                    Some("none"),
+                    &[("email", &p.text("email")?), ("slug", &p.text("slug")?)],
+                ),
+            ),
+        },
         // Settings
         "org.update" => plain("ti-building"),
         "branding.update" => plain("ti-brush"),
@@ -347,7 +400,7 @@ mod tests {
 
     /// All action keys the hub writes, with their category. A new key
     /// belongs here and in both locale files.
-    const ACTIONS: [(&str, Category); 45] = {
+    const ACTIONS: [(&str, Category); 51] = {
         use Category::{Apps, Login, Settings, System, Users};
         [
             ("auth.login", Login),
@@ -386,6 +439,12 @@ mod tests {
             ("apps.update", Apps),
             ("apps.roles_fallback", Apps),
             ("apps.remove", Apps),
+            ("apps.order", Apps),
+            ("apps.access_default", Apps),
+            ("apps.access_grant", Apps),
+            ("apps.access_role", Apps),
+            ("apps.access_revoke", Apps),
+            ("apps.invite_access", Apps),
             ("org.update", Settings),
             ("branding.update", Settings),
             ("system_mail.update", Settings),
@@ -406,6 +465,7 @@ mod tests {
             "sessions_ended": 2, "name": "Mia Example", "role": "admin",
             "user": "Anna Example", "days": 365, "count": 2,
             "slug": "mail", "version": "1.2.0", "roles": ["owner", "viewer"],
+            "access_default": "all", "app_role": "user",
         })
     }
 
@@ -416,6 +476,7 @@ mod tests {
             "sessions_ended": 1, "name": "Mia Example", "role": "user",
             "user": "Anna Example", "days": 30, "count": 1,
             "slug": "notes", "version": "0.1.0", "roles": ["editor"],
+            "access_default": "selected", "app_role": "editor",
         })
     }
 
@@ -540,6 +601,54 @@ mod tests {
                 Apps,
                 json!({ "slug": "mail", "roles": ["owner", "viewer"] }),
                 ": Roles removed from mail, their users now have the default role: owner, viewer",
+            ),
+            (
+                "apps.order",
+                Apps,
+                json!({}),
+                " changed the order of the apps",
+            ),
+            (
+                "apps.access_default",
+                Apps,
+                json!({ "slug": "mail", "access_default": "all" }),
+                " set mail to give every new user access",
+            ),
+            (
+                "apps.access_default",
+                Apps,
+                json!({ "slug": "mail", "access_default": "selected" }),
+                " set mail to give new users access only when chosen",
+            ),
+            (
+                "apps.access_grant",
+                Apps,
+                json!({ "name": "Mia Example", "slug": "mail", "app_role": "user" }),
+                " gave Mia Example access to mail with the role user",
+            ),
+            (
+                "apps.access_role",
+                Apps,
+                json!({ "name": "Mia Example", "slug": "mail", "app_role": "admin" }),
+                " changed the role of Mia Example in mail to admin",
+            ),
+            (
+                "apps.access_revoke",
+                Apps,
+                json!({ "name": "Mia Example", "slug": "mail", "app_role": null }),
+                " removed the access of Mia Example to mail",
+            ),
+            (
+                "apps.invite_access",
+                Apps,
+                json!({ "email": "jonas@example.com", "slug": "mail", "app_role": "user" }),
+                " set the invitation to jonas@example.com to give access to mail with the role user",
+            ),
+            (
+                "apps.invite_access",
+                Apps,
+                json!({ "email": "jonas@example.com", "slug": "mail", "app_role": null }),
+                " set the invitation to jonas@example.com to give no access to mail",
             ),
         ] {
             assert_eq!(shown_en(action, category, details).act, act, "{action}");
