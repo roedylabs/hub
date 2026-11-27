@@ -2,7 +2,8 @@
 
 | Workflow | Runs on | What it does |
 | --- | --- | --- |
-| [CI](ci.yml) | PR, merge queue, main, weekly | Lint (ESLint, Prettier, ShellCheck, actionlint), web app (types, tests, build), server (rustfmt, Clippy, tests), dependencies (cargo deny, licenses) |
+| [CI](ci.yml) | PR, merge queue, main, weekly | Lint (ESLint, Prettier, ShellCheck, actionlint), web app (types, tests, build), server (rustfmt, Clippy, tests), dependencies (cargo deny, licenses), image (amd64 build, size ≤ 25 MB, smoke test with idle memory ≤ 40 MB, Compose setup) |
+| [Release](release.yml) | tag `v*`, manually | Both platforms, size, smoke test, Trivy; on tags: push to ghcr.io with SBOM and provenance, cosign, attestations, GitHub release |
 | [Pull request](pr.yml) | PR | Conventional Commit title, dependency review |
 | [CodeQL](codeql.yml) | PR, main, weekly | Code scanning of workflows, TypeScript and Rust |
 | [Scorecard](scorecard.yml) | main, weekly | OpenSSF Scorecard |
@@ -24,6 +25,8 @@ until the ruleset is updated as well:
 - Every job has a `timeout-minutes`, every step a `name`.
 - Checkouts use `persist-credentials: false`.
 - Shared setup lives in composite actions in [`../actions/`](../actions):
-  `setup-node` (pnpm, Node.js, `pnpm install`) and `setup-rust` (stable
-  toolchain, build cache written only on main).
+  `setup-node` (pnpm, Node.js, `pnpm install`), `setup-rust` (stable
+  toolchain, build cache written only on main), `setup-dist` (musl targets,
+  Zig, cargo-zigbuild, cargo-auditable for `just dist`) and `setup-buildx`
+  (Buildx with the BuildKit image pinned in `../buildkit/Dockerfile`).
 - Pull request runs are cancelled by newer pushes; runs on main and tags are not.

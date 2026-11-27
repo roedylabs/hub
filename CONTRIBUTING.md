@@ -30,6 +30,10 @@ Common tasks are in the [`justfile`](justfile) (`pnpm exec just …` if [just](h
 | Command | What it does |
 |---|---|
 | `just check` | All checks below |
+| `just dist [<targets>]` | Web app and static musl binaries to `dist/` (needs Zig, cargo-zigbuild, cargo-auditable and the rustup targets) |
+| `just image` / `just smoke` | Image for the local platform from `dist/` and its smoke test with the budgets |
+| `just dist-example`, `just image-example`, `just smoke-compose` | The example app's image and the smoke test of `deploy/compose.yml` |
+| `just release <version>` / `just release-tag <version>` | Release PR, then the tag on `main` ([`release.yml`](.github/workflows/release.yml)) |
 
 ## Checks
 
@@ -58,7 +62,9 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
-| `scripts/` | Git hooks and developer tooling |
+| `deploy/` | Docker Compose setup with Caddy (`compose.yml`, `Caddyfile`, `.env.example`), the test override with the example app |
+| `Dockerfile` | The image: packages `dist/<arch>/roedy-hub` on `scratch` |
+| `scripts/` | Git hooks, smoke tests of the image and the Compose setup, release script and developer tooling |
 
 ## Conventions
 
@@ -67,7 +73,7 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 - **Accessibility:** every interactive element must be usable with the keyboard and a screen reader, in the light and the dark theme.
 - **Database:** never edit an existing migration; add a new one.
 - **Dependencies:** keep the hub lightweight (image ≤ 25 MB, idle memory ≤ 40 MB). Justify new dependencies in the PR. Libraries that end up in the browser bundle belong in `dependencies`, build and test tools in `devDependencies`.
-- **Pinning:** GitHub Actions by full commit SHA; Dependabot keeps them current. `scripts/action-pins.test.mjs` checks it in `pnpm test`.
+- **Pinning:** GitHub Actions by full commit SHA, Docker images in Dockerfiles by tag and digest; Dependabot keeps them current. `scripts/action-pins.test.mjs` and `scripts/docker-pins.test.mjs` check it in `pnpm test`.
 - **Origin of code:** code from [Roedy Mail](https://github.com/roedylabs/mail) (same project, same licence) may be taken over and adapted; say so in the module comment. Do not copy code from other projects.
 
 ## Commits and pull requests

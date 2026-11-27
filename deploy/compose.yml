@@ -1,0 +1,174 @@
+# Roedy Hub with Caddy (and Roedy Mail) under one origin – a production setup
+# (docs/ops.md › Installation; taken over from Roedy Mail's deploy/compose.yml,
+# ../mail). Only Caddy is published. The containers talk over two private
+# networks:
+#
+#   edge  Caddy ⇄ hub's public port 8080
+#   apps  hub ⇄ apps (their port 8080, the hub's internal listener 8081)
+#
+# The hub's internal listener binds to the hub's fixed address on `apps` only:
+# the apps reach it, Caddy (only on `edge`) does not, and nothing publishes it.
+# The apps are not on `edge`, so only the hub reaches them.
+#
+#   cp .env.example .env && chmod 600 .env     # then set ROEDY_PUBLIC_URL
+#   docker compose up -d
+#   docker compose logs roedy-hub | grep Setup-Token
+#
+# Settings come from environment variables or the .env file next to this file;
+# .env.example is the template (all variables: docs/ops.md › Configuration).
+# Empty values count as unset. deploy/compose.test.yml adds the example app for
+# tests.
+
+name: roedy
+
+services:
+  caddy:
+    # Caddy 2 follows its patches and minor versions; pin e.g. CADDY_IMAGE_TAG=2.10
+    # for predictable updates.
+    image: caddy:${CADDY_IMAGE_TAG:-2}
+    container_name: roedy-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      # Site address in deploy/Caddyfile: the hub's public address.
+      CADDY_SITE: ${CADDY_SITE:-${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL in .env, e.g. https://app.example.com}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # certificates: keep them, or Let's Encrypt's limits apply
+      - caddy-config:/config
+    networks:
+      - edge
+    # Caddy runs as root in its image; it only needs to bind ports 80 and 443.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      roedy-hub:
+        condition: service_healthy
+
+  roedy-hub:
+    # For predictable updates pin a version, e.g. ROEDY_IMAGE_TAG=0.1 in .env
+    # (docs/ops.md › Updates).
+    image: ghcr.io/roedylabs/hub:${ROEDY_IMAGE_TAG:-latest}
+    container_name: roedy-hub
+    restart: unless-stopped
+    # User and group of the process; the image's default is 65532:65532. With
+    # other IDs /data must belong to them (docs/ops.md › Container user). Never
+    # 0 (root).
+    user: "${ROEDY_UID:-65532}:${ROEDY_GID:-65532}"
+    environment:
+      # Required: public address of the hub, e.g. https://app.example.com
+      # (scheme and host, no path). The apps live under /<slug>/ of it.
+      ROEDY_PUBLIC_URL: ${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL in .env, e.g. https://app.example.com}
+      # The internal listener for the apps, only on the `apps` network.
+      ROEDY_INTERNAL_LISTEN: ${ROEDY_HUB_APPS_IP:-172.30.240.2}:8081
+      # Caddy appends X-Forwarded-For; only when the variable is missing does
+      # true apply, set to empty means off. The apps behind the hub use this
+      # value plus one.
+      ROEDY_TRUST_PROXY: ${ROEDY_TRUST_PROXY-true}
+      ROEDY_LOG: ${ROEDY_LOG:-}
+      ROEDY_LOG_FORMAT: ${ROEDY_LOG_FORMAT:-}
+      # If unset, the first start creates /data/secret.key (docs/ops.md ›
+      # Instance key); ROEDY_SECRET_KEY_FILE e.g. for a Docker secret.
+      ROEDY_SECRET_KEY: ${ROEDY_SECRET_KEY:-}
+      ROEDY_SECRET_KEY_FILE: ${ROEDY_SECRET_KEY_FILE:-}
+    volumes:
+      # Named volume: Docker takes owner 65532 from the image, so it only fits
+      # the default ROEDY_UID/ROEDY_GID. With a bind mount the directory must
+      # belong to ROEDY_UID:ROEDY_GID (default 65532:65532).
+      - roedy-hub-data:/data
+    networks:
+      edge: {}
+      apps:
+        ipv4_address: ${ROEDY_HUB_APPS_IP:-172.30.240.2}
+    # The image needs no privileges: only /data and /tmp are writable.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The server finishes running requests within 8 s.
+    stop_grace_period: 10s
+    # Same check and timings as the image's HEALTHCHECK: `roedy-hub
+    # healthcheck` sends GET /healthz to the port of ROEDY_LISTEN over
+    # loopback and exits 0 on 200 (docs/ops.md › Health). Exec form: the image
+    # has no shell and no curl.
+    healthcheck:
+      test: ["CMD", "roedy-hub", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # Roedy Mail behind the hub at <ROEDY_PUBLIC_URL>/mail, with the profile
+  # `mail` (COMPOSE_PROFILES=mail in .env). Needs a Roedy Mail version with
+  # hub mode; the hub's address and the pairing code are passed as the
+  # contract's example app takes them (docs/ops.md › Pairing an app). In the
+  # hub: Administration › Apps › Add, slug `mail`, internal address
+  # http://roedy-mail:8080.
+  roedy-mail:
+    profiles:
+      - mail
+    image: ghcr.io/roedylabs/mail:${ROEDY_MAIL_IMAGE_TAG:-latest}
+    container_name: roedy-mail
+    restart: unless-stopped
+    user: "${ROEDY_MAIL_UID:-65532}:${ROEDY_MAIL_GID:-65532}"
+    environment:
+      # The app's public address is the hub's plus its slug (contract § 1).
+      ROEDY_PUBLIC_URL: ${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL in .env, e.g. https://app.example.com}/mail
+      # Caddy and the hub in front: the hub's ROEDY_TRUST_PROXY plus one.
+      ROEDY_TRUST_PROXY: ${ROEDY_MAIL_TRUST_PROXY:-2}
+      ROEDY_HUB_INTERNAL_URL: http://roedy-hub:8081
+      # Code from Administration › Apps, valid for 15 minutes; only needed
+      # until the app is paired.
+      ROEDY_PAIRING_CODE: ${ROEDY_MAIL_PAIRING_CODE:-}
+      ROEDY_LOG: ${ROEDY_LOG:-}
+      ROEDY_LOG_FORMAT: ${ROEDY_LOG_FORMAT:-}
+      # Mail's own instance key (not the hub's); if unset, its first start
+      # creates /data/secret.key in its volume.
+      ROEDY_SECRET_KEY: ${ROEDY_MAIL_SECRET_KEY:-}
+    volumes:
+      - roedy-mail-data:/data
+    networks:
+      - apps
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "roedy-mail", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      roedy-hub:
+        condition: service_healthy
+
+networks:
+  edge: {}
+  # Not `internal`: apps such as Mail need outgoing connections (Stalwart).
+  # Fixed subnet for the hub's fixed address; change both in .env if it
+  # collides with a network of the host.
+  apps:
+    ipam:
+      config:
+        - subnet: ${ROEDY_APPS_SUBNET:-172.30.240.0/24}
+
+volumes:
+  caddy-data:
+  caddy-config:
+  roedy-hub-data:
+  roedy-mail-data:

@@ -2,7 +2,7 @@
 
 **One address for all Roedy apps: gateway, central sign-in and home page.**
 
-> **Status:** early development, nothing to install yet. The plan is in
+> **Status:** early development (0.x); the first release is still to come. The plan is in
 > [`docs/plan.md`](docs/plan.md).
 
 ```text
@@ -31,6 +31,32 @@ Browser ──HTTPS──► TLS proxy ──► roedy-hub ─┬─ /, /login, 
 All apps share one origin. Install only apps you trust as much as the hub itself
 ([trust model](docs/app-contract.md#2-trust-model)).
 
+## Quick start
+
+Roedy Hub runs with Docker Compose behind Caddy, which obtains the certificate
+([`docs/ops.md`](docs/ops.md#installation)). On a host with Docker, a DNS name and ports 80 and 443 open:
+
+```sh
+mkdir roedy && cd roedy
+for f in compose.yml Caddyfile .env.example; do
+  curl -fsSLO "https://raw.githubusercontent.com/roedylabs/hub/main/deploy/$f"
+done
+cp .env.example .env && chmod 600 .env   # set ROEDY_PUBLIC_URL=https://app.example.com
+docker compose up -d
+docker compose logs roedy-hub | grep Setup-Token
+```
+
+Then open `https://app.example.com/setup`, create the first administrator with the setup token and pair the apps
+under Administration › Apps ([pairing an app](docs/ops.md#pairing-an-app)). The image `ghcr.io/roedylabs/hub` is
+built for `linux/amd64` and `linux/arm64`, signed with cosign and stays below 25 MB and 40 MB of memory when idle.
+
+## Documentation
+
+- [Operations](docs/ops.md): installation, reverse proxy, configuration, backup, updates, pairing, health
+- [App contract](docs/app-contract.md): how an app connects to the hub
+- [Implementation plan](docs/plan.md): architecture and milestones
+- [Contributing](CONTRIBUTING.md), [security policy](SECURITY.md)
+
 ## Development
 
 ```sh
@@ -40,8 +66,8 @@ pnpm dev
 ```
 
 Requires Node 26, pnpm 12 and Rust stable ([mise](https://mise.jdx.dev) installs them with `mise install`). See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, checks and conventions, and [`docs/ops.md`](docs/ops.md) for
-the configuration.
+[CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, checks and conventions; `just dist`, `just image` and
+`just smoke` build and check the image locally.
 
 | Part | Stack |
 |---|---|
