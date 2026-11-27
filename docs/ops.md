@@ -56,7 +56,7 @@ hub listens on the unprivileged ports 8443 and 8080 in its container, Docker pub
    [`deploy/.env.example`](../deploy/.env.example):
 
    ```sh
-   for f in compose.yml .env.example; do
+   for f in compose.yml compose.dns01.yml .env.example; do
      curl -fsSLO "https://raw.githubusercontent.com/roedylabs/hub/main/deploy/$f"
    done
    cp .env.example .env && chmod 600 .env
@@ -77,8 +77,23 @@ hub listens on the unprivileged ports 8443 and 8080 in its container, Docker pub
    patches of 0.1.x, `0.1.0` is exactly that version) makes updates predictable; `latest` is the default.
    Pre-releases such as `0.2.0-rc.1` are only available under their own name.
 
+   **Recommended with the domain at [deSEC](https://desec.io):** validate by DNS-01, so the CA never has to reach
+   the host. Create a [scoped token](#dns-01-with-desec), store it next to `compose.yml` for the hub's user only, and
+   add the override [`deploy/compose.dns01.yml`](../deploy/compose.dns01.yml) in `.env`:
+
+   ```sh
+   sudo sh -c 'umask 077 && cat > desec_token'   # paste the token, then Ctrl-D
+   sudo chown 65532:65532 desec_token            # ROEDY_UID:ROEDY_GID if you changed them
+   echo 'COMPOSE_FILE=compose.yml:compose.dns01.yml' >> .env
+   ```
+
+   The override sets `ROEDY_ACME_CHALLENGE=dns-01`, `ROEDY_ACME_DNS_PROVIDER=desec` and
+   `ROEDY_DESEC_TOKEN_FILE=/run/secrets/desec_token`, the token mounted as the Docker secret `desec_token` (another
+   host path: `ROEDY_DESEC_TOKEN_SECRET` in `.env`). The token file belongs in no repository and no backup of `.env`.
+
 2. Make sure the DNS name points at the host and ports 443 and 80 reach it from the internet (firewall, cloud
-   security group), then start and check the health (the image is public, no `docker login` needed):
+   security group) – with DNS-01 the CA does not need them, only your users need 443, and 80 just redirects –,
+   then start and check the health (the image is public, no `docker login` needed):
 
    ```sh
    docker compose up -d
@@ -345,18 +360,8 @@ curl -sS https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ -H "Auth
 Such a token can still read the account's domains and records (the hub needs that to find the domain and its name
 servers), but change nothing else. You may also limit it to the server's addresses (`allowed_subnets` when creating
 it). Store its secret in a file readable only by the hub's user (`0400`, owner `65532` in the image) and pass it as a
-Docker secret:
-
-```yaml
-services:
-  roedy-hub:
-    environment:
-      ROEDY_DESEC_TOKEN_FILE: /run/secrets/desec_token
-    secrets: [desec_token]
-secrets:
-  desec_token:
-    file: ./desec_token
-```
+Docker secret – with Compose, [`deploy/compose.dns01.yml`](../deploy/compose.dns01.yml) does that and sets the other
+variables ([Installation](#with-docker-compose), step 1). Never put the token into `.env` or a repository.
 
 The hub reads the file at the start; after replacing the token, restart it. If deSEC refuses the token, the log says
 `deSEC answered 401 (the token is not valid)` or `403 (the token may not do this)` – check the policy's domain and

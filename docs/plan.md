@@ -78,7 +78,7 @@ Each can follow later; v1 stays small.
 | `apps/web` | `@roedy/hub-web`: SvelteKit SPA (home page, sign-in, setup, account, administration) |
 | `packages/tokens` | Copy of Roedy Mail's design tokens |
 | `docs/` | `app-contract.md`, `ops.md`, `plan.md`, setup guides |
-| `deploy/` | `compose.yml` (the hub publishes 443 and 80 itself, no proxy), `.env.example`, `restore.sh`, the test override `compose.test.yml` |
+| `deploy/` | `compose.yml` (the hub publishes 443 and 80 itself, no proxy), `compose.dns01.yml` (DNS-01 with deSEC), `.env.example`, `restore.sh`, the test override `compose.test.yml` |
 | `scripts/` | Hooks, E2E runner, image smoke test, pin tests |
 
 Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
@@ -666,9 +666,15 @@ checks pass in every PR; every PR has tests for what it adds.
         after a failed validation, `403`, `429` short and long, waiting for a
         slow name server, giving up on one that never serves the value or does
         not answer, a name outside the account, TCP fallback, and the token in
-        no log line, error or audit entry. Open: `deploy/` gets the DNS-01
-        variables once "Deploy without Caddy" is merged; a CNAME at
-        `_acme-challenge` (delegation) is not followed.
+        no log line, error or audit entry. Deploy (after "Deploy without
+        Caddy"): `deploy/compose.dns01.yml` adds DNS-01 to `compose.yml`
+        (`COMPOSE_FILE` in `.env`, the token as the Docker secret
+        `./desec_token`, gitignored; port 80 only redirects then) –
+        recommended in `.env.example`, README and ops.md; an override rather
+        than variables in `compose.yml`, because a Compose secret whose file
+        is missing fails every setup without deSEC. `compose-smoke.sh`
+        validates it. Open: a CNAME at `_acme-challenge` (delegation) is not
+        followed.
    3. [x] **Deploy without Caddy** – compose publishes the hub's 443 and 80
       (`443:8443`, `80:8080`) and drops Caddy and `deploy/Caddyfile`,
       `ROEDY_TLS=acme` in `.env.example`, ops docs, smoke tests with TLS.

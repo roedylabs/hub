@@ -2,7 +2,7 @@
 # Smoke test of deploy/compose.yml (ci.yml, locally `just smoke-compose`):
 # validates the compose files and the production settings (only the hub
 # publishes ports, 443 → 8443 and 80 → 8080, ROEDY_TLS=acme, no trusted
-# proxy), starts the hub and the example app with deploy/compose.test.yml –
+# proxy; DNS-01 with deSEC through compose.dns01.yml), starts the hub and the example app with deploy/compose.test.yml –
 # the hub with the built-in TLS from a self-signed certificate
 # (scripts/test-cert.sh) – and checks HTTPS with that certificate for the
 # public host only, HSTS, the redirect and the ACME path on plain HTTP, the
@@ -81,6 +81,26 @@ check "the hub gets its certificate by ACME (actual: $(setting roedy-hub ROEDY_T
 check "the hub trusts no proxy (actual: $(setting roedy-hub ROEDY_TRUST_PROXY))" [ -z "$(setting roedy-hub ROEDY_TRUST_PROXY)" ]
 check "Mail trusts the hub only (actual: $(setting roedy-mail ROEDY_TRUST_PROXY))" [ "$(setting roedy-mail ROEDY_TRUST_PROXY)" = 1 ]
 check "the hub needs no capability" [ "$(printf '%s' "$config" | jq -c '.services["roedy-hub"].cap_add // []')" = "[]" ]
+# The DNS-01 override: deSEC's token as a Docker secret, the same ports.
+printf 'smoke-test-token\n' >"$certs/desec_token"
+dns01() {
+  env ROEDY_PUBLIC_URL=https://app.example.com ROEDY_DESEC_TOKEN_SECRET="$certs/desec_token" \
+    docker compose -f deploy/compose.yml -f deploy/compose.dns01.yml "$@"
+}
+check "compose.dns01.yml is valid" dns01 config -q
+dns01_config=$(dns01 config --format json)
+dns01_setting() { printf '%s' "$dns01_config" | jq -r ".services[\"roedy-hub\"].environment.$1 // \"\""; }
+dns01_actual="$(dns01_setting ROEDY_ACME_CHALLENGE) $(dns01_setting ROEDY_ACME_DNS_PROVIDER) $(dns01_setting ROEDY_DESEC_TOKEN_FILE)"
+check "DNS-01 with deSEC and the token file (actual: $dns01_actual)" \
+  [ "$dns01_actual" = "dns-01 desec /run/secrets/desec_token" ]
+dns01_secret=$(printf '%s' "$dns01_config" | jq -r '[.services["roedy-hub"].secrets[].source] + [.secrets.desec_token.file] | join(" ")')
+check "the token is the secret desec_token from its file (actual: $dns01_secret)" \
+  [ "$dns01_secret" = "desec_token $certs/desec_token" ]
+dns01_published=$(printf '%s' "$dns01_config" | jq -r "$ports_of" | sort | tr '\n' ' ')
+check "DNS-01 publishes the same ports (actual: $dns01_published)" [ "$dns01_published" = "$published" ]
+check "the hub's other settings stay with DNS-01" \
+  [ "$(printf '%s' "$dns01_config" | jq -r '.services["roedy-hub"].environment.ROEDY_TLS')" = acme ]
+
 test_published=$(compose config --format json | jq -r "$ports_of" | sort | tr '\n' ' ')
 check "the test setup publishes the hub on loopback only (actual: $test_published)" \
   [ "$test_published" = "roedy-hub 127.0.0.1:8080:8080/tcp roedy-hub 127.0.0.1:8443:8443/tcp " ]

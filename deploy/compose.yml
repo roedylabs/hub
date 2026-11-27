@@ -7,13 +7,19 @@
 #   443 → 8443  HTTPS: web app, API, apps under /<slug>/, TLS-ALPN-01
 #   80  → 8080  HTTP: ACME HTTP-01 and a 308 to HTTPS, nothing else
 #
+# With the domain at deSEC, DNS-01 is the recommended validation: the CA looks
+# up a TXT record instead of connecting to these ports. deploy/compose.dns01.yml
+# adds it (COMPOSE_FILE=compose.yml:compose.dns01.yml in .env, the deSEC token
+# as the Docker secret ./desec_token); port 80 then only redirects.
+#
 # The hub and the apps share the private network `apps`: the hub reaches the
 # apps at their port 8080, the apps reach the hub's internal listener (8081),
 # which binds to the hub's fixed address on `apps` and is never published. The
 # apps publish nothing, so only the hub reaches them.
 #
 #   cp .env.example .env && chmod 600 .env     # then set ROEDY_PUBLIC_URL and
-#                                              # ROEDY_ACME_AGREE_TOS=true
+#                                              # ROEDY_ACME_AGREE_TOS=true (and
+#                                              # COMPOSE_FILE for DNS-01)
 #   docker compose up -d
 #   docker compose logs roedy-hub | grep Setup-Token
 #
