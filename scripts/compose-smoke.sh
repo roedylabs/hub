@@ -19,6 +19,10 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+# Every curl here talks to the local containers: never through a proxy from
+# the environment (--connect-to does not bypass one). NO_PROXY=* covers the
+# curl calls in `sh -c` as well.
+export NO_PROXY='*' no_proxy='*'
 # alpine as in the Dockerfile: wget from the apps' network.
 # shellcheck disable=SC2016 # $BUILDPLATFORM is the Dockerfile's text
 alpine=$(sed -n 's/^FROM --platform=$BUILDPLATFORM \(alpine:[^ ]*\) AS rootfs$/\1/p' Dockerfile)

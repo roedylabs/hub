@@ -21,6 +21,11 @@
 # ≤ 25 MB in the workflows. MB = 10^6 bytes.
 set -eu
 
+# Every curl here talks to the local containers: never through a proxy from
+# the environment (--connect-to does not bypass one). NO_PROXY=* covers the
+# curl calls in `sh -c` as well.
+export NO_PROXY='*' no_proxy='*'
+
 image=${1:?usage: scripts/image-smoke.sh <image> [<version>]}
 version=${2:-}
 here=$(dirname "$0")

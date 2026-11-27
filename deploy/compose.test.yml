@@ -8,10 +8,11 @@
 #   just dist x86_64-unknown-linux-musl && just dist-example x86_64-unknown-linux-musl
 #   just image && just image-example
 #   scripts/test-cert.sh "$PWD/deploy/.test-tls" localhost
-#   ROEDY_TEST_TLS_DIR="$PWD/deploy/.test-tls" ROEDY_PUBLIC_URL=https://localhost:8443 \
-#     docker compose -f deploy/compose.yml -f deploy/compose.test.yml up -d --wait
+#   export ROEDY_TEST_TLS_DIR="$PWD/deploy/.test-tls" ROEDY_PUBLIC_URL=https://localhost:8443
+#   docker compose -f deploy/compose.yml -f deploy/compose.test.yml up -d --wait
 #   curl --cacert deploy/.test-tls/cert.pem https://localhost:8443/readyz
 #
+# Every later Compose command needs both variables as well (exported above).
 # Pairing the example app: Administration › Apps › Add, slug `example`,
 # internal address http://roedy-hub-example:8080, then
 #   ROEDY_EXAMPLE_PAIRING_CODE=rhp_… docker compose -f … -f … up -d roedy-hub-example
