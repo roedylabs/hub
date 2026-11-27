@@ -506,9 +506,19 @@ pub fn page(conn: &Connection, app_id: &str, after: u64, limit: usize) -> rusqli
 }
 
 /// Deletes events older than `keep`, delivered or not; returns how many.
+/// Per app only the events before its oldest one to keep: if the clock went
+/// back, a later `seq` can carry an older `created_at`, and deleting it
+/// alone would leave a gap that [`page`] cannot see. So what remains is
+/// always every event from some `seq` on.
 pub fn delete_older_than(conn: &Connection, keep: Duration) -> rusqlite::Result<usize> {
     conn.execute(
-        "DELETE FROM events WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+        "DELETE FROM events \
+         WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1) \
+           AND seq < coalesce( \
+               (SELECT min(young.seq) FROM events young \
+                WHERE young.app_id = events.app_id \
+                  AND young.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)), \
+               9223372036854775807)",
         [modifier('-', keep)],
     )
 }
@@ -608,6 +618,45 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn the_retention_never_leaves_a_gap() {
+        let conn = conn();
+        let mail = paired(&conn, "mail", 1);
+        let notes = paired(&conn, "notes", 2);
+        for n in 1..=5 {
+            user_locked(&conn, &format!("u{n}")).unwrap();
+        }
+        // The clock went back: seq 2 and 4 look older than seq 1 and 3.
+        conn.execute(
+            "UPDATE events SET created_at = CASE \
+               WHEN seq IN (2, 4) THEN '2000-01-01T00:00:00.000Z' \
+               WHEN seq = 1 THEN '2000-01-02T00:00:00.000Z' \
+               ELSE created_at END WHERE app_id = ?1",
+            [&mail],
+        )
+        .unwrap();
+        let keep = Duration::from_secs(30 * 86_400);
+        // Only 1 and 2 go: 4 stays with 3, the oldest event to keep.
+        assert_eq!(delete_older_than(&conn, keep).unwrap(), 2);
+        assert_eq!(events_of_after(&conn, &mail, 2), [3, 4, 5]);
+        assert_eq!(
+            page(&conn, &mail, 0, 10).unwrap(),
+            Page::Expired { resume_after: 2 }
+        );
+        // Another app's events are untouched; all old: all go.
+        assert_eq!(events_of_after(&conn, &notes, 0), [1, 2, 3, 4, 5]);
+        conn.execute(
+            "UPDATE events SET created_at = '2000-01-01T00:00:00.000Z' WHERE app_id = ?1",
+            [&notes],
+        )
+        .unwrap();
+        assert_eq!(delete_older_than(&conn, keep).unwrap(), 5);
+        assert_eq!(
+            page(&conn, &notes, 0, 10).unwrap(),
+            Page::Expired { resume_after: 5 }
+        );
     }
 
     fn events_of_after(conn: &Connection, app_id: &str, after: u64) -> Vec<u64> {

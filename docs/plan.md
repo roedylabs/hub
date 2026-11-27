@@ -432,7 +432,8 @@ checks pass in every PR; every PR has tests for what it adds.
       /internal/v1/events` (secret, `after`, `limit` 1–100, `more`, `410
       events_expired` with `resume_after`; acknowledges up to `after` and
       retries at once), the daily job `event_retention` (30 days, delivered
-      or not), removing an app deletes its events (cascade) and stops its
+      or not; per app only a contiguous prefix of `seq`, so that a clock
+      that went back cannot leave a gap), removing an app deletes its events (cascade) and stops its
       worker. The example app verifies events with the contract crate,
       stores the highest `seq`, catches up at start and on a gap (`503`
       while it cannot) and continues from `resume_after` after a `410`; it

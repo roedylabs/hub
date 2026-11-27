@@ -584,6 +584,12 @@ async fn redelivery_is_acknowledged_without_acting() {
     let hub = hub().await;
     let example = &hub.example;
     let first = arrived(example, 0, 3).await;
+    // The app answered before the hub recorded it; a later record would
+    // undo the reset below.
+    until_async("the acknowledgement", || async {
+        hub.state(&hub.app_id).await.delivered_seq == 3
+    })
+    .await;
     // As if the acknowledgements had been lost.
     hub.env
         .sql(|c| c.execute("UPDATE event_delivery SET delivered_seq = 0", []))
