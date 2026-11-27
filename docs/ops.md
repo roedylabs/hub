@@ -1,13 +1,23 @@
 # Operating Roedy Hub
 
-> Configuration, TLS and health checks of the server. Installation with Docker Compose, the data directory, backups
-> and troubleshooting follow with the delivery milestone ([`plan.md`](plan.md)).
+> Installation with Docker Compose and Caddy, configuration, built-in TLS, data directory, backup and restore, updates,
+> pairing an app, the gateway, events, health and the resource budgets. Installation, backup and update steps are
+> taken over from Roedy Mail's `docs/ops.md` and adapted.
 
-Roedy Hub is a single process with an embedded web app and an SQLite database. It terminates TLS itself and gets its
-certificate from an ACME CA such as Let's Encrypt ([TLS](#tls)); no proxy is needed in front. It listens on the
-**public** port (HTTPS), on a plain **HTTP** port that only answers ACME challenges and redirects to HTTPS, and on the
-**internal** port, which only the apps reach over the private network
-([app contract › Internal API](app-contract.md#7-internal-api)).
+Roedy Hub is a single process with an embedded web app and an SQLite database. It listens on two ports: the
+**public** one, which the reverse proxy forwards to, and the **internal** one, which only the apps reach over the
+private network ([app contract › Internal API](app-contract.md#7-internal-api)). It is shipped as the Docker image
+`ghcr.io/roedylabs/hub` for `linux/amd64` and `linux/arm64`.
+
+```
+Browser ──HTTPS──► Caddy :443 ──HTTP──► roedy-hub :8080 (public)   ──► /data (SQLite, key)
+                   (network edge)          │ /mail/… ──► roedy-mail :8080
+                     apps (network apps) ──HTTP──► roedy-hub :8081 (internal, never published)
+```
+
+The hub can also terminate TLS itself and get its certificate from an ACME CA such as Let's Encrypt, without a proxy
+in front ([TLS](#tls), `ROEDY_TLS`). Its public port then speaks HTTPS, and a plain **HTTP** port only answers ACME
+challenges and redirects to HTTPS:
 
 ```
 Browser ──HTTPS──► roedy-hub :8443 (public, published as 443) ──► /data (SQLite, key, certificate)
@@ -15,8 +25,166 @@ Browser ──HTTPS──► roedy-hub :8443 (public, published as 443) ──�
                      apps (private network) ──HTTP──► roedy-hub :8081 (internal, never published)
 ```
 
-With `ROEDY_TLS=off` (the default) the public port speaks plain HTTP on `:8080` instead, for development or behind a
-TLS proxy of your own.
+`deploy/compose.yml` still uses Caddy (`ROEDY_TLS=off`, the default); a Compose setup with the built-in TLS follows
+with the next delivery step ([`plan.md`](plan.md) › milestone 6).
+
+## Requirements
+
+- **Host:** Linux with Docker and Compose v2 (2.24 or later for the test override), `linux/amd64` or `linux/arm64`.
+  The hub needs about 15 MB of memory when idle (budget: 40 MB); the image is about 12 MB (budget: 25 MB), see
+  [Budgets](#budgets).
+- **Own host name with HTTPS**, such as `app.example.com`, whose DNS points at the host, and ports 80 and 443 open
+  for Caddy (certificates from Let's Encrypt). The hub needs the root `/` of its origin; the apps live under
+  `/<slug>/` of the same origin, a sub-path for the hub does not work.
+- **Outgoing connections:** HTTPS to the JMAP server for the hub's system mails (Administration › Email) and whatever
+  the apps need (Roedy Mail: its Stalwart servers).
+- **Time:** an accurate clock (NTP); authenticator app codes, sessions and the identities for the apps depend on it.
+
+## Installation
+
+### With Docker Compose
+
+The basis is [`deploy/compose.yml`](../deploy/compose.yml): Caddy, the hub and, with the profile `mail`, Roedy Mail.
+Only Caddy publishes ports (80, 443 and 443/udp). The containers talk over two private networks:
+
+| Network | Members | What for |
+|---|---|---|
+| `edge` | Caddy, hub | Caddy forwards every request to the hub's public port `8080`. |
+| `apps` | hub, apps | The hub reaches the apps at `http://<container>:8080`; the apps reach the hub's internal listener at `http://roedy-hub:8081`. |
+
+The hub's internal listener binds to the hub's fixed address in `apps` (`ROEDY_INTERNAL_LISTEN`, default
+`172.30.240.2:8081`), so Caddy cannot reach it, and the apps are not in `edge`, so only the hub reaches them. Every
+container runs with a read-only file system (except Caddy), no capabilities (Caddy only `NET_BIND_SERVICE`) and
+`no-new-privileges`.
+
+1. Put `compose.yml` and [`Caddyfile`](../deploy/Caddyfile) into one directory, such as `/opt/roedy`, and create a
+   `.env` file next to them from the template [`deploy/.env.example`](../deploy/.env.example):
+
+   ```sh
+   for f in compose.yml Caddyfile .env.example; do
+     curl -fsSLO "https://raw.githubusercontent.com/roedylabs/hub/main/deploy/$f"
+   done
+   cp .env.example .env && chmod 600 .env
+   ```
+
+   It lists every variable of `compose.yml`. Replace `app.example.com` with your own host name; the minimum is:
+
+   ```sh
+   ROEDY_PUBLIC_URL=https://app.example.com
+   ROEDY_IMAGE_TAG=0.1
+   ```
+
+   `ROEDY_PUBLIC_URL` is required: Caddy takes it as its site address and obtains the certificate for it, the hub
+   uses it for links in mails and as the issuer of the identities. A fixed version in the tag (`0.1` follows the
+   patches of 0.1.x, `0.1.0` is exactly that version) makes updates predictable; `latest` is the default. Pre-releases
+   such as `0.2.0-rc.1` are only available under their own name.
+
+2. Start and check the health (the image is public, no `docker login` needed):
+
+   ```sh
+   docker compose up -d
+   docker compose ps                                # roedy-hub: healthy
+   curl -fsS https://app.example.com/readyz         # {"status":"ok"}
+   docker compose logs roedy-hub | grep Setup-Token
+   ```
+
+3. Open `https://app.example.com/setup` and enter the setup token to create the first administrator. Then pair the
+   apps ([Pairing an app](#pairing-an-app)).
+
+The commands here run in the directory of `compose.yml`; from another directory use `-f <path>/compose.yml`. The
+project is called `roedy`, so the hub's volume is `roedy_roedy-hub-data` and the apps' network `roedy_apps`.
+
+**Subnet:** the network `apps` has the fixed subnet `172.30.240.0/24` for the hub's fixed address. If it collides with
+a network of the host or another Docker network (`Pool overlaps with other one on this address space`), set
+`ROEDY_APPS_SUBNET` and `ROEDY_HUB_APPS_IP` in `.env` together, e.g. `10.250.40.0/24` and `10.250.40.2`.
+
+**Bind mount instead of a volume:** a host directory must belong to the container's user (default 65532:65532),
+otherwise the hub does not start (`Permission denied`):
+
+```sh
+sudo install -d -o 65532 -g 65532 -m 700 /srv/roedy-hub
+```
+
+and in `compose.yml` `- /srv/roedy-hub:/data` instead of `- roedy-hub-data:/data`. The data directory must be on a
+local file system, not on NFS or SMB: SQLite in WAL mode needs shared memory and reliable locks.
+
+**Container user:** the hub runs as user and group 65532 (the image's `USER`). For other IDs set `ROEDY_UID` and
+`ROEDY_GID` in `.env`; never 0 (root). A new instance then needs a bind mount created with these IDs (a new named
+volume takes owner 65532 from the image); for an existing volume change the owner once while the hub is stopped:
+
+```sh
+docker compose stop roedy-hub
+docker run --rm -v roedy_roedy-hub-data:/data alpine:3.24 chown -R 1500:1500 /data
+docker compose up -d
+```
+
+**Verifying the image:** every release carries an SBOM and provenance as attestations and is signed keylessly with
+[cosign](https://github.com/sigstore/cosign) by the release workflow:
+
+```sh
+cosign verify ghcr.io/roedylabs/hub:0.1.0 \
+  --certificate-identity https://github.com/roedylabs/hub/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+**Building it yourself:** `just dist` (needs [Zig](https://ziglang.org), `cargo-zigbuild`, `cargo-auditable` and the
+Rust targets `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`; `just dist x86_64-unknown-linux-musl` for
+one), then `just image` or `docker buildx build --platform linux/amd64,linux/arm64 .`. The Dockerfile only packages
+the binaries from `dist/`. `just smoke` runs the image's smoke test, `just smoke-compose` the one of the Compose setup
+(with `just dist-example` and `just image-example` for the example app).
+
+### Reverse proxy
+
+[`deploy/Caddyfile`](../deploy/Caddyfile) is all Caddy needs:
+
+```
+{$CADDY_SITE} {
+	encode {
+		zstd
+		gzip
+		match {
+			header Content-Type text/html*
+			# … CSS, JavaScript, JSON, SVG; never text/event-stream
+		}
+	}
+	reverse_proxy roedy-hub:8080
+}
+```
+
+`CADDY_SITE` is `ROEDY_PUBLIC_URL`. Caddy obtains and renews the certificate, redirects HTTP to HTTPS and speaks
+HTTP/2 and HTTP/3 to the browser. Its certificates live in the volume `caddy-data`; keep it, otherwise every new
+container requests new certificates and may run into Let's Encrypt's limits.
+
+Another reverse proxy works as well, as long as it:
+
+- **appends `X-Forwarded-For`** and the hub's port is reachable only through it. `compose.yml` sets
+  `ROEDY_TRUST_PROXY=true` (one proxy); the hub takes the client IP for rate limits, sessions and the audit log from
+  the entry the proxy appended. With another proxy in front (such as a CDN), use `2` and let the rear proxy trust the
+  front one; the apps then use `3` (`ROEDY_MAIL_TRUST_PROXY`).
+- **passes request and response headers through unchanged**, in particular `Cookie`, `Origin`, `Sec-Fetch-*`, the
+  hub's Content Security Policy and the apps' headers.
+- **streams** request and response bodies, Server-Sent Events and WebSockets (`Upgrade`) without buffering, without
+  a body size limit (uploads to the apps) and with a read timeout of at least 300 seconds (the hub's own limit for an
+  app's response, [Gateway](#gateway)); it does not compress `text/event-stream`.
+- forwards **every path** of the origin to the hub, never the internal port `8081`.
+
+## Pairing an app
+
+An app connects to the hub once with a pairing code ([app contract › Pairing](app-contract.md#9-pairing)). For Roedy
+Mail with `deploy/compose.yml` (needs a Roedy Mail version with hub mode):
+
+1. In the hub: **Administration › Apps › Add app**, slug `mail`, internal address `http://roedy-mail:8080`. The hub shows
+   a pairing code (`rhp_…`), valid for 15 minutes.
+2. In `.env`: `COMPOSE_PROFILES=mail` and `ROEDY_MAIL_PAIRING_CODE=<code>`, then `docker compose up -d`. Mail runs at
+   `<ROEDY_PUBLIC_URL>/mail` (its `ROEDY_PUBLIC_URL`, set by `compose.yml`), pairs with the hub's internal listener at
+   `http://roedy-hub:8081` and sends its manifest.
+3. Administration › Apps shows the app as connected once its health check answers. Remove the code from `.env`
+   afterwards; it is used up.
+
+Another app: add a service like `roedy-mail` in the network `apps` only (never in `edge`, never with `ports`), with
+`ROEDY_PUBLIC_URL=<hub public URL>/<slug>`, `ROEDY_TRUST_PROXY` the hub's value plus one, the hub's internal address
+`http://roedy-hub:8081` and the code, and choose the same slug in the hub. "New pairing code" pairs an app again, for
+example after its data was lost.
 
 ## Configuration
 
@@ -72,7 +240,8 @@ Roedy Hub terminates TLS itself (TLS 1.3 and 1.2, AEAD cipher suites with forwar
 with `ROEDY_TLS=acme`, gets and renews its certificate on its own with its built-in ACME client (RFC 8555). It answers
 only TLS connections for the host of `ROEDY_PUBLIC_URL` (SNI); other names get no certificate. Responses carry
 `Strict-Transport-Security: max-age=31536000`, without `includeSubDomains` and `preload` – the hub cannot know whether
-every subdomain speaks HTTPS, so this policy is not eligible for the browsers' preload list. HTTP/2 is not offered: the gateway's WebSockets use HTTP/1.1's `Upgrade`.
+every subdomain speaks HTTPS, so this policy is not eligible for the browsers' preload list. HTTP/2 is not offered:
+the gateway's WebSockets use HTTP/1.1's `Upgrade`.
 
 **Ports and firewall.** In the container the hub runs as an unprivileged user and listens on `8443` (HTTPS) and `8080`
 (HTTP); publish them as `443` and `80`, e.g. `ports: ["443:8443", "80:8080"]` in Compose. Open both in the firewall.
@@ -94,8 +263,8 @@ tries again after 1 minute, 5 minutes, 15 minutes, 1 hour and then every 3 hours
 
 **Renewal.** A daily check renews the certificate 30 days before it expires (after two thirds of the lifetime for
 shorter certificates) or earlier when the CA's renewal information (ARI) suggests it, and swaps it in without dropping
-open connections; a failed renewal is retried on the same schedule as above, long before the certificate expires. Issuance, renewal and the first failure of a series appear in
-Administration › Audit log (category System).
+open connections; a failed renewal is retried on the same schedule as above, long before the certificate expires.
+Issuance, renewal and the first failure of a series appear in Administration › Audit log (category System).
 
 **Storage.** The account key, the certificate's private key and the chain are kept in the database, the keys encrypted
 with the instance key. With another instance key they cannot be decrypted: the hub then creates a new account and gets
@@ -108,11 +277,120 @@ works; the hub then gets a certificate from production.
 **Certificate from files.** With `ROEDY_TLS=files` the hub serves the certificate in `ROEDY_TLS_CERT_FILE` and
 `ROEDY_TLS_KEY_FILE`, e.g. from your own CA or another ACME client, and reloads it when the files change. It must
 contain the host of `ROEDY_PUBLIC_URL` (a wildcard covers one label; an IP address as host needs it as an IP address
-name) and be valid now; the start fails otherwise. The HTTP port only
-redirects then.
+name) and be valid now; the start fails otherwise. The HTTP port only redirects then.
 
 **Behind your own proxy.** Keep `ROEDY_TLS=off`, let the proxy terminate TLS and forward to `ROEDY_LISTEN`, and set
 `ROEDY_TRUST_PROXY`.
+
+## Data directory
+
+Everything the hub stores permanently lives in `/data` (`ROEDY_DATA_DIR`), owner 65532 (or `ROEDY_UID`/`ROEDY_GID`),
+directory `0700`, files `0600`:
+
+| Path | Content |
+|---|---|
+| `roedy.sqlite3` | Database: users, sessions, settings, branding, paired apps (secrets as SHA-256), access per app, events for the apps, audit log, the signing keys of the identities (encrypted), with built-in TLS the ACME account and the certificate (keys encrypted) |
+| `roedy.sqlite3-wal`, `roedy.sqlite3-shm` | Part of the database while it is open (WAL mode). Never delete or copy them individually while the hub is running. |
+| `secret.key` | [Instance key](#instance-key), only without `ROEDY_SECRET_KEY` and `ROEDY_SECRET_KEY_FILE` |
+
+SQLite's temporary files go to `/tmp` (a `tmpfs` in `compose.yml`). A copy of the files while the hub is running is
+not a usable backup ([Backup and restore](#backup-and-restore)).
+
+### Instance key
+
+The key encrypts the secrets in the database (authenticator apps, open invitations, the sender account for system mails,
+the signing keys of the identities, the keys of the built-in TLS). It does **not** belong next to the backups: whoever
+has a backup should not be able to read the secrets in it. Store it separately right after the setup, for example in a
+password manager:
+
+```sh
+docker cp roedy-hub:/data/secret.key ./secret.key   # 64 hex characters
+```
+
+Delete the file afterwards once the key is in its place. The content also works as `ROEDY_SECRET_KEY`. With a
+different key the hub starts, but authenticator apps, open invitations and the sender account no longer work, and it
+replaces the signing keys (the apps fetch the new ones on their own) and, with `ROEDY_TLS=acme`, gets a new ACME
+account and certificate. There is no command to change the key.
+
+## Backup and restore
+
+The hub has no backups of its own yet ([`plan.md`](plan.md) › Open points). Back up the data volume with the hub
+stopped for a few seconds; Caddy answers `502` meanwhile. Without `secret.key`, which you keep separately:
+
+```sh
+docker compose stop roedy-hub
+docker run --rm -v roedy_roedy-hub-data:/data:ro -v "$PWD":/backup alpine:3.24 \
+  tar -czf "/backup/roedy-hub-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" -C /data --exclude=./secret.key .
+docker compose start roedy-hub
+```
+
+Copy the archive off the host (it holds password hashes and personal data, so keep it as protected as the server).
+The apps back up their own data; for Roedy Mail see its `docs/ops.md`.
+
+**Restore** (same key; the volume's content is replaced by the archive's) with
+[`deploy/restore.sh`](../deploy/restore.sh), in the directory of `compose.yml`:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/roedylabs/hub/main/deploy/restore.sh && chmod +x restore.sh
+ROEDY_UID=65532 ROEDY_GID=65532 ./restore.sh roedy-hub-20261127T030000Z.tar.gz   # IDs as in .env
+```
+
+With the default named volume nothing else is needed. With a [bind mount](#with-docker-compose) such as
+`/srv/roedy-hub:/data`, name its host directory, for the restore as well as for `--recover`:
+
+```sh
+ROEDY_HUB_VOLUME=/srv/roedy-hub ./restore.sh roedy-hub-20261127T030000Z.tar.gz
+ROEDY_HUB_VOLUME=/srv/roedy-hub ./restore.sh --recover
+```
+
+Only one restore or recovery runs at a time: the script holds the lock directory `.roedy-restore.lock` next to
+`compose.yml` until the hub has started again.
+
+It stops the hub and works in a helper container (`alpine`, which installs `sqlite`, so it needs internet access): it
+unpacks the archive there and checks the database with SQLite's `integrity_check`, copies it into the volume next to
+the current data and then swaps them by renaming; the current data is moved to `.before-restore` and only deleted once
+the new data is in place. Any failure – a missing or damaged archive, a full disk, a failed rename – puts the previous
+data back and leaves the hub stopped; it only starts again after a successful restore. `secret.key` is never touched.
+The volume needs free space for a second copy of the database.
+
+**Interrupted restore** (the helper was killed, the host went down): the previous data is in `.before-restore` in the
+volume, and a new restore refuses to start. `./restore.sh --recover` puts it back (and removes a half-copied archive),
+sets the owner (`ROEDY_UID`/`ROEDY_GID`) and then starts the hub; run the restore again afterwards. If the host went
+down during the restore, its lock `.roedy-restore.lock` is left next to `compose.yml` as well, and the script refuses to
+start. Make sure no restore is running (no `restore.sh` in `ps -ef`, no helper container in `docker ps`), then remove
+the lock with `rmdir .roedy-restore.lock` and run `--recover`. Never remove it while a restore runs.
+
+On a new host start with the same key (`ROEDY_SECRET_KEY` in `.env`, or `secret.key` restored into the volume). If
+the archive is older than the program version, the start applies the missing migrations. Everything since the backup
+is lost: sessions and links from mails of that time are valid again, and apps paired since then must be paired
+again. The apps have also processed events the restored hub will number anew; an app acknowledges a number it has
+already processed without acting on it ([app contract › Delivery](app-contract.md#101-delivery)), so it misses the
+changes behind them until the hub's numbering has passed its position. Back up often and restore the latest backup;
+resetting the apps' position after a restore is an open point ([`plan.md`](plan.md) › Open points).
+
+## Updates
+
+The hub does not install updates by itself; what changes is described in the release notes and `CHANGELOG.md`.
+Versions follow 0.x: a new minor version (0.1 → 0.2) may contain migrations and operational changes, a patch version
+(0.1.0 → 0.1.1) fixes bugs. An update:
+
+1. [Back up](#backup-and-restore) the data volume.
+2. Read the release notes, raise `ROEDY_IMAGE_TAG` in `.env` if needed.
+3. Pull the new images and recreate the containers:
+
+   ```sh
+   docker compose pull
+   docker compose up -d
+   docker compose logs roedy-hub | grep -E 'migration|Roedy Hub started'
+   ```
+
+The hub applies pending migrations by itself on start (`roedy-hub migrate` does the same without starting) and gives
+open requests 8 seconds when stopping; the apps keep running and catch up on missed events. Contract version 1 stays
+backwards compatible, so apps keep working across hub updates
+([app contract › Versioning](app-contract.md#14-versioning-and-extensions)).
+
+**Back to an older version:** an older version does not start once the database schema is newer than itself. Then set
+the older tag and restore the backup from before the update; whatever happened since the update is lost.
 
 ## Gateway
 
@@ -181,3 +459,17 @@ healthcheck:
   start_period: 3m
   retries: 3
 ```
+
+## Budgets
+
+The hub stays lightweight; CI checks both budgets on every pull request (`ci.yml`, job "Image") and the release
+before it publishes (`release.yml`):
+
+| Budget | Limit | Measured by |
+|---|---|---|
+| Image size (`linux/amd64`, uncompressed) | ≤ 25 MB | `docker image inspect`; CI fails above it |
+| Idle memory of the process | ≤ 40 MB | `VmRSS` after start and a few requests ([`scripts/image-smoke.sh`](../scripts/image-smoke.sh)); CI fails above it |
+
+MB means 10⁶ bytes. The step summary of each run shows the measured values. The image is a static musl binary with
+the embedded web app on `scratch`, plus the CA certificates and the licence; mimalloc gives freed memory back at once
+(`MIMALLOC_PURGE_DELAY=0` in the image).

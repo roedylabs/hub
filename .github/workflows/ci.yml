@@ -1,6 +1,7 @@
 name: CI
 
-# Lint, type check, tests and dependency policy of the web app and the server.
+# Lint, type check, tests and dependency policy of the web app and the server,
+# the container image with its budgets and the Compose setup.
 # "CI passed" is the single required check for these jobs (ruleset of main).
 #
 # Triggers: pull requests, merge queue, main, weekly (new Rust/Node versions,
@@ -144,12 +145,60 @@ jobs:
       - name: License list
         run: pnpm licenses:server
 
+  # Container image and its budgets (docs/plan.md): the amd64 image from
+  # `just dist`, ≤ 25 MB, and the smoke test with idle memory ≤ 40 MB
+  # (scripts/image-smoke.sh), then deploy/compose.yml with Caddy and the
+  # example app (scripts/compose-smoke.sh). The release (release.yml) builds
+  # the same image for both platforms.
+  image:
+    name: Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: ./.github/actions/setup-node
+      - name: Set up the release build
+        uses: ./.github/actions/setup-dist
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Web app and binary (just dist)
+        run: pnpm exec just dist x86_64-unknown-linux-musl
+      - name: Example app (just dist-example)
+        run: pnpm exec just dist-example x86_64-unknown-linux-musl
+
+      # BuildKit pinned by digest (.github/buildkit/Dockerfile).
+      - name: Set up Docker Buildx
+        uses: ./.github/actions/setup-buildx
+      - name: Build image
+        run: docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false -t roedy-hub:dev .
+      - name: Build example app image
+        run: docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false -f deploy/example-app.Dockerfile -t roedy-hub-example:dev .
+
+      - name: Image size (≤ 25 MB)
+        run: |
+          size=$(docker image inspect -f '{{.Size}}' roedy-hub:dev)
+          binary=$(stat -c %s dist/amd64/roedy-hub)
+          echo "Image linux/amd64: $((size / 1000)) kB (binary $((binary / 1000)) kB)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt 25000000 ]; then
+            echo "::error::Image larger than 25 MB"
+            exit 1
+          fi
+      - name: Smoke test and idle memory (≤ 40 MB)
+        run: scripts/image-smoke.sh roedy-hub:dev
+      - name: Compose smoke test
+        run: scripts/compose-smoke.sh
+
   # Single required status check for the ruleset of main: fails unless every
   # job above succeeded (also when one was skipped or cancelled).
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, web, server, dependencies]
+    needs: [lint, web, server, dependencies, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

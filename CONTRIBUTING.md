@@ -30,6 +30,10 @@ Common tasks are in the [`justfile`](justfile) (`pnpm exec just …` if [just](h
 | Command | What it does |
 |---|---|
 | `just check` | All checks below |
+| `just dist [<targets>]` | Web app and static musl binaries to `dist/` (needs Zig, cargo-zigbuild, cargo-auditable and the rustup targets) |
+| `just image` / `just smoke` | Image for the local platform from `dist/` and its smoke test with the budgets |
+| `just dist-example`, `just image-example`, `just smoke-compose` | The example app's image and the smoke test of `deploy/compose.yml` |
+| `just release <version>` / `just release-tag <version>` | Release PR, then the tag on `main` ([`release.yml`](.github/workflows/release.yml)) |
 
 ## Checks
 
@@ -48,6 +52,20 @@ CI also runs Clippy and the tests with `--all-features`, which embeds `apps/web/
 
 While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vitest run <file>` or `cargo test -p roedy-hub-server <filter>`.
 
+## Releases
+
+Releases need the [GitHub CLI](https://cli.github.com), signed in with push access (`gh auth status`); `just release`
+checks that before it changes anything. `just release <version>` opens the release PR (version, `CHANGELOG.md` with
+git-cliff); after the maintainer merged it,
+`just release-tag <version>` sets the tag on `main`, and [`release.yml`](.github/workflows/release.yml) builds, checks,
+signs and publishes `ghcr.io/roedylabs/hub`. Only a pushed tag publishes; a manual run of the workflow is a dry run.
+`x.y` and `latest` move only to the newest stable version, whatever order releases publish in.
+
+**After the first release:** GitHub creates the package `hub` as private, and the workflow cannot change that. A
+maintainer makes it public once (the package's settings › Danger Zone › Change visibility), so that `docker compose
+pull` works without login as `docs/ops.md` describes; until then the workflow's step "Image pullable without login"
+warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibility`.
+
 ## Project layout
 
 | Path | Content |
@@ -58,7 +76,9 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
-| `scripts/` | Git hooks and developer tooling |
+| `deploy/` | Docker Compose setup with Caddy (`compose.yml`, `Caddyfile`, `.env.example`), `restore.sh` for backups, the test override with the example app |
+| `Dockerfile` | The image: packages `dist/<arch>/roedy-hub` on `scratch` |
+| `scripts/` | Git hooks, smoke tests of the image and the Compose setup, release script and developer tooling |
 
 ## Conventions
 
@@ -67,7 +87,7 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 - **Accessibility:** every interactive element must be usable with the keyboard and a screen reader, in the light and the dark theme.
 - **Database:** never edit an existing migration; add a new one.
 - **Dependencies:** keep the hub lightweight (image ≤ 25 MB, idle memory ≤ 40 MB). Justify new dependencies in the PR. Libraries that end up in the browser bundle belong in `dependencies`, build and test tools in `devDependencies`.
-- **Pinning:** GitHub Actions by full commit SHA; Dependabot keeps them current. `scripts/action-pins.test.mjs` checks it in `pnpm test`.
+- **Pinning:** GitHub Actions by full commit SHA, Docker images in Dockerfiles by tag and digest; Dependabot keeps them current. `scripts/action-pins.test.mjs` and `scripts/docker-pins.test.mjs` check it in `pnpm test`.
 - **Origin of code:** code from [Roedy Mail](https://github.com/roedylabs/mail) (same project, same licence) may be taken over and adapted; say so in the module comment. Do not copy code from other projects.
 
 ## Commits and pull requests

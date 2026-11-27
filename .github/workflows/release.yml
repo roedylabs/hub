@@ -1,0 +1,365 @@
+name: Release
+
+# Build, check and publish a release; taken over from Roedy Mail's release.yml
+# (../mail).
+# - Tag v*: only on the release commit on main (`just release-tag`) → web app
+#   and static musl binaries (`just dist`) → amd64 image → size, smoke test,
+#   Trivy → version not yet on ghcr.io → multi-arch push with SBOM and
+#   provenance → cosign signature and build attestations → check the published
+#   image → GitHub release with notes (git-cliff, cliff.toml) and binaries.
+# - Manually (workflow_dispatch): build and check only, publish nothing – a
+#   dry run of the release build for both platforms, also when started on a
+#   tag. Pull requests check the amd64 image in ci.yml (job "Image").
+#
+# Jobs: "Build and check" (read-only) → "Publish" (pushed tags only; the only
+# job with write permissions; one at a time across all tags).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: Build and check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # git-cliff and the check "tag is on main"
+          persist-credentials: false
+
+      - name: Version
+        id: version
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::Version in package.json ($version) and Cargo.toml ($cargo_version) differ"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match version $version (tags are set by just release-tag)"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::Tag $GITHUB_REF_NAME is not on main"
+              exit 1
+            fi
+            # Only the release commit itself (as `just release-tag` sets it):
+            # a tag on a later commit of main with the same version would
+            # publish unreleased code as x.y.z, x.y and latest. The squash
+            # merge appends " (#<PR>)" to the title.
+            title=$(git log -1 --format=%s "$GITHUB_SHA")
+            if [ "$(printf '%s\n' "$title" | sed -E 's/ \(#[0-9]+\)$//')" != "chore(release): v$version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME is not on the release commit 'chore(release): v$version' but on '$title'"
+              exit 1
+            fi
+          fi
+          case $version in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+          echo "BUILD_DATE=$(git log -1 --format=%cI)" >>"$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: ./.github/actions/setup-node
+      # No build cache: tag runs cannot read the cache of another tag, and a
+      # cold build of the release binaries only takes a few minutes.
+      - name: Set up the release build
+        uses: ./.github/actions/setup-dist
+        with:
+          cache: "false"
+
+      - name: Web app and binaries (just dist)
+        run: pnpm exec just dist
+
+      - name: Check binaries
+        run: |
+          check() { # <file> <architecture as reported by file>
+            info=$(file -b "$1")
+            echo "$1: $info"
+            echo "$info" | grep -q "$2" || { echo "::error::$1 is not built for $2"; exit 1; }
+            echo "$info" | grep -Eq '(statically|static-pie) linked' || { echo "::error::$1 is not statically linked"; exit 1; }
+            # Dependency list from cargo auditable for SBOM and Trivy
+            readelf -S "$1" | grep -q '\.dep-v0' || { echo "::error::$1 without section .dep-v0 (cargo auditable)"; exit 1; }
+          }
+          check dist/amd64/roedy-hub x86-64
+          check dist/arm64/roedy-hub aarch64
+
+      # BuildKit pinned by digest (.github/buildkit/Dockerfile).
+      - name: Set up Docker Buildx
+        uses: ./.github/actions/setup-buildx
+      - name: Build image for amd64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: roedy-hub:test
+          provenance: false
+          sbom: false
+
+      - name: Check size (≤ 25 MB)
+        run: |
+          size=$(docker image inspect -f '{{.Size}}' roedy-hub:test)
+          echo "Image linux/amd64: $((size / 1000)) kB" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt 25000000 ]; then
+            echo "::error::Image larger than 25 MB"
+            exit 1
+          fi
+      - name: Smoke test and idle memory (≤ 40 MB)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/image-smoke.sh roedy-hub:test "$VERSION"
+      - name: Vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: roedy-hub:test
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Release notes (git-cliff)
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: pnpm exec git-cliff --latest --strip all >dist/release-notes.md
+      - name: Binary archives
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist/assets
+          for arch in amd64 arm64; do
+            tar -C "dist/$arch" -czf "dist/assets/roedy-hub-$VERSION-linux-$arch.tar.gz" \
+              --owner=0 --group=0 --mtime="$BUILD_DATE" roedy-hub
+          done
+          (cd dist/assets && sha256sum -- *.tar.gz >SHA256SUMS)
+          cat dist/assets/SHA256SUMS
+      - name: Upload release files
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/amd64/roedy-hub
+            dist/arm64/roedy-hub
+            dist/assets/
+            dist/release-notes.md
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    # Only a pushed tag publishes; a manual run stays a dry run even on a tag.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    # One release at a time, so that two tags cannot move x.y and latest at
+    # once (the step "Shared tags" decides which release owns them). `queue:
+    # max` keeps every waiting release instead of replacing the pending one.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # GitHub release
+      packages: write # ghcr.io
+      id-token: write # keyless cosign and attestations (Sigstore)
+      attestations: write
+      artifact-metadata: write # storage records of the attestations
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # all tags for "Shared tags"
+          persist-credentials: false
+      - name: Download release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      # BuildKit pinned by digest (.github/buildkit/Dockerfile).
+      - name: Set up Docker Buildx
+        uses: ./.github/actions/setup-buildx
+      - name: Log in to ghcr.io
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # A moved or re-created tag must not overwrite a published version (and
+      # with it x.y and latest): the push only happens if the tag is missing.
+      # If it was published from this very commit, a rerun after a failure past
+      # the push (signing, attestations, release) continues with the published
+      # digest and pushes nothing, so x.y and latest stay where they are.
+      - name: Version not yet published
+        id: published
+        run: |
+          err="$RUNNER_TEMP/inspect.err"
+          # Resolve the tag once; the revision is read from that digest, so the
+          # digest used below is the one that was checked.
+          if manifest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$IMAGE:$VERSION" 2>"$err"); then
+            digest=$(printf '%s\n' "$manifest" | jq -r .digest)
+            if ! printf '%s\n' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}'; then
+              echo "::error::No digest for $IMAGE:$VERSION (found '$digest')"
+              exit 1
+            fi
+            revision=$(docker buildx imagetools inspect --raw "$IMAGE@$digest" | jq -r '.annotations["org.opencontainers.image.revision"] // empty')
+            if [ "$revision" != "$GITHUB_SHA" ]; then
+              echo "::error::$IMAGE:$VERSION is already published from ${revision:-an unknown commit}; releases are never overwritten"
+              exit 1
+            fi
+            echo "$IMAGE:$VERSION was published from this commit ($digest); the rerun completes the release without pushing"
+            echo "digest=$digest" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat "$err"
+          # Fail closed: only "not found" counts as unpublished, not every error.
+          if ! grep -Eqi 'not found|manifest unknown|name unknown' "$err"; then
+            echo "::error::Could not check whether $IMAGE:$VERSION is already published"
+            exit 1
+          fi
+          echo "$IMAGE:$VERSION is not published yet"
+      # x.y and latest belong to the newest stable release, whatever order the
+      # releases publish in: a release older than another stable tag of its
+      # x.y (or of the repository) leaves x.y (or latest) where they are and
+      # only publishes its full version. Decided from the Git tags, so a
+      # delayed or rerun older release cannot move them back.
+      - name: Shared tags
+        id: shared
+        run: |
+          # Stable release tags only: vX.Y.Z, nothing else (no pre-releases,
+          # no v1 or v0.2.99.1).
+          stable() { git tag --list 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//'; }
+          minor=false
+          latest=false
+          if [ "$PRERELEASE" != true ]; then
+            series=$(printf '%s\n' "$VERSION" | cut -d. -f1-2)
+            newest_series=$(stable | awk -F. -v s="$series" '$1 "." $2 == s' | sort -V | tail -n 1)
+            newest=$(stable | sort -V | tail -n 1)
+            if [ "$newest_series" = "$VERSION" ]; then minor=true; fi
+            if [ "$newest" = "$VERSION" ]; then latest=true; fi
+          fi
+          echo "x.y: $minor, latest: $latest" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "minor=$minor" >>"$GITHUB_OUTPUT"
+          echo "latest=$latest" >>"$GITHUB_OUTPUT"
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ env.IMAGE }}
+          # Pre-releases only get {{version}}; x.y and latest per "Shared tags".
+          flavor: |
+            latest=${{ steps.shared.outputs.latest }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.shared.outputs.minor }}
+          labels: |
+            org.opencontainers.image.title=Roedy Hub
+            org.opencontainers.image.description=Gateway, sign-in and home page for the Roedy apps
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          annotations: |
+            org.opencontainers.image.title=Roedy Hub
+            org.opencontainers.image.description=Gateway, sign-in and home page for the Roedy apps
+            org.opencontainers.image.licenses=AGPL-3.0-only
+      - name: Push multi-arch image
+        id: push
+        if: steps.published.outputs.digest == ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Sign image (cosign)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest || steps.published.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      - name: Attest image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest || steps.published.outputs.digest }}
+          push-to-registry: true
+      - name: Attest binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/assets/*.tar.gz
+
+      - name: Check published image
+        env:
+          DIGEST: ${{ steps.push.outputs.digest || steps.published.outputs.digest }}
+        run: |
+          platforms=$(docker buildx imagetools inspect --raw "$IMAGE:$VERSION" | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"')
+          echo "$platforms"
+          for platform in linux/amd64 linux/arm64; do
+            echo "$platforms" | grep -qx "$platform" || { echo "::error::$platform missing from the image"; exit 1; }
+          done
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+          docker pull "$IMAGE:$VERSION"
+          scripts/image-smoke.sh "$IMAGE:$VERSION" "$VERSION"
+      # docs/ops.md promises an anonymous pull. GHCR creates a new package as
+      # private, and GITHUB_TOKEN cannot change that: after the first release a
+      # maintainer makes the package public once (CONTRIBUTING.md › Releases).
+      - name: Image pullable without login
+        run: |
+          docker logout ghcr.io
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "$IMAGE:$VERSION is public"
+          else
+            echo "::warning::$IMAGE:$VERSION cannot be pulled without login: make the package public (CONTRIBUTING.md › Releases)"
+          fi
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.push.outputs.digest || steps.published.outputs.digest }}
+        run: |
+          # shellcheck disable=SC2016 # backticks are Markdown
+          {
+            cat dist/release-notes.md
+            printf '\n## Container image\n\n```sh\ndocker pull %s:%s\n```\n\n' "$IMAGE" "$VERSION"
+            printf 'Platforms linux/amd64 and linux/arm64, digest `%s`, signed with cosign; SBOM and provenance are attached to the image as attestations.\n\n' "$DIGEST"
+            printf '## Binaries\n\nStatic Linux binaries with the embedded web app are attached below; verify them with `SHA256SUMS` or `gh attestation verify <file> --repo %s`.\n' "$GITHUB_REPOSITORY"
+          } >release-notes.md
+          prerelease=()
+          if [ "$PRERELEASE" = true ]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md "${prerelease[@]}" dist/assets/*

@@ -1,0 +1,42 @@
+name: Set up the release build
+description: >-
+  Rust with the musl targets of the image, Zig, cargo-zigbuild and
+  cargo-auditable for `just dist` (ci.yml and release.yml).
+  Zig comes straight from ziglang.org, checked against the SHA-256 from
+  https://ziglang.org/download/index.json (no setup action that still runs on
+  Node 20). Taken over from Roedy Mail's release.yml (../mail). Needs the
+  repository checked out.
+
+inputs:
+  targets:
+    description: Rust targets, comma-separated
+    default: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+  cache:
+    description: Restore and (on main) save the cargo build cache
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Rust
+      uses: ./.github/actions/setup-rust
+      with:
+        targets: ${{ inputs.targets }}
+        cache: ${{ inputs.cache }}
+    - name: Install Zig
+      shell: bash
+      env:
+        ZIG_VERSION: 0.17.0
+        ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+      run: |
+        archive="$RUNNER_TEMP/zig.tar.xz"
+        curl -fsSL --retry 3 -o "$archive" "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+        echo "$ZIG_SHA256  $archive" | sha256sum -c -
+        mkdir "$RUNNER_TEMP/zig"
+        tar -xJf "$archive" -C "$RUNNER_TEMP/zig" --strip-components=1
+        echo "$RUNNER_TEMP/zig" >>"$GITHUB_PATH"
+        "$RUNNER_TEMP/zig/zig" version
+    - name: Install cargo-zigbuild and cargo-auditable
+      uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+      with:
+        tool: cargo-zigbuild@0.24.0,cargo-auditable@0.7.7
