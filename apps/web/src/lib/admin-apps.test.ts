@@ -348,6 +348,25 @@ describe('Administration › Apps › an app', () => {
     expect(p.app?.access_default).toBe('selected');
   });
 
+  it('keeps a default chosen while a new pairing code was on its way', async () => {
+    let code: (a: { body: unknown }) => void = () => {};
+    const { p } = await app({
+      'GET admin/apps/mail': [{ body: { app: pairedApp() } }],
+      'GET admin/apps/mail/users': [{ body: USERS }],
+      'POST admin/apps/mail/pairing-code': [() => new Promise((r) => (code = r))],
+      'PATCH admin/apps/mail': [{ body: { app: pairedApp({ access_default: 'selected' }) } }],
+    });
+    const asked = p.newCode();
+    p.setDefault('selected');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Default for new users saved'));
+    // The code's response was made before the save: it still names the old default.
+    code({ body: { app: pairedApp({ pairing: { expires_at: PAIRING.expires_at } }), pairing: PAIRING } });
+    await asked;
+    expect(p.pairing).toEqual(PAIRING);
+    expect(p.app?.pairing?.expires_at).toBe(PAIRING.expires_at);
+    expect(p.app?.access_default).toBe('selected');
+  });
+
   it('drops a load that started before a default change', async () => {
     let late: (a: { body: unknown }) => void = () => {};
     const { p } = await app({

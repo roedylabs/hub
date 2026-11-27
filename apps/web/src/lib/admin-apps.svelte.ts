@@ -423,10 +423,13 @@ export class AppPage {
   async newCode(): Promise<void> {
     if (this.busy || !this.app) return;
     this.busy = true;
+    const gen = this.#defaultGen;
     try {
       const res = await api<{ app: AdminApp; pairing: Pairing }>('POST', `admin/apps/${this.#slug}/pairing-code`);
       if (this.#disposed) return;
-      this.app = res.app;
+      // A default chosen since, or still being saved, stays: the response may predate it.
+      const keep = (gen !== this.#defaultGen || this.#saving > 0) && this.app;
+      this.app = keep ? { ...res.app, access_default: keep.access_default } : res.app;
       this.pairing = res.pairing;
     } catch (error) {
       this.#failed(error);
