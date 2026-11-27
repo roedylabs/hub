@@ -509,18 +509,36 @@ pub fn page(conn: &Connection, app_id: &str, after: u64, limit: usize) -> rusqli
 /// Per app only the events before its oldest one to keep: if the clock went
 /// back, a later `seq` can carry an older `created_at`, and deleting it
 /// alone would leave a gap that [`page`] cannot see. So what remains is
-/// always every event from some `seq` on.
+/// always every event from some `seq` on. The boundary is looked up once
+/// per app, and the deletion goes by `(app_id, seq)`, so a run stays linear
+/// in the number of events.
 pub fn delete_older_than(conn: &Connection, keep: Duration) -> rusqlite::Result<usize> {
-    conn.execute(
-        "DELETE FROM events \
-         WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1) \
-           AND seq < coalesce( \
-               (SELECT min(young.seq) FROM events young \
-                WHERE young.app_id = events.app_id \
-                  AND young.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)), \
-               9223372036854775807)",
-        [modifier('-', keep)],
-    )
+    db::atomic(conn, |conn| {
+        let cutoff: String = conn.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+            [modifier('-', keep)],
+            |row| row.get(0),
+        )?;
+        // Apps with something to delete, and the first `seq` each keeps
+        // (none: everything goes).
+        let bounds: Vec<(String, Option<i64>)> = conn
+            .prepare(
+                "SELECT old.app_id, \
+                        (SELECT min(young.seq) FROM events young \
+                         WHERE young.app_id = old.app_id AND young.created_at >= ?1) \
+                 FROM (SELECT DISTINCT app_id FROM events WHERE created_at < ?1) old",
+            )?
+            .query_map([&cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut deleted = 0;
+        for (app_id, keep_from) in bounds {
+            deleted += conn.execute(
+                "DELETE FROM events WHERE app_id = ?1 AND seq < ?2",
+                (app_id, keep_from.unwrap_or(i64::MAX)),
+            )?;
+        }
+        Ok(deleted)
+    })
 }
 
 #[cfg(test)]
