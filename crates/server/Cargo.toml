@@ -28,6 +28,19 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["
 clap = { version = "4.6.7", features = ["derive"] }
 figment = { version = "0.10.19", features = ["env"] }
 getrandom = "0.4.3"
+# The gateway's client to the apps (`gateway`): hyper's pooled client over
+# HTTP/1.1 with streaming bodies and upgrades (WebSocket), in the tree with
+# axum and reqwest already. http-body-util for the response bodies.
+http-body-util = "0.1.5"
+hyper = { version = "1.13.0", features = ["client", "http1"] }
+# TLS for apps with an `https` internal address, as the health checks
+# (reqwest) do: the same hyper-rustls and verifier reqwest brings, with
+# rustls' ring provider.
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "tls12"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
+# The connector with a deadline for lookup, TCP and TLS (`gateway::client`);
+# hyper-util's trait crate.
+tower-service = "0.3.3"
 # MACs with the instance key (`crypto`); the same trait crate as chacha20poly1305.
 hmac = "0.13.0"
 # Letters and marks in display names (general category); already comes with
@@ -48,6 +61,7 @@ roedy-hub-contract = { path = "../contract" }
 roedy-jmap = { path = "../jmap" }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7.1"
 rust-embed = { version = "8.13.0", features = ["debug-embed", "deterministic-timestamps"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -79,12 +93,15 @@ skrifa = { version = "0.50.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 figment = { version = "0.10.19", features = ["env", "test"] }
-http-body-util = "0.1"
+# The gateway's tests: a WebSocket client and streams, the crates the example
+# app's tests use already.
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 # The example app: pairing over real connections (tests/apps.rs) and, with
 # the gateway, the proxy tests.
 roedy-hub-example = { path = "../example-app" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util"] }
+tokio-tungstenite = "0.29.0"
 tower = { version = "0.5", features = ["util"] }
 
 [lints]

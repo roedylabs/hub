@@ -242,7 +242,7 @@ async fn one_user(
         return Err(own_account());
     }
     let target = id.clone();
-    let challenges = state.challenges.clone();
+    let after = state.clone();
     admin_change_then(
         state,
         admin,
@@ -263,7 +263,11 @@ async fn one_user(
         },
         move |(_, ends_sign_ins)| {
             if *ends_sign_ins {
-                challenges.discard_user(&id);
+                after.challenges.discard_user(&id);
+                after.end_user_sessions(&id, None);
+            } else {
+                // A new role reaches the apps with the next request.
+                after.gateway.sessions.forget_user(&id, None);
             }
         },
     )
@@ -421,7 +425,7 @@ async fn bulk(
     let mut ids: BTreeSet<String> = body.ids.into_iter().collect();
     ids.remove(&admin.id);
     let action = body.action;
-    let challenges = state.challenges.clone();
+    let after = state.clone();
     let (changed, _) = admin_change_then(
         &state,
         admin,
@@ -458,9 +462,13 @@ async fn bulk(
             }
             Ok(Ok((changed, gone)))
         },
-        move |(_, gone)| {
+        move |(changed, gone)| {
+            for id in changed.iter() {
+                after.gateway.sessions.forget_user(id, None);
+            }
             for id in gone.iter() {
-                challenges.discard_user(id);
+                after.challenges.discard_user(id);
+                after.end_user_sessions(id, None);
             }
         },
     )

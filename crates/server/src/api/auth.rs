@@ -346,6 +346,9 @@ async fn sign_in(
     ticket: Option<Ticket>,
 ) -> Result<SignedIn, ApiError> {
     let worker = state.clone();
+    let previous_sid = previous
+        .as_ref()
+        .map(|CurrentUser(user)| user.session_id.clone());
     let started = db::call(&state.db, move |conn| {
         let previous = previous.map(|CurrentUser(user)| user);
         let mut outbox = Outbox::default();
@@ -380,6 +383,10 @@ async fn sign_in(
     match started {
         (Started::Done(user, cookie), _) => {
             tracing::info!(user = %user.id, "signed in");
+            // A new session replaced the browser's earlier one.
+            if let Some(previous) = previous_sid.filter(|sid| *sid != user.session_id) {
+                state.end_session(&previous);
+            }
             Ok(SignedIn::Done(user, cookie))
         }
         (Started::Code, Some(cookie)) => Ok(SignedIn::Code(cookie)),
@@ -694,6 +701,7 @@ async fn logout(
     user: Option<CurrentUser>,
 ) -> Result<Response, ApiError> {
     if let Some(CurrentUser(user)) = user {
+        let sid = user.session_id.clone();
         db::call(&state.db, move |conn| {
             let tx = conn.transaction()?;
             end_own_session(&tx, &user, ip)?;
@@ -701,6 +709,8 @@ async fn logout(
             Ok(())
         })
         .await?;
+        // Its streams and WebSockets to the apps close (contract § 5.3).
+        state.end_session(&sid);
     }
     Ok((
         StatusCode::NO_CONTENT,

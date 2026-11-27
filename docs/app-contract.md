@@ -84,7 +84,8 @@ These first path segments belong to the hub and can never be a slug:
 
 Inside an app's prefix, `/<slug>/_roedy/` is reserved for calls from the hub
 to the app ([§ 10](#10-events)). The hub answers 404 to any request from
-outside for this path and never forwards it.
+outside for this path and never forwards it – also in the spellings a server
+may normalize to it (percent-encoded, with empty, `.` or `..` segments).
 
 ### 3.2 Request headers the hub sends to the app
 
@@ -123,10 +124,10 @@ stricter.
 
 | Limit | Value |
 |---|---|
-| Connect to the app | 5 s, then 502 `app_unreachable` |
-| Until the app's response headers | 300 s, then 504 `app_timeout` |
+| Connect to the app (name lookup, TCP, TLS) | 5 s, then 502 `app_unreachable` |
+| Until the app's response headers | 300 s after the hub has taken the request body's last part to send it (an earlier response counts at once), then 504 `app_timeout`. The upload itself has no time limit; an app that stops reading the last bytes counts as not answering. |
 | Response and request bodies | Streamed in both directions without buffering; no total time limit, no size limit at the hub |
-| Request headers | 64 KiB in total |
+| Request headers | 64 KiB in total, then 431 `headers_too_large` |
 | Protocol to the app | HTTP/1.1 (the hub does not speak h2c to apps) |
 | Compression | None by the hub; the TLS proxy in front compresses |
 
@@ -147,7 +148,12 @@ WebSocket ping).
   `Origin` as well.
 - **End of a session:** when a hub session ends (sign-out, revoked, user
   locked or deleted), the hub closes the session's open streams and WebSocket
-  connections to all apps within 5 seconds.
+  connections to all apps within 5 seconds. Sessions that end without the
+  hub's own action (they expire, or another process such as the hub's
+  command line ends them) are found by a periodic check; while the hub's
+  database is too busy to answer that check, their streams stay open until
+  it does. Apps learn about every ended session from `session.revoked`
+  ([§ 10](#10-events)) as well.
 
 ### 3.6 Namespaces in the browser
 
@@ -802,9 +808,10 @@ page loads (`Sec-Fetch-Mode: navigate`, or `Accept` with `text/html` and no
 | 403 | `no_app_access` | Signed in, but no access to this app |
 | 403 | `origin_mismatch` | WebSocket upgrade from another origin |
 | 404 | `not_found` | No app with this slug; `/<slug>/_roedy/…` from outside |
+| 431 | `headers_too_large` | Request headers beyond 64 KiB ([§ 3.4](#34-limits-and-timeouts)); always JSON |
 | 502 | `app_unreachable` | The app does not accept the connection |
 | 503 | `app_not_ready` | The app waits for pairing, and the user is not a hub administrator |
-| 504 | `app_timeout` | No response headers within 300 s |
+| 504 | `app_timeout` | No response headers within 300 s after the request body ([§ 3.4](#34-limits-and-timeouts)) |
 
 Errors of the app itself (its 401, 403, 404, 5xx) reach the browser unchanged.
 

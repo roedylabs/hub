@@ -8,7 +8,8 @@
 //! receives is still valid for at least 30 s – and while the claims and the
 //! signing key are the same. A change of name, role or language, a fresh
 //! sign-in (`auth_time`) or a new signing key gives a new token at once.
-//! [`Identities::forget_session`] drops a revoked session's tokens.
+//! [`Identities::forget_session`] and [`Identities::forget_user`] drop the
+//! tokens of revoked sessions.
 
 use std::{
     collections::HashMap,
@@ -171,6 +172,13 @@ impl Identities {
     /// Drops the cached tokens of a session, when it is revoked.
     pub fn forget_session(&self, sid: &str) {
         self.lock().tokens.retain(|(session, _), _| session != sid);
+    }
+
+    /// Drops the cached tokens of a user's sessions except `keep`.
+    pub fn forget_user(&self, sub: &str, keep: Option<&str>) {
+        self.lock().tokens.retain(|(session, _), cached| {
+            cached.subject.sub != sub || Some(session.as_str()) == keep
+        });
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
@@ -403,6 +411,18 @@ mod tests {
         // Signed anew (the same token: Ed25519 is deterministic).
         hub.issue("mail", &subject(), t0());
         assert_eq!(hub.identities.cached(), 2);
+        // The user's sessions except one; another user's stay.
+        let stranger = Subject {
+            sub: "01JDX2Q7B5W3Y1Z9X7V5T3R1P1".into(),
+            sid: "01JDX3A1C3E5G7J9K1M3N5P7R1".into(),
+            ..subject()
+        };
+        hub.issue("mail", &stranger, t0());
+        hub.identities.forget_user(&subject().sub, Some(&other.sid));
+        assert_eq!(hub.identities.cached(), 2);
+        hub.identities.forget_user(&subject().sub, None);
+        assert_eq!(hub.identities.cached(), 1);
+        hub.issue("mail", &subject(), t0());
 
         // Many sessions: once there are PRUNE_FROM, stale tokens go.
         for i in 0..PRUNE_FROM {

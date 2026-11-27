@@ -355,8 +355,53 @@ checks pass in every PR; every PR has tests for what it adds.
       responses for the gateway's tests; axum's `ws` brings
       tokio-tungstenite, only into the example). Not yet: the browser API,
       the icon endpoint, order and access default, access per user (5).
-   3. **Gateway proxy** – routing, header rules, streaming, WebSocket,
+   3. [x] **Gateway proxy** – routing, header rules, streaming, WebSocket,
       session cache, the identity header, cancelling streams on revocation.
+      Done: `gateway` as the public listener's fallback – a first segment
+      with a slug's format that is not reserved goes to the app from the
+      `AppTable`, everything else stays with the web app; unknown slugs and
+      `/<slug>/_roedy/…` (also percent-encoded or with dot segments) `404
+      not_found`; a paired app gets requests without identity when signed
+      out, with `X-Roedy-Identity` (`identity::Identities::issue`, the role
+      from `app_access`) with access, else `403 no_app_access`; a pending
+      app only hub administrators' requests, without identity, else `503
+      app_not_ready`. The session cache (`gateway::sessions`, 10 s per
+      cookie, with language and roles per app; a revocation during a check
+      keeps its result out) is cleared at once by `AppState::end_session`
+      and `end_user_sessions` – sign-out, revoking devices, "Sign out all
+      others", password change and reset, deleting the own account, lock
+      and removal (also in bulk), a sign-in or invitation that replaces the
+      browser's session; a role change drops the cache entries. hyper's
+      pooled client (HTTP/1.1, `hyper-rustls` with the platform verifier
+      for `https` addresses, as reqwest's), bodies streamed both ways,
+      WebSocket via hyper's upgrades and `copy_bidirectional` after the
+      app's `101`, `Origin` other than the hub's `403 origin_mismatch`.
+      Header rules as pure functions in `gateway::headers` with
+      table-driven tests (`client_ip::trusted_entries` shared with the
+      hub's own client IP). Limits (`gateway::Limits`): 5 s to connect →
+      `502 app_unreachable`, 300 s from the end of the request body to the
+      response headers → `504 app_timeout`, 64 KiB of request headers → `431 headers_too_large`
+      (added to contract § 3.4 and § 12). Errors as JSON with `no-store`,
+      for page loads the web app with `<meta name="roedy-error">`
+      (`static_files::error_page`, with the hub's security headers); the
+      app's responses are marked `Proxied` and keep their own headers.
+      Response bodies and WebSockets are registered per session
+      (`gateway::sessions::Streams`) and close when it ends – also when it
+      ended while the request waited for the app (checked again after the
+      registration); the job `gateway_streams` (every second, a query of at
+      most 1 s, only while streams are open) closes those of sessions
+      that ended otherwise (expired, trimmed, `reset-admin`), the shutdown
+      all of them. The connect deadline covers lookup, TCP and TLS
+      (`gateway::client::Deadline`); the 300 s count from the end of the
+      request body (`gateway::client::Upload`), so uploads have no time
+      limit. Tests: unit tests of the
+      rules, routing and access, and `tests/gateway.rs` against the example
+      app over real connections (path and query, headers both ways, the
+      identity verified at the app and its rejections with the hub's real
+      key, key rotation with a JWKS refresh, permissions, error pages, SSE
+      before the stream ends, WebSocket echo and close, 64 MiB up and down
+      with flat memory, timeouts, unreachable app, streams closed on
+      sign-out, lock and expiry).
    4. **Events** – delivery with backoff, catch-up, retention.
 5. **Home page and permissions** – home page tiles, browser API
    (`/api/v1/session`, `/api/v1/apps`, icons), administration of apps (add,

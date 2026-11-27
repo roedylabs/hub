@@ -10,8 +10,8 @@
 //!   the last segment (`/invite/a.b`). Missing files under `_hub/` or with a
 //!   known file extension (`.js`, `.png` …, table [`known_type`]) and
 //!   everything under `/api` and `/internal` give 404 – otherwise a missing
-//!   script would get HTML. Until the gateway exists, the paths of the apps
-//!   get the SPA as well.
+//!   script would get HTML. The paths of the apps go to the gateway
+//!   (`gateway`), which uses [`error_page`] for its own errors.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/web/static_files.rs`) with
 //! `_hub` instead of `_app`.
@@ -293,6 +293,39 @@ pub async fn serve(
         response.extensions_mut().insert(scripts);
     }
     response
+}
+
+/// The web app's page for an error the gateway answers itself
+/// (docs/app-contract.md › Errors): `index.html` with
+/// `<meta name="roedy-error" content="<code>">` in its head, so that the page
+/// shows that error at the requested address. Not cached. `None` without a
+/// web app (or with one that has no head).
+pub async fn error_page(state: &AppState, status: StatusCode, code: &str) -> Option<Response> {
+    let asset = state.web.get(INDEX).await?;
+    let html = &asset.body;
+    let end = html
+        .windows(7)
+        .position(|window| window.eq_ignore_ascii_case(b"</head>"))?;
+    let meta = format!("<meta name=\"roedy-error\" content=\"{code}\">");
+    let mut page = Vec::with_capacity(html.len() + meta.len());
+    page.extend_from_slice(&html[..end]);
+    page.extend_from_slice(meta.as_bytes());
+    page.extend_from_slice(&html[end..]);
+    let scripts = InlineScripts::of_html(&page);
+    let mut response = (
+        status,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        page,
+    )
+        .into_response();
+    response.extensions_mut().insert(scripts);
+    Some(response)
 }
 
 /// File with ETag and `Cache-Control`: 304 if the browser already has this
