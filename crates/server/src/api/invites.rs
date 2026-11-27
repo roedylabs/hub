@@ -69,6 +69,7 @@ use crate::{
         repo::{
             audit_log::{self, Category, Entry},
             email_changes,
+            events::Reason,
             invitations::{self, Found, Invitation, NewInvitation, TOKEN_PURPOSE, TOTP_PURPOSE},
             known_devices, sessions, totp_devices,
             users::{self, NewUser, Role},
@@ -855,7 +856,7 @@ async fn accept(
         invitations::delete(&tx, &invite.id)?;
         // Like a sign-in: an earlier session of the browser ends.
         if let Some(previous) = &previous {
-            sessions::delete(&tx, &previous.id, &previous.session_id)?;
+            sessions::delete(&tx, &previous.id, &previous.session_id, Reason::Logout)?;
         }
         let client = origin.client();
         let started = session::start(&tx, &user_id, &client, true)?;

@@ -120,6 +120,29 @@ pub fn new_id() -> anyhow::Result<String> {
     Ok(ulid::Ulid::from_parts(millis, u128::from_le_bytes(random)).to_string())
 }
 
+/// Runs `f` atomically in a savepoint: inside the caller's transaction as
+/// well as without one. For changes that write several statements, such as
+/// a change and the events it causes (`repo::events`), whatever the caller
+/// does. An error rolls back what `f` wrote and comes back unchanged.
+pub fn atomic<T, E: From<rusqlite::Error>>(
+    conn: &Connection,
+    f: impl FnOnce(&Connection) -> Result<T, E>,
+) -> Result<T, E> {
+    conn.execute_batch("SAVEPOINT atomic")?;
+    match f(conn) {
+        Ok(value) => {
+            conn.execute_batch("RELEASE atomic")?;
+            Ok(value)
+        }
+        Err(error) => {
+            // Without the savepoint (the connection failed) there is nothing
+            // left to roll back.
+            let _ = conn.execute_batch("ROLLBACK TO atomic; RELEASE atomic");
+            Err(error)
+        }
+    }
+}
+
 /// File name of the database in the data directory.
 pub const DB_FILE: &str = "roedy.sqlite3";
 
@@ -293,6 +316,34 @@ mod tests {
     fn bundled_sqlite_has_the_wal_fix() {
         // RUSTSEC-2026-0459: fixed from SQLite 3.54.
         assert!(rusqlite::version_number() >= 3_054_000);
+    }
+
+    #[test]
+    fn atomic_rolls_back_its_own_part_only() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (v INTEGER)").unwrap();
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+                .unwrap()
+        };
+        // Without a transaction.
+        atomic(&conn, |conn| conn.execute("INSERT INTO t VALUES (1)", [])).unwrap();
+        let failed: rusqlite::Result<()> = atomic(&conn, |conn| {
+            conn.execute("INSERT INTO t VALUES (2)", [])?;
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert!(failed.is_err());
+        assert_eq!(count(&conn), 1);
+        // Nested in the caller's transaction, which decides in the end.
+        let tx = conn.transaction().unwrap();
+        atomic(&tx, |conn| conn.execute("INSERT INTO t VALUES (3)", [])).unwrap();
+        let _ = atomic(&tx, |conn| -> rusqlite::Result<()> {
+            atomic(conn, |conn| conn.execute("INSERT INTO t VALUES (4)", []))?;
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert_eq!(count(&tx), 2);
+        drop(tx);
+        assert_eq!(count(&conn), 1, "rolled back with the transaction");
     }
 
     #[tokio::test]

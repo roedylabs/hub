@@ -1,7 +1,8 @@
 //! Health of the paired apps (every 30 s; docs/plan.md › Keys and events):
 //! `GET /<slug>/readyz` at each app's internal address, all at once, stored
 //! in `apps.health` and `health_at` and in the app table. A change between
-//! online and offline is logged.
+//! online and offline is logged. An app that is online again gets its event
+//! delivery back if the hub had given up on it (`events`).
 
 use std::{sync::Arc, time::Duration};
 
@@ -14,7 +15,10 @@ use crate::{
     apps::{self, App},
     db::{
         self,
-        repo::apps::{self as repo, Health},
+        repo::{
+            apps::{self as repo, Health},
+            events,
+        },
     },
 };
 
@@ -73,7 +77,11 @@ async fn check(state: &AppState, apps: Vec<Arc<App>>) -> anyhow::Result<Vec<(Str
     let changed = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         let mut changed = Vec::new();
+        let mut resumed = false;
         for (id, health) in &stored {
+            if *health == Health::Online {
+                resumed |= events::resume(&tx, id, true)?;
+            }
             let before = repo::by_id(&tx, id)?.map(|app| app.health);
             if repo::set_health(&tx, id, *health)? {
                 let before = before.flatten();
@@ -84,9 +92,13 @@ async fn check(state: &AppState, apps: Vec<Arc<App>>) -> anyhow::Result<Vec<(Str
         }
         tx.commit()?;
         api::apps::reload(&table, conn);
-        Ok(changed)
+        Ok((changed, resumed))
     })
     .await?;
+    let (changed, resumed) = changed;
+    if resumed {
+        state.events.wake();
+    }
     for (id, health) in changed {
         if let Some((app, _)) = results.iter().find(|(app, _)| app.id == id) {
             tracing::info!(

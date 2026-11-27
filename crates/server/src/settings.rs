@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
 use crate::{
-    db::repo::{user_settings, users},
+    db::repo::{events, user_settings, users},
     mailer::format::Format,
 };
 
@@ -309,7 +309,8 @@ pub fn load(conn: &Connection, user_id: &str) -> anyhow::Result<Stored> {
 }
 
 /// Stores `settings` as the successor of `version` and returns the new
-/// version; `None` if another one applies by now.
+/// version; `None` if another one applies by now. If the user's language
+/// changes with it, the apps get `user.updated` (`locale`).
 pub fn save(
     conn: &Connection,
     user_id: &str,
@@ -317,7 +318,9 @@ pub fn save(
     settings: &Settings,
 ) -> anyhow::Result<Option<i64>> {
     let json = serde_json::to_string(settings)?;
-    Ok(user_settings::save(conn, user_id, &json, version)?)
+    events::tracking_user(conn, user_id, |conn| {
+        Ok(user_settings::save(conn, user_id, &json, version)?)
+    })
 }
 
 /// A user's language for the server's texts ([`Stored::lang`]).

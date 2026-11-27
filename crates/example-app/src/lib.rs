@@ -6,8 +6,10 @@
 //! ([`Example::send_manifest`]), keeps the hub's JWKS and verifies the
 //! identity header with `roedy-hub-contract` ([`Example::identity`],
 //! refreshing the JWKS at most every 30 s for an unknown `kid`), reads the
-//! users endpoint and accepts events idempotently. Everything it serves is
-//! below its prefix `/<slug>` ([`Example::router`]):
+//! users endpoint, accepts events idempotently and catches up on missed ones
+//! ([`Example::catch_up`]: at start, and when a delivery skips a `seq`;
+//! after `410 events_expired` it continues from `resume_after`). Everything
+//! it serves is below its prefix `/<slug>` ([`Example::router`]):
 //!
 //! | Path | What it does |
 //! |---|---|
@@ -22,7 +24,7 @@
 //! | `/<slug>/download?bytes=&chunk=` | Streams `bytes` bytes (byte `i` is `i % 251`) |
 //! | `/<slug>/slow?ms=&body_ms=` | Waits `ms` before the headers and `body_ms` before the body |
 //! | `/<slug>/respond?status=&header=Name:%20Value&body=` | A response with this status, these headers (repeatable) and body |
-//! | `/<slug>/_roedy/v1/events` | Event delivery (contract § 10.1), `204` |
+//! | `/<slug>/_roedy/v1/events` | Event delivery (contract § 10.1), `204`; another status or a delay while [`Example::fail_events`] or [`Example::delay_events`] say so |
 //!
 //! The example keeps its connection to the hub in memory only; a real app
 //! stores the secret encrypted with its instance key (contract § 9).
@@ -54,7 +56,8 @@ use futures_util::{Stream, StreamExt as _, stream};
 use roedy_hub_contract::{
     Error as TokenError, Event, Expected, IDENTITY_HEADER, Identity, Jwks,
     pairing::{
-        ManifestAccepted, PairRequest, Paired, User, Users, is_valid_slug, normalize_pairing_code,
+        EventPage, ManifestAccepted, PairRequest, Paired, User, Users, is_valid_slug,
+        normalize_pairing_code,
     },
     verify,
 };
@@ -179,12 +182,33 @@ struct Inner {
     /// One permit per upgrade that reached the handler while held.
     websocket_held: tokio::sync::Notify,
     events: Mutex<Events>,
+    /// Deliveries and catch-ups process one at a time.
+    processing: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
 struct Events {
+    /// The highest `seq` processed (a real app stores it with its data).
     highest_seq: u64,
+    /// The events processed, in order.
     received: Vec<Event>,
+    /// Deliveries of events processed before, acknowledged again.
+    repeated: usize,
+    /// `resume_after` of the last `410 events_expired`.
+    resumed_after: Option<u64>,
+    /// Answer deliveries with this status instead of processing them.
+    fail_with: Option<u16>,
+    /// Wait this long before answering a delivery.
+    delay: Option<Duration>,
+}
+
+/// What [`Example::catch_up`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CatchUp {
+    /// Events processed.
+    pub processed: usize,
+    /// `resume_after` if the hub no longer had every event the app missed.
+    pub resumed_after: Option<u64>,
 }
 
 fn now() -> i64 {
@@ -225,6 +249,7 @@ impl Example {
             hold_websockets: tokio::sync::watch::Sender::new(false),
             websocket_held: tokio::sync::Notify::new(),
             events: Mutex::new(Events::default()),
+            processing: tokio::sync::Mutex::new(()),
         })))
     }
 
@@ -276,14 +301,103 @@ impl Example {
         self.0.ready.store(ready, Ordering::SeqCst);
     }
 
+    fn event_state(&self) -> std::sync::MutexGuard<'_, Events> {
+        self.0.events.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The events processed so far, in order.
     pub fn events(&self) -> Vec<Event> {
-        self.0
-            .events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .received
-            .clone()
+        self.event_state().received.clone()
+    }
+
+    /// The highest `seq` processed.
+    pub fn highest_seq(&self) -> u64 {
+        self.event_state().highest_seq
+    }
+
+    /// How many deliveries repeated an event processed before.
+    pub fn repeated_events(&self) -> usize {
+        self.event_state().repeated
+    }
+
+    /// `resume_after` of the last `410 events_expired`, if any.
+    pub fn resumed_after(&self) -> Option<u64> {
+        self.event_state().resumed_after
+    }
+
+    /// Answers deliveries with `status` instead of processing them (`None`:
+    /// normal again), as an app does while it reconciles (contract § 10.3).
+    pub fn fail_events(&self, status: Option<u16>) {
+        self.event_state().fail_with = status;
+    }
+
+    /// Waits `delay` before answering a delivery (`None`: at once).
+    pub fn delay_events(&self, delay: Option<Duration>) {
+        self.event_state().delay = delay;
+    }
+
+    /// Processes `event` unless its `seq` was processed before; `true` if
+    /// it was new.
+    fn apply(&self, event: Event) -> bool {
+        let mut state = self.event_state();
+        if event.seq <= state.highest_seq {
+            state.repeated += 1;
+            return false;
+        }
+        state.highest_seq = event.seq;
+        state.received.push(event);
+        true
+    }
+
+    /// Reads the events after the highest `seq` processed
+    /// (`GET /internal/v1/events`), as on every start (contract § 10.3);
+    /// after `410 events_expired` it continues from `resume_after` – the
+    /// example holds no user data, so reconciling needs nothing more.
+    pub async fn catch_up(&self) -> Result<CatchUp, HubError> {
+        let _processing = self.0.processing.lock().await;
+        self.catch_up_now().await
+    }
+
+    async fn catch_up_now(&self) -> Result<CatchUp, HubError> {
+        let mut done = CatchUp::default();
+        loop {
+            let after = self.highest_seq();
+            let page = match self
+                .call(
+                    Method::GET,
+                    &format!("/events?after={after}&limit=100"),
+                    None,
+                )
+                .await
+            {
+                Err(error) if error.status == 410 && error.code() == Some("events_expired") => {
+                    let resume = error
+                        .body
+                        .get("resume_after")
+                        .and_then(Value::as_u64)
+                        .filter(|resume| *resume > after)
+                        .ok_or_else(|| HubError::local("unexpected_answer", &error))?;
+                    let mut state = self.event_state();
+                    state.highest_seq = resume;
+                    state.resumed_after = Some(resume);
+                    done.resumed_after = Some(resume);
+                    continue;
+                }
+                result => Self::parse::<EventPage>(result?)?,
+            };
+            for token in &page.events {
+                let event = self
+                    .verified::<Event>(token)
+                    .await
+                    .map_err(|reason| HubError::local("invalid_event", reason.code()))?;
+                if self.apply(event) {
+                    done.processed += 1;
+                }
+            }
+            if !page.more || page.events.is_empty() {
+                return Ok(done);
+            }
+        }
     }
 
     async fn call(
@@ -805,8 +919,23 @@ async fn respond(request: Request) -> Response {
 
 /// Event delivery (contract § 10.1): verified like an identity with the
 /// event `typ`; an event at or below the highest `seq` processed is
-/// acknowledged again without acting.
+/// acknowledged again without acting. A `seq` beyond the next one means the
+/// app missed events: it catches up first (`503` if that fails, so that the
+/// hub tries again).
 async fn events(State(example): State<Example>, body: Bytes) -> Response {
+    let (fail_with, delay) = {
+        let state = example.event_state();
+        (state.fail_with, state.delay)
+    };
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    }
+    if let Some(status) = fail_with {
+        return json_error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+            "failing",
+        );
+    }
     let Ok(token) = std::str::from_utf8(&body) else {
         return json_error(StatusCode::BAD_REQUEST, "malformed");
     };
@@ -817,15 +946,11 @@ async fn events(State(example): State<Example>, body: Bytes) -> Response {
         }
         Err(reason) => return json_error(StatusCode::UNAUTHORIZED, reason.code()),
     };
-    let mut events = example
-        .0
-        .events
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if event.seq > events.highest_seq {
-        events.highest_seq = event.seq;
-        events.received.push(event);
+    let _processing = example.0.processing.lock().await;
+    if event.seq > example.highest_seq() + 1 && example.catch_up_now().await.is_err() {
+        return json_error(StatusCode::SERVICE_UNAVAILABLE, "catching_up");
     }
+    example.apply(event);
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -1138,8 +1263,19 @@ mod tests {
             example.events().iter().map(|e| e.seq).collect::<Vec<_>>(),
             [1, 2]
         );
+        assert_eq!(example.repeated_events(), 2);
         // An identity is no event.
         let identity = key().sign(&identity("example")).unwrap();
         assert_eq!(post(identity).await, StatusCode::UNAUTHORIZED);
+        // A gap needs a catch-up first; without the hub the delivery fails,
+        // so that the hub tries again.
+        assert_eq!(post(event(4)).await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(example.highest_seq(), 2);
+        // Failing on purpose, as while reconciling.
+        example.fail_events(Some(500));
+        assert_eq!(post(event(3)).await, StatusCode::INTERNAL_SERVER_ERROR);
+        example.fail_events(None);
+        assert_eq!(post(event(3)).await, StatusCode::NO_CONTENT);
+        assert_eq!(example.highest_seq(), 3);
     }
 }

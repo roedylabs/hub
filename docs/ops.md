@@ -49,8 +49,9 @@ account; the audit log records it. With several administrators, choose one with 
 operator never learns it; the old password stops working right away. Run it next to the server with the same
 `ROEDY_DATA_DIR`, for example in its container.
 
-**Cleanup:** the server deletes expired sessions and links from mails every hour, and audit log entries older than the
-retention chosen under Administration › Audit log (30, 90 or 365 days, default 90) once a day.
+**Cleanup:** the server deletes expired sessions and links from mails every hour, audit log entries older than the
+retention chosen under Administration › Audit log (30, 90 or 365 days, default 90) and events for the apps older
+than 30 days ([Events](#events)) once a day.
 
 ## Gateway
 
@@ -76,6 +77,18 @@ receives as well. A session is checked at most every 10 seconds per cookie; sign
 removing a user and changing the password take effect at once and close the session's open streams and WebSockets.
 Sessions that end otherwise (expired, signed out by `roedy-hub reset-admin`) lose them within 5 seconds, as long as
 the database answers within a second; a busier database delays it until a check gets through.
+
+## Events
+
+Changes to users, sessions and access reach the apps as signed events
+([app contract › Events](app-contract.md#10-events)), written in the same database transaction as the change and sent
+right after it to `POST <internal address>/<slug>/_roedy/v1/events`, one at a time in order per app. An app that does
+not answer `204` within 10 seconds gets the same event again after 10 s, 30 s, 1 min, 5 min, 15 min and then every
+hour; the first failure of a series is logged as a warning (`event delivery failed, retrying`, with the slug, `seq`
+and the reason: `status <code>`, `timeout` or `not reachable`), the repetitions only at `debug`. After 7 days the hub
+gives up (`event delivery given up until the app is back`) and tries again as soon as the app sends its manifest, reads
+missed events, pairs again or answers its health check. Events written by `roedy-hub reset-admin` go out within a
+minute. Events are kept for 30 days for apps that catch up; removing an app deletes its events.
 
 ## Health
 

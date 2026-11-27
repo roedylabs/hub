@@ -11,8 +11,8 @@
 //! - `POST admin/apps/:slug/pairing-code`: a new code for the app (pending or
 //!   paired: "New pairing code"); it replaces the open one. The code is shown
 //!   only in this response, valid for 15 minutes.
-//! - `DELETE admin/apps/:slug`: removes the app; its secret, pairing code and
-//!   access entries go with it.
+//! - `DELETE admin/apps/:slug`: removes the app; its secret, pairing code,
+//!   access entries and events go with it, and its event delivery stops.
 //!
 //! Every change runs in one transaction with `invites::admin_holds` and an
 //! audit entry in the category `apps`, and reloads the app table.

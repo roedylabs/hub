@@ -10,7 +10,7 @@ use crate::{
     auth::username,
     db::{
         self,
-        repo::{app_access, deleted_users},
+        repo::{app_access, deleted_users, events},
     },
     settings::Language,
 };
@@ -50,7 +50,8 @@ pub struct NewUser<'a> {
 }
 
 /// Creates an active user and returns its ID; the user gets access to the
-/// apps whose default is "everyone" (`app_access::grant_to_new_user`). If
+/// apps whose default is "everyone" (`app_access::grant_to_new_user`, with
+/// `access.changed` for those apps). If
 /// the username or email address is taken, the call fails on the uniqueness
 /// constraint (`rusqlite::ErrorCode::ConstraintViolation`).
 pub fn insert(conn: &Connection, user: &NewUser<'_>) -> anyhow::Result<String> {
@@ -60,21 +61,23 @@ pub fn insert(conn: &Connection, user: &NewUser<'_>) -> anyhow::Result<String> {
         user.username
     );
     let id = db::new_id()?;
-    conn.execute(
-        "INSERT INTO users (id, username, email, display_name, role, password_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        (
-            &id,
-            user.username,
-            user.email.trim(),
-            user.display_name.trim(),
-            user.role.as_str(),
-            user.password_hash,
-        ),
-    )
-    .context("user not created")?;
-    app_access::grant_to_new_user(conn, &id).context("app access not granted")?;
-    Ok(id)
+    db::atomic(conn, |conn| {
+        conn.execute(
+            "INSERT INTO users (id, username, email, display_name, role, password_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                &id,
+                user.username,
+                user.email.trim(),
+                user.display_name.trim(),
+                user.role.as_str(),
+                user.password_hash,
+            ),
+        )
+        .context("user not created")?;
+        app_access::grant_to_new_user(conn, &id).context("app access not granted")?;
+        Ok(id)
+    })
 }
 
 /// Whether an administrator exists – then setup is complete, regardless of
@@ -261,13 +264,16 @@ pub fn email_taken(
     )
 }
 
-/// New email address after the confirmation (`api::email`).
+/// New email address after the confirmation (`api::email`); `user.updated`
+/// for the apps.
 pub fn set_email(conn: &Connection, id: &str, email: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE users SET email = ?2 WHERE id = ?1",
-        (id, email.trim()),
-    )?;
-    Ok(())
+    events::tracking_user(conn, id, |conn| {
+        conn.execute(
+            "UPDATE users SET email = ?2 WHERE id = ?1",
+            (id, email.trim()),
+        )?;
+        Ok(())
+    })
 }
 
 /// Whether the username belongs to a user other than `except`.
@@ -281,31 +287,38 @@ pub fn username_taken(conn: &Connection, username: &str, except: &str) -> rusqli
 
 /// Changes display name and username (`None` = unchanged). If the username
 /// has been taken in the meantime, the call fails on the uniqueness
-/// constraint (`rusqlite::ErrorCode::ConstraintViolation`).
+/// constraint (`rusqlite::ErrorCode::ConstraintViolation`). A change gives
+/// `user.updated` for the apps.
 pub fn update_profile(
     conn: &Connection,
     id: &str,
     display_name: Option<&str>,
     username: Option<&str>,
 ) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE users SET display_name = coalesce(?2, display_name), \
-                          username = coalesce(?3, username) WHERE id = ?1",
-        (id, display_name.map(str::trim), username),
-    )?;
-    Ok(())
+    events::tracking_user(conn, id, |conn| {
+        conn.execute(
+            "UPDATE users SET display_name = coalesce(?2, display_name), \
+                              username = coalesce(?3, username) WHERE id = ?1",
+            (id, display_name.map(str::trim), username),
+        )?;
+        Ok(())
+    })
 }
 
 /// Stores the language of a sign-in (`German` or `English`; `System` is not
-/// a sign-in language and leaves the stored one as it is).
+/// a sign-in language and leaves the stored one as it is). If the user's
+/// language follows it and changes, the apps get `user.updated`.
 pub fn set_sign_in_lang(conn: &Connection, id: &str, lang: Language) -> rusqlite::Result<()> {
-    if lang != Language::System {
+    if lang == Language::System || sign_in_lang(conn, id)? == Some(lang) {
+        return Ok(());
+    }
+    events::tracking_user(conn, id, |conn| {
         conn.execute(
             "UPDATE users SET sign_in_lang = ?2 WHERE id = ?1",
             (id, lang.code()),
         )?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Language of the last sign-in that named one.
@@ -348,33 +361,46 @@ pub fn sole_admin(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     )
 }
 
-/// Unlocks the user (`reset-admin`, Administration › Users); `true` if
-/// they were locked.
+/// Unlocks the user (`reset-admin`, Administration › Users) with
+/// `user.unlocked` for the apps; `true` if they were locked.
 pub fn unlock(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let n = conn.execute(
-        "UPDATE users SET status = 'active' WHERE id = ?1 AND status <> 'active'",
-        [id],
-    )?;
-    Ok(n == 1)
+    db::atomic(conn, |conn| {
+        let n = conn.execute(
+            "UPDATE users SET status = 'active' WHERE id = ?1 AND status <> 'active'",
+            [id],
+        )?;
+        if n == 1 {
+            events::user_unlocked(conn, id)?;
+        }
+        Ok(n == 1)
+    })
 }
 
-/// Locks the user; `true` if they were active. Their sessions stop being
-/// valid immediately (`sessions::authenticate`); the caller deletes them.
+/// Locks the user with `user.locked` for the apps; `true` if they were
+/// active. Their sessions stop being valid immediately
+/// (`sessions::authenticate`); the caller deletes them.
 pub fn lock(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let n = conn.execute(
-        "UPDATE users SET status = 'locked' WHERE id = ?1 AND status = 'active'",
-        [id],
-    )?;
-    Ok(n == 1)
+    db::atomic(conn, |conn| {
+        let n = conn.execute(
+            "UPDATE users SET status = 'locked' WHERE id = ?1 AND status = 'active'",
+            [id],
+        )?;
+        if n == 1 {
+            events::user_locked(conn, id)?;
+        }
+        Ok(n == 1)
+    })
 }
 
-/// New role; `true` if it changed.
+/// New role with `user.updated` for the apps; `true` if it changed.
 pub fn set_role(conn: &Connection, id: &str, role: Role) -> rusqlite::Result<bool> {
-    let n = conn.execute(
-        "UPDATE users SET role = ?2 WHERE id = ?1 AND role <> ?2",
-        (id, role.as_str()),
-    )?;
-    Ok(n == 1)
+    events::tracking_user(conn, id, |conn| {
+        let n = conn.execute(
+            "UPDATE users SET role = ?2 WHERE id = ?1 AND role <> ?2",
+            (id, role.as_str()),
+        )?;
+        Ok(n == 1)
+    })
 }
 
 /// Entry of the list under Administration › Users.
@@ -420,13 +446,18 @@ pub fn get_listed(conn: &Connection, id: &str) -> rusqlite::Result<Option<Listed
 
 /// Removes the user with everything attached to them (`ON DELETE CASCADE`:
 /// sessions, authenticator apps, codes, settings, app access); their name
-/// stays in the audit log, their ID in `deleted_users` for the apps.
+/// stays in the audit log, their ID in `deleted_users` for the apps, which
+/// get `user.deleted` (and no events for the sessions and access that go
+/// with it).
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    if conn.execute("DELETE FROM users WHERE id = ?1", [id])? != 1 {
-        return Ok(false);
-    }
-    deleted_users::record(conn, id)?;
-    Ok(true)
+    db::atomic(conn, |conn| {
+        if conn.execute("DELETE FROM users WHERE id = ?1", [id])? != 1 {
+            return Ok(false);
+        }
+        deleted_users::record(conn, id)?;
+        events::user_deleted(conn, id)?;
+        Ok(true)
+    })
 }
 
 /// Free username from the email address: the suggestion from

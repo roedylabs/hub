@@ -8,6 +8,7 @@ pub mod assets;
 pub mod audit_log;
 pub mod deleted_users;
 pub mod email_changes;
+pub mod events;
 pub mod invitations;
 pub mod known_devices;
 pub mod password_resets;

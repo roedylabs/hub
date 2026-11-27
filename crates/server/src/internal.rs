@@ -7,12 +7,13 @@
 //! - `PUT /internal/v1/manifest` ([`pair::put_manifest`]): the manifest on
 //!   every start of the app.
 //! - `GET /internal/v1/users[/<sub>]` ([`users`]): the users with access.
+//! - `GET /internal/v1/events` ([`events`]): catching up on events.
 //!
 //! Every endpoint but `pair` and `jwks` needs the app secret
-//! ([`PairedApp`]); the events (`/internal/v1/events`) follow with
-//! milestone 4.4. Responses are JSON with `Cache-Control: no-store` unless
+//! ([`PairedApp`]). Responses are JSON with `Cache-Control: no-store` unless
 //! stated otherwise; bodies are limited to [`MAX_BODY`].
 
+pub mod events;
 pub mod pair;
 pub mod users;
 
@@ -52,6 +53,7 @@ pub fn router() -> Router<AppState> {
         .route(&format!("{PREFIX}/manifest"), put(pair::put_manifest))
         .route(&format!("{PREFIX}/users"), get(users::list))
         .route(&format!("{PREFIX}/users/{{sub}}"), get(users::show))
+        .route(&format!("{PREFIX}/events"), get(events::list))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,

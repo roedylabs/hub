@@ -670,7 +670,15 @@ The app verifies it as in [§ 4.3](#43-verification) with `typ` =
 - **Order and retries:** the hub delivers an app's events one at a time in
   `seq` order; the next one only after the previous one was acknowledged.
   After a failure it retries after 10 s, 30 s, 1 min, 5 min, 15 min and then
-  every hour, for up to 7 days.
+  every hour, for up to 7 days. After that it waits until the app shows that
+  it is back – it sends its manifest, catches up ([§ 10.3](#103-catching-up)),
+  pairs again or answers its health check – and then tries the same event
+  again at once.
+- **Gaps:** an event the hub could not deliver within the retention of 30
+  days is deleted, and the stream continues after it. A `seq` more than one
+  above the highest processed therefore means that the app missed events: it
+  catches up ([§ 10.3](#103-catching-up)) before it processes the delivery,
+  or answers `503` until it can.
 - **At least once:** an event can arrive more than once. The app stores the
   highest `seq` it has processed and acknowledges anything at or below it
   without acting again.
@@ -691,6 +699,20 @@ it: the app may hold data from earlier access.
 | `user.deleted` | `{"sub"}` | delete the user's data (or anonymize it, as the app documents) |
 | `session.revoked` | `{"sub", "sid", "reason"}`; `reason`: `logout`, `revoked`, `expired`, `password_changed`, `locked` | end server-side state bound to this session (push subscriptions, streams) |
 | `access.changed` | `{"sub", "access": true\|false, "app_role": "<id>"\|null}` – for this app only | apply the new role; on `false` treat the user like a locked one in this app, on `true` lift that again |
+
+- Events start with pairing: the first ones are `access.changed` for the
+  access granted then ([§ 11](#11-access-and-roles)). A pending app gets none.
+- A new user reaches the apps they get access to as `access.changed` with
+  `access: true`; there is no separate event for a new user. Their details
+  come with the identity or from `GET /internal/v1/users/<sub>`.
+- `user.updated` follows a change of any of its fields, `locale` included
+  (the user's language, or the language of their last sign-in while the
+  setting follows the browser).
+- `session.revoked` with `reason` `expired` follows when the hub cleans up
+  expired sessions, up to an hour after the expiry; `revoked` also covers the
+  least recently used session of a user who signs in with 20 sessions open.
+- After `user.deleted` nothing more follows for the `sub`: the end of the
+  user's sessions and access is part of it.
 
 **Requests racing with events.** A request can check its identity before a
 `session.revoked`, `user.locked` or `user.deleted` event is processed and try
@@ -742,8 +764,11 @@ Authorization: Bearer rhs_…
 Each entry is an event JWT as in a delivery, oldest first, **signed anew when
 it is read**: `jti`, `seq`, `type` and `data` are those of the original event,
 `iat` is the time of the request and `exp − iat` ≤ 300. The app verifies it
-exactly like a delivery. `limit` is 1–100 (default 100); `more` is `true`
-when further events follow.
+exactly like a delivery. `after` is 0 or more (default 0), `limit` 1–100
+(default 100), anything else gets `400 bad_request`; `more` is `true` when
+further events follow. An `after` at or past the newest event gives an empty
+list. Reading counts as acknowledging every event up to `after`: deliveries
+continue after it, and one that failed is tried again at once.
 
 If `after` lies before the retention, the hub answers
 `410 {"error": "events_expired", "resume_after": <n>}`: `resume_after + 1` is

@@ -57,6 +57,7 @@ use crate::{
         self,
         repo::{
             audit_log::{self, Category, Entry},
+            events::Reason,
             known_devices, recovery_codes, sessions, totp_devices,
             users::{self, Credentials, Profile, Since},
         },
@@ -155,7 +156,7 @@ fn login_expired() -> ApiError {
 /// Ends the own session (`auth/logout`, `DELETE auth/sessions/:id`) with
 /// the audit entry `auth.logout`; `false` if it had already ended.
 pub fn end_own_session(conn: &Connection, user: &AuthUser, ip: ClientIp) -> rusqlite::Result<bool> {
-    if !sessions::delete(conn, &user.id, &user.session_id)? {
+    if !sessions::delete(conn, &user.id, &user.session_id, Reason::Logout)? {
         return Ok(false);
     }
     audit_log::insert(
@@ -278,7 +279,7 @@ fn start_session(
         return Ok(Started::Done(user, None));
     }
     if let Some(previous) = previous {
-        sessions::delete(&tx, &previous.id, &previous.session_id)?;
+        sessions::delete(&tx, &previous.id, &previous.session_id, Reason::Logout)?;
     }
     let started = session::start(&tx, user_id, &client, persistent)?;
     let user = AuthUser::new(profile, started.id.clone(), started.auth_time);

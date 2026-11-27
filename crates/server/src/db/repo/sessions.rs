@@ -9,7 +9,13 @@ use rusqlite::{Connection, OptionalExtension as _};
 
 use crate::{
     auth::session::{AuthUser, Client, IDLE},
-    db::{self, repo::users::Role},
+    db::{
+        self,
+        repo::{
+            events::{self, Reason},
+            users::Role,
+        },
+    },
 };
 
 /// Write `last_seen_at` at most once per minute, not on every request
@@ -216,52 +222,101 @@ pub fn valid_among(
     .collect()
 }
 
+/// A deleted session: user, session ID and whether it was still valid.
+type Ended = (String, String, bool);
+
+/// Runs a `DELETE … RETURNING user_id, id, <still valid>` and reports every
+/// ended session to the apps (`session.revoked`): with `reason` if it was
+/// still valid, as `expired` otherwise. Returns the ended sessions.
+fn end(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    reason: Reason,
+) -> rusqlite::Result<Vec<Ended>> {
+    db::atomic(conn, |conn| {
+        let ended = conn
+            .prepare(sql)?
+            .query_map(params, |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<Ended>>>()?;
+        for (user_id, id, valid) in &ended {
+            let reason = if *valid { reason } else { Reason::Expired };
+            events::session_revoked(conn, user_id, id, reason)?;
+        }
+        Ok(ended)
+    })
+}
+
+/// `RETURNING` clause for [`end`].
+const ENDED: &str = "RETURNING user_id, id, expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
 /// Ends the user's sessions beyond `max`, least recently used first (so
 /// expired ones not yet cleaned up go before all valid ones); `newest` always
 /// stays. Returns the number deleted. No audit log entry: the sign-in that
-/// triggers it is already logged.
+/// triggers it is already logged. The apps get `session.revoked` (`revoked`).
 pub fn trim(conn: &Connection, user_id: &str, newest: &str, max: u32) -> rusqlite::Result<usize> {
-    conn.execute(
-        "DELETE FROM sessions WHERE user_id = ?1 AND id <> ?2 AND id NOT IN ( \
-           SELECT id FROM sessions WHERE user_id = ?1 AND id <> ?2 \
-           ORDER BY last_seen_at DESC, rowid DESC LIMIT ?3)",
+    let ended = end(
+        conn,
+        &format!(
+            "DELETE FROM sessions WHERE user_id = ?1 AND id <> ?2 AND id NOT IN ( \
+               SELECT id FROM sessions WHERE user_id = ?1 AND id <> ?2 \
+               ORDER BY last_seen_at DESC, rowid DESC LIMIT ?3) {ENDED}"
+        ),
         (user_id, newest, max.saturating_sub(1)),
-    )
-}
-
-/// Deletes expired sessions; valid ones stay.
-pub fn delete_expired(conn: &Connection) -> rusqlite::Result<usize> {
-    conn.execute(
-        "DELETE FROM sessions WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-        [],
-    )
-}
-
-/// Ends a session of the user; `false` if it does not exist (any more).
-pub fn delete(conn: &Connection, user_id: &str, session_id: &str) -> rusqlite::Result<bool> {
-    let n = conn.execute(
-        "DELETE FROM sessions WHERE id = ?1 AND user_id = ?2",
-        (session_id, user_id),
+        Reason::Revoked,
     )?;
-    Ok(n > 0)
+    Ok(ended.len())
+}
+
+/// Deletes expired sessions, with `session.revoked` (`expired`) for the
+/// apps; valid ones stay.
+pub fn delete_expired(conn: &Connection) -> rusqlite::Result<usize> {
+    let ended = end(
+        conn,
+        &format!(
+            "DELETE FROM sessions \
+             WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') {ENDED}"
+        ),
+        [],
+        Reason::Expired,
+    )?;
+    Ok(ended.len())
+}
+
+/// Ends a session of the user, with `session.revoked` for the apps; `false`
+/// if it does not exist (any more).
+pub fn delete(
+    conn: &Connection,
+    user_id: &str,
+    session_id: &str,
+    reason: Reason,
+) -> rusqlite::Result<bool> {
+    let ended = end(
+        conn,
+        &format!("DELETE FROM sessions WHERE id = ?1 AND user_id = ?2 {ENDED}"),
+        (session_id, user_id),
+        reason,
+    )?;
+    Ok(!ended.is_empty())
 }
 
 /// Ends all sessions of the user except `keep` (changing the password, "Sign
-/// out all others"). Returns the number of still valid ones: expired rows not
-/// yet cleaned up are deleted too but do not count as a signed-in device.
+/// out all others", locking), with `session.revoked` for the apps. Returns
+/// the number of still valid ones: expired rows not yet cleaned up are
+/// deleted too but do not count as a signed-in device.
 pub fn delete_for_user(
     conn: &Connection,
     user_id: &str,
     keep: Option<&str>,
+    reason: Reason,
 ) -> rusqlite::Result<usize> {
-    let active = conn
-        .prepare(
-            "DELETE FROM sessions WHERE user_id = ?1 AND id IS NOT ?2 \
-             RETURNING expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-        )?
-        .query_map((user_id, keep), |row| row.get::<_, bool>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(active.into_iter().filter(|active| *active).count())
+    let ended = end(
+        conn,
+        &format!("DELETE FROM sessions WHERE user_id = ?1 AND id IS NOT ?2 {ENDED}"),
+        (user_id, keep),
+        reason,
+    )?;
+    Ok(ended.iter().filter(|(_, _, valid)| *valid).count())
 }
 
 #[cfg(test)]
@@ -418,10 +473,16 @@ mod tests {
         token_hash(&conn, &max);
         let (_, other) = token_hash(&conn, &eva);
 
-        assert!(!delete(&conn, &eva, &a).unwrap(), "foreign session");
-        assert!(delete(&conn, &max, &a).unwrap());
-        assert!(!delete(&conn, &max, &a).unwrap());
-        assert_eq!(delete_for_user(&conn, &max, Some(&b)).unwrap(), 1);
+        assert!(
+            !delete(&conn, &eva, &a, Reason::Logout).unwrap(),
+            "foreign session"
+        );
+        assert!(delete(&conn, &max, &a, Reason::Logout).unwrap());
+        assert!(!delete(&conn, &max, &a, Reason::Logout).unwrap());
+        assert_eq!(
+            delete_for_user(&conn, &max, Some(&b), Reason::Revoked).unwrap(),
+            1
+        );
         // Expired but not yet cleaned up: deleted, not counted.
         let (_, expired) = token_hash(&conn, &max);
         set(
@@ -429,7 +490,10 @@ mod tests {
             "UPDATE sessions SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
             &expired,
         );
-        assert_eq!(delete_for_user(&conn, &max, None).unwrap(), 1);
+        assert_eq!(
+            delete_for_user(&conn, &max, None, Reason::Revoked).unwrap(),
+            1
+        );
         let left: Vec<String> = conn
             .prepare("SELECT id FROM sessions ORDER BY id")
             .unwrap()
