@@ -17,7 +17,7 @@
 //! | `/<slug>/whoami` | The verified identity, otherwise `401` |
 //! | `/<slug>/echo[/…]` | Any method: method, path, query, headers, identity and body size as JSON |
 //! | `/<slug>/sse?count=&interval_ms=` | Server-Sent Events: the first at once, then one per interval; `count=0` runs until the client leaves |
-//! | `/<slug>/ws?delay_ms=` | WebSocket echo (text and binary) after an optional delay before the `101`; `403` for a foreign `Origin` |
+//! | `/<slug>/ws` | WebSocket echo (text and binary); `403` for a foreign `Origin`; held before the `101` while [`Example::hold_websockets`] says so |
 //! | `/<slug>/upload` | `POST`: reads the body as a stream, answers its size and SHA-256 |
 //! | `/<slug>/download?bytes=&chunk=` | Streams `bytes` bytes (byte `i` is `i % 251`) |
 //! | `/<slug>/slow?ms=&body_ms=` | Waits `ms` before the headers and `body_ms` before the body |
@@ -174,6 +174,10 @@ struct Inner {
     ready: AtomicBool,
     /// Text and binary messages the WebSocket echo received.
     websocket_messages: AtomicUsize,
+    /// While `true`, upgrades wait before their `101` ([`Example::hold_websockets`]).
+    hold_websockets: tokio::sync::watch::Sender<bool>,
+    /// One permit per upgrade that reached the handler while held.
+    websocket_held: tokio::sync::Notify,
     events: Mutex<Events>,
 }
 
@@ -218,6 +222,8 @@ impl Example {
             jwks_refreshed: Mutex::new(None),
             ready: AtomicBool::new(true),
             websocket_messages: AtomicUsize::new(0),
+            hold_websockets: tokio::sync::watch::Sender::new(false),
+            websocket_held: tokio::sync::Notify::new(),
             events: Mutex::new(Events::default()),
         })))
     }
@@ -250,6 +256,17 @@ impl Example {
     }
 
     /// Whether `readyz` answers `200` (once paired).
+    /// Holds WebSocket upgrades before their `101` (`true`) or lets them go
+    /// on (`false`), for tests of what happens meanwhile.
+    pub fn hold_websockets(&self, hold: bool) {
+        self.0.hold_websockets.send_replace(hold);
+    }
+
+    /// Waits until a held upgrade has reached the handler.
+    pub async fn websocket_held(&self) {
+        self.0.websocket_held.notified().await;
+    }
+
     /// How many text and binary messages the WebSocket echo received.
     pub fn websocket_messages(&self) -> usize {
         self.0.websocket_messages.load(Ordering::SeqCst)
@@ -634,19 +651,17 @@ async fn sse(
     Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-#[derive(Deserialize)]
-struct WsQuery {
-    #[serde(default)]
-    delay_ms: u64,
-}
-
 async fn ws(
     State(example): State<Example>,
-    Query(query): Query<WsQuery>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    tokio::time::sleep(Duration::from_millis(query.delay_ms.min(60_000))).await;
+    let mut hold = example.0.hold_websockets.subscribe();
+    if *hold.borrow_and_update() {
+        example.0.websocket_held.notify_one();
+        // An error means the example is gone.
+        let _ = hold.wait_for(|held| !*held).await;
+    }
     // Contract § 3.5: the app checks `Origin` as well.
     if let Some(origin) = headers.get(header::ORIGIN)
         && origin.as_bytes() != example.0.origin.as_bytes()

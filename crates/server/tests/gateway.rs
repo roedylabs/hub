@@ -1149,13 +1149,13 @@ async fn ending_a_session_closes_its_streams() {
         );
     }
 
-    // The same for a WebSocket whose upgrade the app delays, with a frame
-    // the browser sent right after its request – buffered at the hub until
-    // the upgrade: the app never receives it.
+    // The same for a WebSocket whose upgrade the app holds, with a frame the
+    // browser sent right after its request – buffered at the hub until the
+    // upgrade: the app never receives it.
     let late = hub.env.session_for("max").await;
     let mut tcp = TcpStream::connect(hub.public).await.unwrap();
     let mut handshake = format!(
-        "GET /example/ws?delay_ms=800 HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\n\
+        "GET /example/ws HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\n\
          Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: {}\r\n\r\n",
         hub.public,
@@ -1167,12 +1167,17 @@ async fn ending_a_session_closes_its_streams() {
     handshake.extend_from_slice(&[0x81, 0x80 | 2]);
     handshake.extend_from_slice(&mask);
     handshake.extend(b"hi".iter().zip(mask).map(|(byte, m)| byte ^ m));
+    hub.example.hold_websockets(true);
     tcp.write_all(&handshake).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The upgrade reached the app: the hub has read the session by now.
+    tokio::time::timeout(Duration::from_secs(5), hub.example.websocket_held())
+        .await
+        .expect("upgrade not forwarded");
     let reply = hub
         .env
         .as_user(&late, Method::POST, "/auth/logout", None)
         .await;
+    hub.example.hold_websockets(false);
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     // The hub answers the upgrade (or not) and closes the connection.
     let mut received = Vec::new();
