@@ -43,6 +43,11 @@ async fn main() -> anyhow::Result<()> {
     if let Some(code) = env("ROEDY_PAIRING_CODE") {
         let paired = example.pair(&code).await.context("pairing failed")?;
         eprintln!("paired as {} with the hub {}", paired.slug, paired.issuer);
+        // As on every start of a real app (contract § 10.3).
+        match example.catch_up().await {
+            Ok(done) => eprintln!("caught up on {} events", done.processed),
+            Err(error) => eprintln!("events not caught up: {error}"),
+        }
     } else {
         eprintln!("not paired: set ROEDY_PAIRING_CODE to a code from the hub's administration");
     }

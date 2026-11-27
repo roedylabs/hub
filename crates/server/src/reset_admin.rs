@@ -19,6 +19,7 @@ use crate::{
     db::repo::{
         self,
         audit_log::{self, Category, Entry},
+        events::Reason,
         password_resets, recovery_codes, sessions, totp_devices,
         users::{self, Credentials},
     },
@@ -120,7 +121,7 @@ pub fn reset(
     users::set_password(&tx, id, password_hash)?;
     let devices = totp_devices::delete_all(&tx, id)?;
     recovery_codes::delete_all(&tx, id)?;
-    let sessions = sessions::delete_for_user(&tx, id, None)?;
+    let sessions = sessions::delete_for_user(&tx, id, None, Reason::PasswordChanged)?;
     // Like "reset password": open links from mails are no longer valid.
     repo::discard_links(&tx, id)?;
     if let Secret::Link(token) = &secret {

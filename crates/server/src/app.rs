@@ -39,6 +39,7 @@ use crate::{
     config::{Config, TrustProxy},
     crypto::SecretKey,
     db::{self, Db},
+    events::{self, Events},
     gateway,
     gateway::Gateway,
     identity::Identities,
@@ -104,6 +105,9 @@ pub struct AppState {
     pub probe: reqwest::Client,
     /// The gateway's client, session cache and open streams (`gateway`).
     pub gateway: Arc<Gateway>,
+    /// Wake-up and timing of the event delivery (`events`); [`events::start`]
+    /// runs it.
+    pub events: Arc<Events>,
     pub background: Background,
 }
 
@@ -185,6 +189,7 @@ impl AppState {
             instance: Arc::new(Instance::default()),
             apps: Arc::new(AppTable::default()),
             probe: apps::probe_client()?,
+            events: Arc::new(Events::new()?),
             background: Background::default(),
         })
     }
@@ -333,9 +338,11 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             .await
             .context("placeholder password hash not created")?;
         let listeners = Listeners::bind(&config).await?;
+        let delivery = events::start(&state).await?;
         let scheduler = jobs::start(&state);
         let served = run_http(listeners, state, shutdown).await;
         scheduler.shutdown().await;
+        delivery.shutdown().await;
         // Before closing the database: audit entries after the last responses.
         background.finish(BACKGROUND_GRACE).await;
         served

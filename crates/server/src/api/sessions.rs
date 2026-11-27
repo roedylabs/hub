@@ -35,6 +35,7 @@ use crate::{
         repo::{
             self,
             audit_log::{self, Category, Entry},
+            events::Reason,
             sessions,
         },
     },
@@ -107,7 +108,7 @@ async fn revoke(
             if !sessions::is_valid(&tx, &user.id, &id)? {
                 return Ok(Err(ApiError::NotFound));
             }
-            sessions::delete(&tx, &user.id, &id)?;
+            sessions::delete(&tx, &user.id, &id, Reason::Revoked)?;
             audit_log::insert(
                 &tx,
                 &Entry::new(Category::Login, "auth.session_revoke")
@@ -147,7 +148,8 @@ async fn revoke_others(
         if !sessions::is_valid(&tx, &user.id, &user.session_id)? {
             return Ok(None);
         }
-        let ended = sessions::delete_for_user(&tx, &user.id, Some(&user.session_id))?;
+        let ended =
+            sessions::delete_for_user(&tx, &user.id, Some(&user.session_id), Reason::Revoked)?;
         repo::discard_links(&tx, &user.id)?;
         audit_log::insert(
             &tx,

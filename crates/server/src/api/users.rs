@@ -51,7 +51,9 @@ use crate::{
     db::{
         self,
         repo::{
-            self, audit_log, invitations, recovery_codes, sessions, totp_devices,
+            self, audit_log,
+            events::Reason,
+            invitations, recovery_codes, sessions, totp_devices,
             users::{self, Listed, Profile, Role},
         },
     },
@@ -174,7 +176,7 @@ fn lock_user(conn: &Connection, actor: &Actor<'_>, user: &Profile) -> anyhow::Re
     if is_last_admin(conn, user)? || !users::lock(conn, &user.id)? {
         return Ok(false);
     }
-    let ended = sessions::delete_for_user(conn, &user.id, None)?;
+    let ended = sessions::delete_for_user(conn, &user.id, None, Reason::Locked)?;
     repo::discard_links(conn, &user.id)?;
     let mut details = names(user);
     details["sessions_ended"] = json!(ended);

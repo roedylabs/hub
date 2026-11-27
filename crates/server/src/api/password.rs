@@ -39,6 +39,7 @@ use crate::{
         repo::{
             self,
             audit_log::{self, Category, Entry},
+            events::Reason,
             password_resets::{self, Lookup},
             sessions, users,
         },
@@ -227,7 +228,7 @@ async fn reset(
                 return Ok(None);
             };
             users::set_password(&tx, &user.id, &new_hash)?;
-            let ended = sessions::delete_for_user(&tx, &user.id, None)?;
+            let ended = sessions::delete_for_user(&tx, &user.id, None, Reason::PasswordChanged)?;
             repo::discard_links(&tx, &user.id)?;
             let mut outbox = Outbox::default();
             let event = Security::PasswordChanged {

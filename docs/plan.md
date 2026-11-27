@@ -288,7 +288,7 @@ checks pass in every PR; every PR has tests for what it adds.
          tests per page and state, axe in jsdom per page state light and
          dark (`a11y.test.ts` next to each page), and the Chromium audit
          with one scenario module per page (`scripts/a11y/scenarios/`).
-4. **Gateway, pairing, identity** – `crates/contract`, signing keys and
+4. [x] **Gateway, pairing, identity** – `crates/contract`, signing keys and
    rotation, the proxy, internal listener, pairing, manifest, events with
    delivery and catch-up, users endpoint, health poll, the example app.
    *Tests:* proxy integration against the example app – path and query
@@ -402,7 +402,53 @@ checks pass in every PR; every PR has tests for what it adds.
       before the stream ends, WebSocket echo and close, 64 MiB up and down
       with flat memory, timeouts, unreachable app, streams closed on
       sign-out, lock and expiry).
-   4. **Events** – delivery with backoff, catch-up, retention.
+   4. [x] **Events** – delivery with backoff, catch-up, retention. Done:
+      migration 0007 (`events` with `id` = `jti`, per-app `seq`, `type`,
+      `data`; `event_delivery` with `last_seq` – the counter, so that `seq`
+      never repeats after the retention –, `delivered_seq`, `attempts`,
+      `retry_at`, `failing_since`, `last_error`), the outbox in
+      `db::repo::events`: the functions that change users, sessions and
+      access write their events in the same transaction (`db::atomic`, a
+      savepoint) – `users` (`user.locked`, `user.unlocked`, `user.deleted`,
+      `user.updated` for name, username, email, role and the sign-in
+      language when it decides the language), `settings::save` (`locale`),
+      `sessions` (`session.revoked`: `logout` for sign-out and a replaced
+      browser session, `revoked` for devices, "Sign out all others" and the
+      21st session, `password_changed` also for `reset-admin`, `locked`,
+      `expired` in the hourly cleanup and for expired rows that end with
+      others) and `app_access` (`access.changed` for the defaults after
+      pairing, new users with "everyone" apps and the manifest's role
+      fallback); user and session events to every paired app, `access.changed`
+      only to its app, pending apps none, `user.deleted` without events for
+      the sessions and access that go with it. `events` delivers: the update
+      hook on the connection wakes one worker per paired app right after a
+      new event or a change of `apps` (a check every minute finds events of
+      `reset-admin`), the event is signed anew per attempt with the current
+      key (`typ` `roedy-event+jwt`, 300 s) and POSTed to
+      `/<slug>/_roedy/v1/events`, `204` within 10 s moves on, anything else
+      retries after 10 s, 30 s, 1 min, 5 min, 15 min, hourly; past 7 days
+      from the first failure the delivery waits until the app is back (`PUT
+      manifest`, catch-up, pairing, an online health check). `GET
+      /internal/v1/events` (secret, `after`, `limit` 1–100, `more`, `410
+      events_expired` with `resume_after`; acknowledges up to `after` and
+      retries at once), the daily job `event_retention` (30 days, delivered
+      or not), removing an app deletes its events (cascade) and stops its
+      worker. The example app verifies events with the contract crate,
+      stores the highest `seq`, catches up at start and on a gap (`503`
+      while it cannot) and continues from `resume_after` after a `410`; it
+      can fail or delay deliveries for the tests. The contract (§ 10)
+      states the giving up and resuming, gaps, the first events after
+      pairing, the absence of a "user created" event, when `user.updated`
+      and `expired` come, and the catch-up's defaults and acknowledgement.
+      Tests: the outbox, backoff and paging in `db::repo::events`, and
+      `tests/events.rs` against the example app over real connections
+      (every emitting path with the apps that get its event, a second app
+      with "selected only", a pending one; order and retry after 5xx, timeout
+      and an unreachable app; giving up and resuming; redelivery; catch-up
+      with paging and `410`; a gap; forged, wrong-`typ`, wrong-`aud` and too
+      long-lived events at the example; removal). `access.changed` with
+      `access: false` has no path yet: access per user comes with
+      milestone 5.
 5. **Home page and permissions** – home page tiles, browser API
    (`/api/v1/session`, `/api/v1/apps`, icons), administration of apps (add,
    pairing code, status, order, access default, remove), access and roles per

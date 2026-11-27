@@ -41,7 +41,9 @@ use crate::{
         repo::{
             self,
             audit_log::{self, Category, Entry},
-            email_changes, sessions, totp_devices,
+            email_changes,
+            events::Reason,
+            sessions, totp_devices,
             users::{self, Since},
         },
     },
@@ -644,7 +646,12 @@ async fn change_password(
             return Ok(Err(errors.into_error()));
         }
         let changed_at = users::set_password(&tx, &user.id, &hash)?;
-        let ended = sessions::delete_for_user(&tx, &user.id, Some(&user.session_id))?;
+        let ended = sessions::delete_for_user(
+            &tx,
+            &user.id,
+            Some(&user.session_id),
+            Reason::PasswordChanged,
+        )?;
         // Pending links from mails no longer apply (one of the steps
         // `security_email` advises).
         repo::discard_links(&tx, &user.id)?;
@@ -880,7 +887,7 @@ mod tests {
             .unwrap();
 
         // Session ended.
-        sessions::delete(&conn, &id, &started.id).unwrap();
+        sessions::delete(&conn, &id, &started.id, Reason::Logout).unwrap();
         assert_eq!(check(&fresh), Err(Stale::SessionEnded));
     }
 }

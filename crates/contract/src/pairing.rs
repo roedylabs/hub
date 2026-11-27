@@ -160,6 +160,15 @@ pub struct Users {
     pub next_cursor: Option<String>,
 }
 
+/// Response of `GET /internal/v1/events` (contract § 10.3): event JWTs,
+/// oldest first, each verified like a delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventPage {
+    pub events: Vec<String>,
+    /// Further events follow after the last one.
+    pub more: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

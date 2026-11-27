@@ -1,12 +1,48 @@
 //! Table `app_access`: which user may use which app, with which role from
 //! the app's manifest (docs/app-contract.md › Access and roles). No row, no
-//! access.
+//! access. Every change gives the app `access.changed` (`events`) in the
+//! same transaction.
 
 use rusqlite::{Connection, OptionalExtension as _};
 
 use roedy_hub_contract::Manifest;
 
-use crate::db::repo::users::{self, Profile};
+use crate::db::{
+    self,
+    repo::{
+        events,
+        users::{self, Profile},
+    },
+};
+
+/// Runs an `INSERT`/`UPDATE … RETURNING user_id, app_id, app_role` and
+/// reports every row to its app (`access.changed`, ordered by app and
+/// user); returns how many.
+fn changing(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<usize> {
+    db::atomic(conn, |conn| {
+        let mut changed = conn
+            .prepare(sql)?
+            .query_map(params, |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        changed.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+        for (user_id, app_id, role) in &changed {
+            events::access_changed(conn, app_id, user_id, Some(role))?;
+        }
+        Ok(changed.len())
+    })
+}
+
+const CHANGED: &str = "RETURNING user_id, app_id, app_role";
 
 /// The defaults after pairing (contract § 11): every hub administrator gets
 /// the app's admin role (or the default role without one); with "everyone"
@@ -22,29 +58,40 @@ pub fn grant_after_pairing(
     else {
         return Ok(0);
     };
-    let admins = conn.execute(
-        "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
-         SELECT id, ?1, ?2 FROM users WHERE role = 'admin'",
-        (app_id, &admin_role.id),
-    )?;
-    let others = conn.execute(
-        "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
-         SELECT u.id, a.id, ?2 FROM users u, apps a \
-         WHERE a.id = ?1 AND a.access_default = 'all'",
-        (app_id, &default_role.id),
-    )?;
-    Ok(admins + others)
+    db::atomic(conn, |conn| {
+        let admins = changing(
+            conn,
+            &format!(
+                "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
+                 SELECT id, ?1, ?2 FROM users WHERE role = 'admin' {CHANGED}"
+            ),
+            (app_id, &admin_role.id),
+        )?;
+        let others = changing(
+            conn,
+            &format!(
+                "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
+                 SELECT u.id, a.id, ?2 FROM users u, apps a \
+                 WHERE a.id = ?1 AND a.access_default = 'all' {CHANGED}"
+            ),
+            (app_id, &default_role.id),
+        )?;
+        Ok(admins + others)
+    })
 }
 
 /// Access for a new user: the default role of every paired app whose
 /// default is "everyone".
 pub fn grant_to_new_user(conn: &Connection, user_id: &str) -> rusqlite::Result<usize> {
-    conn.execute(
-        "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
-         SELECT ?1, a.id, r.value ->> 'id' \
-         FROM apps a, json_each(a.manifest_json, '$.roles') r \
-         WHERE a.state = 'paired' AND a.access_default = 'all' \
-           AND r.value ->> 'default' = 1",
+    changing(
+        conn,
+        &format!(
+            "INSERT OR IGNORE INTO app_access (user_id, app_id, app_role) \
+             SELECT ?1, a.id, r.value ->> 'id' \
+             FROM apps a, json_each(a.manifest_json, '$.roles') r \
+             WHERE a.state = 'paired' AND a.access_default = 'all' \
+               AND r.value ->> 'default' = 1 {CHANGED}"
+        ),
         [user_id],
     )
 }
@@ -70,8 +117,12 @@ pub fn fall_back_to_default(
         .collect();
     let mut users = 0;
     for role in &gone {
-        users += conn.execute(
-            "UPDATE app_access SET app_role = ?3 WHERE app_id = ?1 AND app_role = ?2",
+        users += changing(
+            conn,
+            &format!(
+                "UPDATE app_access SET app_role = ?3 WHERE app_id = ?1 AND app_role = ?2 \
+                 {CHANGED}"
+            ),
             (app_id, role, &default_role.id),
         )?;
     }

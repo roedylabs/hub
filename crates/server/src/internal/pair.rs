@@ -15,12 +15,16 @@
 //! (the previous secret stops working), gives hub administrators the app's
 //! admin role and, with "everyone", all other users its default role
 //! (contract § 11; existing entries stay), checks the app's health at once
-//! and answers with the secret and the JWKS.
+//! and answers with the secret and the JWKS. Every new access entry gives the
+//! app `access.changed` (`db::repo::app_access`).
 //!
 //! `PUT /internal/v1/manifest` stores the manifest an app sends on every
 //! start. Roles it no longer has fall back to the default role (an audit
-//! entry; the `access.changed` events follow with milestone 4.4); a new
-//! version gets an audit entry too.
+//! entry and `access.changed` for every user who had one); a new version
+//! gets an audit entry too.
+//!
+//! Both show that the app is up: a delivery of events that failed or was
+//! given up tries again at once (`events`).
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -52,6 +56,7 @@ use crate::{
             app_access,
             apps::{self as repo, Status},
             audit_log::{self, Category, Entry},
+            events,
         },
     },
     rate_limit::{Key, Policy},
@@ -210,12 +215,14 @@ pub async fn pair(
             "granted": granted,
         });
         audit_log::insert(&tx, &app_audit_entry("apps.pair", &app.slug, ip, details))?;
+        events::resume(&tx, &app.id, false)?;
         tx.commit()?;
         api::apps::reload(&table, conn);
         Ok(Ok(app))
     })
     .await??;
     tracing::info!(slug = paired.slug, public_url = expected, "app paired");
+    state.events.wake();
 
     // "Connected" in the administration as soon as the app answers.
     let checker = state.clone();
@@ -268,11 +275,16 @@ pub async fn put_manifest(
             )?;
         }
         fall_back(&tx, &current, &manifest, ip)?;
+        let resumed = events::resume(&tx, &current.id, false)?;
         tx.commit()?;
         api::apps::reload(&table, conn);
-        Ok(Ok(current))
+        Ok(Ok((current, resumed)))
     })
     .await??;
+    let (app, resumed) = app;
+    if resumed {
+        state.events.wake();
+    }
     Ok(Json(ManifestAccepted {
         app_id: app.id,
         public_url: api::apps::public_url(&state, &app.slug),
