@@ -659,8 +659,9 @@ checks pass in every PR; every PR has tests for what it adds.
         then the CA; afterwards, also after a failure, the value's removal is
         tried (a refused one is logged, the value stays). deSEC's `429` is
         waited out in place for each `Retry-After` of up to a minute, three
-        times per request (a write from a fresh read); longer ones go to the
-        issuer's backoff. No migration: nothing new is
+        times per request (a write from a fresh read); a longer one ends the
+        certificate attempt (the issuer's backoff) or, during the removal, is
+        logged and the value stays. No migration: nothing new is
         stored. ops.md documents a scoped token (token policies: read-only
         default, write only on the TXT set). *Tests:* DNS wire format
         (compression pointers, loops, truncation, several strings), deSEC

@@ -338,9 +338,10 @@ to remove its value again; other values in the record set stay. If deSEC refuses
 `DNS-01: TXT record not removed` and the value stays – harmless for later certificates, but remove it at deSEC. deSEC
 has no conditional updates, so the hub assumes that it is the only writer of this record set: do not let another ACME
 client (or a second hub) write the same `_acme-challenge.<host>` at the same time. deSEC's throttling (`429`) is waited
-out in place when it asks for at most a minute, up to three times per request (so a few minutes at most); a longer wait
-(its hourly and daily limits) moves the attempt to the backoff above. The hub therefore needs outgoing HTTPS to `desec.io` and outgoing DNS (port 53) to
-deSEC's name servers.
+out in place when it asks for at most a minute, up to three times per request (so a few minutes at most). A longer wait
+(its hourly and daily limits) ends the certificate attempt, which then waits as the backoff above says; during the
+removal it is logged like any refused removal, and the value stays. The hub therefore needs outgoing HTTPS to
+`desec.io` and outgoing DNS (port 53) to deSEC's name servers.
 
 **A scoped token.** Give the hub a token that may write only this one record set, not the whole account. deSEC's
 token policies do this: create a token, give it a default policy without write permission, and a policy that allows
@@ -349,17 +350,24 @@ writing the TXT records of `_acme-challenge.<host>` – the subname is the part 
 domain itself). With a token that may manage tokens (`$ADMIN_TOKEN`, e.g. from the deSEC web interface):
 
 ```sh
-# The new token: its "id" and, only now, its secret ("token")
-curl -sS https://desec.io/api/v1/auth/tokens/ -H "Authorization: Token $ADMIN_TOKEN" \
+# The new token: its "id" and, only now, its secret ("token") – keep the secret aside for the moment
+curl -sS --fail-with-body https://desec.io/api/v1/auth/tokens/ -H "Authorization: Token $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' -d '{"name": "roedy-hub acme"}'
-# Default policy first: read only
-curl -sS https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ -H "Authorization: Token $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"domain": null, "subname": null, "type": null}'
-# Then the one record set it may write
-curl -sS https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ -H "Authorization: Token $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"domain": "example.com", "subname": "_acme-challenge.hub", "type": "TXT", "perm_write": true}'
+TOKEN_ID=…   # the "id" from the answer
+# Default policy first (read only), then the one record set it may write; stops at the first failure
+policy() {
+  curl -sS --fail-with-body "https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/" \
+    -H "Authorization: Token $ADMIN_TOKEN" -H 'Content-Type: application/json' -d "$1"
+}
+policy '{"domain": null, "subname": null, "type": null}' &&
+  policy '{"domain": "example.com", "subname": "_acme-challenge.hub", "type": "TXT", "perm_write": true}' &&
+  echo 'Both policies set'
 ```
+
+**Use the secret only after `Both policies set`.** A token without policies may change every record of the account. If
+a policy request fails (e.g. `429`), delete the token
+(`curl -sS --fail-with-body -X DELETE https://desec.io/api/v1/auth/tokens/$TOKEN_ID/ -H "Authorization: Token $ADMIN_TOKEN"`)
+and start again; `GET …/auth/tokens/$TOKEN_ID/policies/rrsets/` shows what a token has.
 
 Such a token can still read the account's domains and records (the hub needs that to find the domain and its name
 servers), but change nothing else. You may also limit it to the server's addresses (`allowed_subnets` when creating
