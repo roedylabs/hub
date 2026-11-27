@@ -4,7 +4,12 @@
 use futures_util::{SinkExt as _, StreamExt as _};
 use roedy_hub_example::Example;
 use tokio::net::TcpListener;
-use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest as _, http::HeaderValue};
+use tokio_tungstenite::tungstenite::{
+    Message,
+    client::IntoClientRequest as _,
+    http::HeaderValue,
+    protocol::{CloseFrame, frame::coding::CloseCode},
+};
 
 async fn start() -> std::net::SocketAddr {
     let example = Example::new("https://app.example.com/example", "http://127.0.0.1:9").unwrap();
@@ -43,12 +48,20 @@ async fn echoes_text_and_binary_then_closes() {
         socket.next().await.unwrap().unwrap(),
         Message::binary(vec![0u8, 1, 2, 255])
     );
-    socket.close(None).await.unwrap();
-    while let Some(message) = socket.next().await {
-        if matches!(message, Ok(Message::Close(_)) | Err(_)) {
-            break;
-        }
+    // A clean closing handshake: the example answers the closing frame
+    // before it ends the connection (a browser reports 1006 otherwise).
+    socket
+        .close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "done".into(),
+        }))
+        .await
+        .unwrap();
+    match socket.next().await {
+        Some(Ok(Message::Close(Some(frame)))) => assert_eq!(frame.code, CloseCode::Normal),
+        other => panic!("no closing frame: {other:?}"),
     }
+    assert!(socket.next().await.is_none());
 }
 
 #[tokio::test]

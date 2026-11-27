@@ -1,5 +1,5 @@
 //! Roedy Hub's example app (docs/app-contract.md § 15): a minimal app that
-//! implements the contract, for the hub's tests and, later, its end-to-end
+//! implements the contract, for the hub's tests and its end-to-end
 //! suite. Not part of the image.
 //!
 //! It pairs with a code ([`Example::pair`]), sends its manifest
@@ -647,20 +647,24 @@ async fn to_slash(State(example): State<Example>) -> Redirect {
 }
 
 /// The page: who is signed in, and the link to the hub's home page
-/// (contract § 5.4).
+/// (contract § 5.4). Landmarks and a viewport, so that the end-to-end
+/// suite's axe check passes on it as on the hub's pages; `connect-src 'self'`
+/// lets the suite open the SSE and WebSocket endpoints from it.
 async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
     let who = match example.identity(&headers).await {
         Ok(identity) => format!("Signed in as {}", escape(&identity.name)),
         Err(_) => "Not signed in".to_owned(),
     };
     let page = format!(
-        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Example</title>\
-         <nav><a href=\"/\">Home</a></nav><h1>Example</h1><p>{who}</p></html>"
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>Example</title><nav aria-label=\"Hub\"><a href=\"/\">Home</a></nav>\
+         <main><h1>Example</h1><p>{who}</p></main></html>"
     );
     (
         [(
             header::CONTENT_SECURITY_POLICY,
-            "default-src 'none'; frame-ancestors 'self'",
+            "default-src 'none'; connect-src 'self'; frame-ancestors 'self'",
         )],
         Html(page),
     )
@@ -792,11 +796,11 @@ async fn echo_socket(mut socket: WebSocket, example: Example) {
                 example.0.websocket_messages.fetch_add(1, Ordering::SeqCst);
                 message
             }
-            Message::Close(frame) => {
-                let _ = socket.send(Message::Close(frame)).await;
-                return;
-            }
-            Message::Ping(_) | Message::Pong(_) => continue,
+            // tungstenite answers the closing frame itself (with the same
+            // code); reading on sends that answer and then ends the stream.
+            // Sending one more and returning at once would drop the
+            // connection before the answer went out (the browser sees 1006).
+            Message::Close(_) | Message::Ping(_) | Message::Pong(_) => continue,
         };
         if socket.send(reply).await.is_err() {
             return;
