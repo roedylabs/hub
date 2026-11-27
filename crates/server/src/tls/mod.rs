@@ -319,6 +319,15 @@ pub async fn prepare(
             tls.files = Some(files);
         }
         TlsMode::Acme => {
+            let dns01 = match config.acme_challenge {
+                AcmeChallenge::TlsAlpn01 => None,
+                AcmeChallenge::Dns01 => {
+                    // Reading the token file blocks.
+                    let config = config.clone();
+                    let token = tokio::task::spawn_blocking(move || config.desec_token()).await??;
+                    Some(dns01::Settings::desec(token))
+                }
+            };
             let issuer = issuer::Issuer::new(
                 issuer::Settings {
                     directory: config.acme_directory.to_string(),
@@ -328,10 +337,7 @@ pub async fn prepare(
                         .map(|email| format!("mailto:{email}"))
                         .collect(),
                     domain: host,
-                    dns01: match config.acme_challenge {
-                        AcmeChallenge::TlsAlpn01 => None,
-                        AcmeChallenge::Dns01 => Some(dns01::Settings::desec(config.desec_token()?)),
-                    },
+                    dns01,
                 },
                 issuer::http_client()?,
                 db.clone(),

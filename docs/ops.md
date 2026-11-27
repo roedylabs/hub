@@ -333,11 +333,13 @@ ROEDY_DESEC_TOKEN_FILE=/run/secrets/desec_token
 For each certificate the hub asks deSEC which of the account's domains owns `_acme-challenge.<host>`, adds the
 challenge value to that TXT record set (the domain's minimum TTL for a new set, otherwise the set's own), asks deSEC's
 name servers (the domain's `NS` records, directly on port 53 over UDP and TCP) until every one of them serves it
-authoritatively – at most 5 minutes – and only then tells the CA to look. Afterwards, also after a failure, it removes
-its value again; other values in the record set stay. deSEC has no conditional updates, so the hub assumes that it is
-the only writer of this record set: do not let another ACME client (or a second hub) write the same
-`_acme-challenge.<host>` at the same time. deSEC's throttling (`429`) is waited out for up to a minute; a longer wait (its hourly and daily limits) moves the
-attempt to the backoff above. The hub therefore needs outgoing HTTPS to `desec.io` and outgoing DNS (port 53) to
+authoritatively – at most 5 minutes – and only then tells the CA to look. Afterwards, also after a failure, it tries
+to remove its value again; other values in the record set stay. If deSEC refuses the removal, the log says
+`DNS-01: TXT record not removed` and the value stays – harmless for later certificates, but remove it at deSEC. deSEC
+has no conditional updates, so the hub assumes that it is the only writer of this record set: do not let another ACME
+client (or a second hub) write the same `_acme-challenge.<host>` at the same time. deSEC's throttling (`429`) is waited
+out in place when it asks for at most a minute, up to three times per request (so a few minutes at most); a longer wait
+(its hourly and daily limits) moves the attempt to the backoff above. The hub therefore needs outgoing HTTPS to `desec.io` and outgoing DNS (port 53) to
 deSEC's name servers.
 
 **A scoped token.** Give the hub a token that may write only this one record set, not the whole account. deSEC's

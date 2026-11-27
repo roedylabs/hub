@@ -265,7 +265,11 @@ impl Dns01 {
                         && matches!(response.rcode, dns::RCODE_NOERROR | dns::RCODE_NXDOMAIN) =>
                 {
                     answered = true;
-                    if !response.txt.iter().any(|txt| txt == value) {
+                    // Only a positive answer counts, whatever an NXDOMAIN
+                    // carries.
+                    if response.rcode != dns::RCODE_NOERROR
+                        || !response.txt.iter().any(|txt| txt == value)
+                    {
                         lacking.get_or_insert_with(|| "not there yet".to_owned());
                     }
                 }

@@ -138,9 +138,10 @@ impl FakeDns {
 
     /// When `value` first showed up at `name`.
     pub fn published(&self, name: &str, value: &str) -> Option<Instant> {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
         self.lock()
             .published
-            .get(&(name.to_ascii_lowercase(), value.to_owned()))
+            .get(&(name, value.to_owned()))
             .copied()
     }
 

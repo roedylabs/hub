@@ -20,9 +20,11 @@
 //!
 //! The token goes in `Authorization: Token …` (a header marked sensitive)
 //! and nowhere else: not in URLs, logs, errors or the audit log. Throttled
-//! requests (`429`) are sent again after `Retry-After` seconds as long as
-//! that is short – a throttled write from a fresh read –; a longer wait goes
-//! to the issuer's backoff.
+//! requests (`429`) are sent again after `Retry-After` seconds, up to three
+//! times as long as each wait is at most a minute – a throttled write from a
+//! fresh read. A longer wait ends the request: when adding the value, the
+//! issuer's backoff takes over; when removing it, the value stays in the
+//! record set and the issuer logs a warning (docs/ops.md).
 
 use std::{fmt, time::Duration};
 
@@ -335,9 +337,15 @@ impl Desec {
                 .map_err(|error| anyhow!("{what}: {}", without_url(&error)))?;
             let status = response.status();
             let headers = response.headers().clone();
-            let body = read_body(response)
-                .await
-                .with_context(|| format!("{what}: answer not read"))?;
+            let body = match read_body(response).await {
+                Ok(body) => body,
+                Err(error) if status.is_success() => {
+                    return Err(error.context(format!("{what}: answer not read")));
+                }
+                // An error answer's body is only detail; its status and
+                // `Retry-After` still count.
+                Err(_) => Vec::new(),
+            };
             if status.is_success() {
                 return Ok(Some(body));
             }

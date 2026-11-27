@@ -343,15 +343,24 @@ async fn gives_up_when_a_name_server_never_has_the_record() {
         (lame, "answered without authority"),
         (failing, "answered with code 2"),
     ] {
-        let setup = self::setup(|dns, _| {
+        let setup = self::setup(|dns, desec| {
             dns.propagation_timeout = Duration::from_millis(300);
             let ns2 = dns.name_servers.get_mut("ns2.desec.test").unwrap();
             ns2.push(server.addr);
+            // It gets the value like the others.
+            desec.add_name_server(server.clone());
         })
         .await;
         let error = format!("{:#}", setup.issuer.run_once().await.unwrap_err());
         assert!(error.contains(expected), "{error}");
         assert!(setup.acme.log().validations.is_empty());
+        let value = written_records(&setup.writes()[0])[0]
+            .trim_matches('"')
+            .to_owned();
+        assert!(
+            server.published(NAME, &value).is_some(),
+            "the odd server had the value"
+        );
     }
 }
 

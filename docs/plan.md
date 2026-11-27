@@ -656,10 +656,11 @@ checks pass in every PR; every PR has tests for what it adds.
         the hub assumes it is the set's only writer – deSEC has no conditional
         update), every name server of the zone (its `NS` records) asked
         directly until it serves the value authoritatively (5 min at most),
-        then the CA; the value removed afterwards, also after a failure.
-        deSEC's `429` is waited out up to a minute (a write from a fresh read),
-        longer
-        `Retry-After`s go to the issuer's backoff. No migration: nothing new is
+        then the CA; afterwards, also after a failure, the value's removal is
+        tried (a refused one is logged, the value stays). deSEC's `429` is
+        waited out in place for each `Retry-After` of up to a minute, three
+        times per request (a write from a fresh read); longer ones go to the
+        issuer's backoff. No migration: nothing new is
         stored. ops.md documents a scoped token (token policies: read-only
         default, write only on the TXT set). *Tests:* DNS wire format
         (compression pointers, loops, truncation, several strings), deSEC

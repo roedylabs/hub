@@ -181,13 +181,24 @@ impl FakeDesec {
         let records: Vec<String> = records.iter().map(|r| (*r).to_owned()).collect();
         let mut inner = self.lock();
         let name = fqdn(zone, subname);
-        for dns in &inner.dns {
+        // Newer than any publication still pending.
+        inner.revision += 1;
+        let revision = inner.revision;
+        for (index, dns) in inner.dns.clone().iter().enumerate() {
+            inner.applied.insert((index, name.clone()), revision);
             dns.set(&name, &unquote(&records));
         }
         inner.rrsets.insert(
             (zone.to_owned(), subname.to_owned(), "TXT".to_owned()),
             RrSet { ttl, records },
         );
+    }
+
+    /// Another server that gets the zone's changes (at once).
+    pub fn add_name_server(&self, dns: FakeDns) {
+        let mut inner = self.lock();
+        inner.dns.push(dns);
+        inner.knobs.publish.push(Publish::Now);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -500,7 +511,7 @@ fn apply(
         {
             return bad(json!([{"records": ["TXT values must be in quotes."]}]));
         }
-        let Ok(ttl) = u32::try_from(ttl) else {
+        let Some(ttl) = u32::try_from(ttl).ok().filter(|ttl| *ttl <= 86400) else {
             return bad(json!([{"ttl": ["Ensure this value is less than or equal to 86400."]}]));
         };
         if ttl < minimum_ttl {
