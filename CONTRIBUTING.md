@@ -32,7 +32,7 @@ Common tasks are in the [`justfile`](justfile) (`pnpm exec just …` if [just](h
 | `just check` | All checks below |
 | `just dist [<targets>]` | Web app and static musl binaries to `dist/` (needs Zig, cargo-zigbuild, cargo-auditable and the rustup targets) |
 | `just image` / `just smoke` | Image for the local platform from `dist/` and its smoke test with the budgets |
-| `just dist-example`, `just image-example`, `just smoke-compose` | The example app's image and the smoke test of `deploy/compose.yml` |
+| `just dist-example`, `just image-example`, `just smoke-compose` | The example app's image and the smoke test of `deploy/compose.yml` (the smoke tests need curl, openssl and, for Compose, jq) |
 | `just release <version>` / `just release-tag <version>` | Release PR, then the tag on `main` ([`release.yml`](.github/workflows/release.yml)) |
 
 ## Checks
@@ -76,7 +76,7 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
-| `deploy/` | Docker Compose setup with Caddy (`compose.yml`, `Caddyfile`, `.env.example`), `restore.sh` for backups, the test override with the example app |
+| `deploy/` | Docker Compose setup (`compose.yml`, `.env.example`; the hub with built-in TLS, no proxy), `restore.sh` for backups, the test override with the example app and TLS from a test certificate |
 | `Dockerfile` | The image: packages `dist/<arch>/roedy-hub` on `scratch` |
 | `scripts/` | Git hooks, smoke tests of the image and the Compose setup, release script and developer tooling |
 

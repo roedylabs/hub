@@ -28,22 +28,24 @@ Browser ──HTTPS──► roedy-hub ─┬─ /, /login, /account, /admin, /a
                               └─ /contacts/…  ──► roedy-contacts
 ```
 
-All apps share one origin. TLS ends at Caddy in the Compose setup below, or at the hub itself: with `ROEDY_TLS=acme`
-it gets its certificate from Let's Encrypt (or another ACME CA) on its own, with `ROEDY_TLS=files` it serves one from
-files ([TLS](docs/ops.md#tls)). Install only apps you trust as much as the hub itself
-([trust model](docs/app-contract.md#2-trust-model)).
+All apps share one origin. No reverse proxy is needed: the hub terminates TLS itself and, with `ROEDY_TLS=acme`, gets
+its certificate from Let's Encrypt (or another ACME CA) on its own; `ROEDY_TLS=files` serves one from files, and
+`ROEDY_TLS=off` leaves TLS to a proxy of your own ([TLS](docs/ops.md#tls)). Install only apps you trust as much as the
+hub itself ([trust model](docs/app-contract.md#2-trust-model)).
 
 ## Quick start
 
-Roedy Hub runs with Docker Compose behind Caddy, which obtains the certificate
-([`docs/ops.md`](docs/ops.md#installation)). On a host with Docker, a DNS name and ports 80 and 443 open:
+Roedy Hub runs with Docker Compose and gets its certificate itself
+([`docs/ops.md`](docs/ops.md#installation)). On a host with Docker, a DNS name pointing at it and ports 443 and 80
+open:
 
 ```sh
 mkdir roedy && cd roedy
-for f in compose.yml Caddyfile .env.example; do
+for f in compose.yml .env.example; do
   curl -fsSLO "https://raw.githubusercontent.com/roedylabs/hub/main/deploy/$f"
 done
 cp .env.example .env && chmod 600 .env   # set ROEDY_PUBLIC_URL=https://app.example.com
+                                         # and ROEDY_ACME_AGREE_TOS=true
 docker compose up -d
 docker compose logs roedy-hub | grep Setup-Token
 ```
@@ -54,7 +56,7 @@ built for `linux/amd64` and `linux/arm64`, signed with cosign and stays below 25
 
 ## Documentation
 
-- [Operations](docs/ops.md): installation, reverse proxy, configuration, built-in TLS, backup, updates, pairing, health
+- [Operations](docs/ops.md): installation, built-in TLS, configuration, own proxy, backup, updates, pairing, health
 - [App contract](docs/app-contract.md): how an app connects to the hub
 - [Implementation plan](docs/plan.md): architecture and milestones
 - [Contributing](CONTRIBUTING.md), [security policy](SECURITY.md)
