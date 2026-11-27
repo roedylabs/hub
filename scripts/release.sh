@@ -59,6 +59,14 @@ semver_gt() {
 # Escape dots for regular expressions.
 version_re=${version//./\\.}
 
+# `prepare` opens the PR with the GitHub CLI after pushing the branch; check it
+# first, so that a missing or signed-out gh does not leave a pushed branch
+# without a PR.
+if [[ $cmd == prepare ]]; then
+  command -v gh >/dev/null || die "the GitHub CLI (gh) is required: https://cli.github.com"
+  gh auth status >/dev/null 2>&1 || die "gh is not signed in: run 'gh auth login' first"
+fi
+
 if ! git diff --quiet || ! git diff --cached --quiet; then
   die "working tree has uncommitted changes"
 fi

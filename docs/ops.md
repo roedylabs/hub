@@ -257,16 +257,22 @@ docker compose start roedy-hub
 Copy the archive off the host (it holds password hashes and personal data, so keep it as protected as the server).
 The apps back up their own data; for Roedy Mail see its `docs/ops.md`.
 
-**Restore** (same key; the volume's content is replaced by the archive's):
+**Restore** (same key; the volume's content is replaced by the archive's). The helper container first unpacks the
+archive into its own file system and checks it; only then does it replace the volume's content, and the hub only
+starts again if every step succeeded (`sh -e`, one step per line, `&&`). A missing or damaged archive leaves the data as it was:
 
 ```sh
 file=roedy-hub-20261127T030000Z.tar.gz
 uid=65532 gid=65532   # or ROEDY_UID / ROEDY_GID from .env
 docker compose stop roedy-hub
-docker run --rm -v roedy_roedy-hub-data:/data -v "$PWD":/backup:ro alpine:3.24 sh -c \
-  "find /data -mindepth 1 -maxdepth 1 ! -name secret.key -exec rm -rf {} + &&
-   tar -xzf /backup/$file -C /data && chown -R $uid:$gid /data"
-docker compose start roedy-hub
+docker run --rm -v roedy_roedy-hub-data:/data -v "$PWD":/backup:ro alpine:3.24 sh -ec "
+  mkdir /restore
+  tar -xzf /backup/$file -C /restore
+  test -s /restore/roedy.sqlite3
+  find /data -mindepth 1 -maxdepth 1 ! -name secret.key -exec rm -rf {} +
+  cp -a /restore/. /data/
+  chown -R $uid:$gid /data" &&
+  docker compose start roedy-hub
 ```
 
 On a new host start with the same key (`ROEDY_SECRET_KEY` in `.env`, or `secret.key` restored into the volume). If

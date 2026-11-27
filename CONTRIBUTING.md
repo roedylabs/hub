@@ -54,7 +54,9 @@ While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vites
 
 ## Releases
 
-`just release <version>` opens the release PR (version, `CHANGELOG.md` with git-cliff); after the maintainer merged it,
+Releases need the [GitHub CLI](https://cli.github.com), signed in with push access (`gh auth status`); `just release`
+checks that before it changes anything. `just release <version>` opens the release PR (version, `CHANGELOG.md` with
+git-cliff); after the maintainer merged it,
 `just release-tag <version>` sets the tag on `main`, and [`release.yml`](.github/workflows/release.yml) builds, checks,
 signs and publishes `ghcr.io/roedylabs/hub`. Only a pushed tag publishes; a manual run of the workflow is a dry run.
 `x.y` and `latest` move only to the newest stable version, whatever order releases publish in.

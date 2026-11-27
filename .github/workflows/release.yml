@@ -175,10 +175,12 @@ jobs:
     # Only a pushed tag publishes; a manual run stays a dry run even on a tag.
     if: github.event_name == 'push' && github.ref_type == 'tag'
     # One release at a time, so that two tags cannot move x.y and latest at
-    # once (the step "Shared tags" decides which release owns them).
+    # once (the step "Shared tags" decides which release owns them). `queue:
+    # max` keeps every waiting release instead of replacing the pending one.
     concurrency:
       group: release-publish
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -252,14 +254,17 @@ jobs:
       - name: Shared tags
         id: shared
         run: |
-          newest() { git tag --list 'v*' | grep -Ex "v$1[0-9]+(\.[0-9]+)*" | sed 's/^v//' | sort -V | tail -n 1; }
+          # Stable release tags only: vX.Y.Z, nothing else (no pre-releases,
+          # no v1 or v0.2.99.1).
+          stable() { git tag --list 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//'; }
           minor=false
           latest=false
           if [ "$PRERELEASE" != true ]; then
             series=$(printf '%s\n' "$VERSION" | cut -d. -f1-2)
-            series_re=$(printf '%s' "$series" | sed 's/\./\\./g')
-            [ "$(newest "$series_re\\.")" = "$VERSION" ] && minor=true
-            [ "$(newest '')" = "$VERSION" ] && latest=true
+            newest_series=$(stable | awk -F. -v s="$series" '$1 "." $2 == s' | sort -V | tail -n 1)
+            newest=$(stable | sort -V | tail -n 1)
+            if [ "$newest_series" = "$VERSION" ]; then minor=true; fi
+            if [ "$newest" = "$VERSION" ]; then latest=true; fi
           fi
           echo "x.y: $minor, latest: $latest" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "minor=$minor" >>"$GITHUB_OUTPUT"
