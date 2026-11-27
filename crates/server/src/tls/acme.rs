@@ -127,8 +127,9 @@ pub struct Order {
     #[serde(default)]
     pub authorizations: Vec<String>,
     pub finalize: String,
-    #[serde(default)]
-    pub certificate: Option<String>,
+    /// Where to download the chain once the order is valid.
+    #[serde(default, rename = "certificate")]
+    pub chain_url: Option<String>,
     #[serde(default)]
     pub error: Option<Value>,
 }
@@ -193,8 +194,8 @@ pub struct Client {
     http: reqwest::Client,
     pub directory: Directory,
     key: P256Key,
-    /// The account URL once known (`kid`).
-    account: Option<String>,
+    /// The account URL once known: the `kid` of every later request.
+    kid: Option<String>,
     nonce: Option<String>,
 }
 
@@ -210,7 +211,7 @@ impl Client {
             http,
             directory,
             key,
-            account: None,
+            kid: None,
             nonce: None,
         })
     }
@@ -220,7 +221,7 @@ impl Client {
     }
 
     pub fn account_url(&self) -> Option<&str> {
-        self.account.as_deref()
+        self.kid.as_deref()
     }
 
     /// Creates the account, or finds the existing one for this key (§ 7.3,
@@ -229,8 +230,8 @@ impl Client {
         let payload = json!({ "termsOfServiceAgreed": true, "contact": contact });
         let url = self.directory.new_account.clone();
         let reply = self.post_with(&url, Some(&payload), Signer::Jwk).await?;
-        let account = reply.location("new account")?;
-        self.account = Some(account.clone());
+        let kid = reply.location("new account")?;
+        self.kid = Some(kid.clone());
         #[derive(Deserialize)]
         struct Account {
             #[serde(default)]
@@ -242,16 +243,16 @@ impl Client {
                 .json::<Account>("account")
                 .is_ok_and(|existing| existing.contact != contact)
         {
-            self.post(&account, Some(&json!({ "contact": contact })))
+            self.post(&kid, Some(&json!({ "contact": contact })))
                 .await
                 .context("account contact not updated")?;
         }
-        Ok(account)
+        Ok(kid)
     }
 
     /// Uses a known account URL without asking the CA.
     pub fn use_account(&mut self, url: String) {
-        self.account = Some(url);
+        self.kid = Some(url);
     }
 
     /// A new order for `domain` (§ 7.4), optionally replacing a certificate
@@ -322,11 +323,11 @@ impl Client {
     }
 
     async fn post(&mut self, url: &str, payload: Option<&Value>) -> anyhow::Result<Reply> {
-        let account = self
-            .account
+        let kid = self
+            .kid
             .clone()
             .ok_or_else(|| anyhow!("ACME: no account yet"))?;
-        self.post_with(url, payload, Signer::Kid(&account)).await
+        self.post_with(url, payload, Signer::Kid(&kid)).await
     }
 
     /// A signed POST; a `badNonce` is sent again with a fresh nonce.
@@ -378,6 +379,7 @@ impl Client {
     }
 
     async fn fresh_nonce(&mut self) -> anyhow::Result<String> {
+        check_url(&self.directory.new_nonce)?;
         let response = self
             .http
             .head(&self.directory.new_nonce)
@@ -450,12 +452,12 @@ pub async fn directory(http: &reqwest::Client, url: &str) -> anyhow::Result<Dire
 pub async fn renewal_info(
     http: &reqwest::Client,
     directory: &Directory,
-    cert_id: &str,
+    ari_id: &str,
 ) -> anyhow::Result<Option<RenewalWindow>> {
     let Some(base) = &directory.renewal_info else {
         return Ok(None);
     };
-    let url = format!("{}/{cert_id}", base.trim_end_matches('/'));
+    let url = format!("{}/{ari_id}", base.trim_end_matches('/'));
     check_url(&url)?;
     let response = http.get(&url).send().await?;
     let status = response.status();

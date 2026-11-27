@@ -330,7 +330,7 @@ impl Issuer {
 
     /// Whether ARI's window has begun; `false` if the CA has none or it
     /// cannot be asked (the fixed rule applies then).
-    async fn ari_due(&self, cert_id: &str, now: Timestamp) -> bool {
+    async fn ari_due(&self, ari_id: &str, now: Timestamp) -> bool {
         let directory = match acme::directory(&self.http, &self.settings.directory).await {
             Ok(directory) => directory,
             Err(error) => {
@@ -338,7 +338,7 @@ impl Issuer {
                 return false;
             }
         };
-        match acme::renewal_info(&self.http, &directory, cert_id).await {
+        match acme::renewal_info(&self.http, &directory, ari_id).await {
             Ok(Some(window)) => {
                 tracing::debug!(start = %window.start, end = %window.end, "renewal info");
                 window.start <= now
@@ -440,7 +440,7 @@ impl Issuer {
         let key = P256Key::generate()?;
         client.finalize(&order, &x509::csr(domain, &key)?).await?;
         let order = client.wait_for_order(&order_url).await?;
-        let certificate = match (order.status.as_str(), &order.certificate) {
+        let chain_url = match (order.status.as_str(), &order.chain_url) {
             ("valid", Some(url)) => url.clone(),
             _ => bail!(
                 "order is {} after finalizing: {}",
@@ -448,7 +448,7 @@ impl Issuer {
                 acme::describe_error(order.error.as_ref())
             ),
         };
-        let pem = client.download(&certificate).await?;
+        let pem = client.download(&chain_url).await?;
         let chain = parse_chain(&pem)?;
         let info = CertInfo::parse(&chain[0]).context("issued certificate")?;
         if !info.dns_names.iter().any(|name| name == domain) {
