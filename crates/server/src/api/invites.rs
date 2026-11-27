@@ -270,12 +270,15 @@ pub(super) fn set_invite_access(
     Ok(true)
 }
 
+/// A paired app and the role an invitation gives in it (`None`: no access).
+type Chosen = (HubApp, Option<String>);
+
 /// The access of the form, checked against the apps: per slug the paired
-/// app and the role (`None`: no access). Errors under `apps.<slug>`.
+/// app and the role. Errors under `apps.<slug>`.
 fn check_apps(
     conn: &Connection,
     apps: &BTreeMap<String, Option<String>>,
-) -> rusqlite::Result<Result<Vec<(HubApp, Option<String>)>, FieldErrors>> {
+) -> rusqlite::Result<Result<Vec<Chosen>, FieldErrors>> {
     let mut errors = FieldErrors::default();
     let mut checked = Vec::with_capacity(apps.len());
     for (slug, role) in apps {

@@ -198,7 +198,32 @@ pub fn sanitize_icon(svg: &str) -> Result<String, &'static str> {
     if !has_square_view_box(svg) {
         return Err("not_square");
     }
-    String::from_utf8(image.data.to_vec()).map_err(|_| "unreadable")
+    let clean = String::from_utf8(image.data.to_vec()).map_err(|_| "unreadable")?;
+    with_view_box(&clean).ok_or("unreadable")
+}
+
+/// The rewritten SVG with a `viewBox` over its `width` and `height`: the
+/// rewriting resolves the original `viewBox` into the drawing, so that an
+/// `<img>` of another size would show the icon unscaled in its corner.
+fn with_view_box(svg: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(svg).ok()?;
+    let root = doc.root_element();
+    if root.has_attribute("viewBox") {
+        return Some(svg.to_owned());
+    }
+    let size = |name| {
+        root.attribute(name)?
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n > 0.0)
+    };
+    let (width, height) = (size("width")?, size("height")?);
+    let at = svg.find("<svg")? + "<svg".len();
+    Some(format!(
+        "{} viewBox=\"0 0 {width} {height}\"{}",
+        &svg[..at],
+        &svg[at..]
+    ))
 }
 
 /// Whether the root element has a `viewBox` with equal, positive width and
@@ -384,6 +409,9 @@ mod tests {
             assert!(!clean.contains(unsafe_part), "{unsafe_part}: {clean}");
         }
         assert!(clean.contains("<path"), "{clean}");
+        // It scales in an `<img>` of any size.
+        assert!(clean.contains(r#"viewBox="0 0 24 24""#), "{clean}");
+        assert!(has_square_view_box(&clean), "{clean}");
 
         for (svg, code) in [
             (

@@ -154,6 +154,11 @@ WebSocket ping).
   database is too busy to answer that check, their streams stay open until
   it does. Apps learn about every ended session from `session.revoked`
   ([§ 10](#10-events)) as well.
+- **End of an access:** when an administrator removes a user's access to an
+  app, the hub closes that user's open streams and WebSocket connections to
+  this app at once (their other apps' stay open); the app learns about it
+  from `access.changed` with `access: false`. A new role applies to the
+  next request, whose identity carries it.
 
 ### 3.6 Namespaces in the browser
 
@@ -379,7 +384,8 @@ administrators, else `null`.
 ### `GET /api/v1/apps`
 
 The apps the signed-in user has access to, in the order the administrator set,
-names and descriptions in the user's language:
+names and descriptions in the user's language (`user.locale` of
+`GET /api/v1/session`); `401 {"error": "unauthorized"}` when signed out:
 
 ```json
 {
@@ -390,7 +396,14 @@ names and descriptions in the user's language:
 }
 ```
 
-`status`: `online` (the last health check succeeded) or `offline`.
+`status`: `online` (the last health check succeeded) or `offline` (it failed,
+or there was none yet). `url` is `/<slug><home>` with `home` from the manifest.
+`icon` is the address of the icon below, with its version.
+
+Only paired apps are listed. An app that waits for pairing
+([§ 9](#9-pairing)) is not, not even for hub administrators: it has no name or
+icon yet, and they reach it through the hub's administration. A hub
+administrator sees the apps they have access to, like everyone else.
 
 ### `GET /api/v1/apps/<slug>/icon.svg`
 
@@ -398,6 +411,13 @@ The app's icon from its manifest, sanitized by the hub, with
 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
 For use in `<img>`. Public, cacheable, the URL changes when the icon changes
 (`?v=` with a hash).
+
+`Content-Type: image/svg+xml`, an `ETag`, and with the current `v` (as
+`GET /api/v1/apps` names it) `Cache-Control: public, max-age=31536000,
+immutable`; without `v` or with an earlier one `no-cache`, so that the
+browser revalidates. An app that waits for pairing, or an unknown slug, gets
+`404 {"error": "not_found"}`. The icon has a square `viewBox` and scales to
+any size.
 
 ### `POST /api/v1/auth/logout`
 
@@ -705,6 +725,9 @@ it: the app may hold data from earlier access.
 - A new user reaches the apps they get access to as `access.changed` with
   `access: true`; there is no separate event for a new user. Their details
   come with the identity or from `GET /internal/v1/users/<sub>`.
+- An administrator can grant, change and remove a user's access at any
+  time; each change gives `access.changed` to that app alone – removal with
+  `"access": false, "app_role": null`.
 - `user.updated` follows a change of any of its fields, `locale` included
   (the user's language, or the language of their last sign-in while the
   setting follows the browser).
@@ -812,7 +835,13 @@ because the hub never issues a deleted `sub` again.
   default role – or "selected only" – new users get no access until an
   administrator grants it. The invitation form shows the defaults and lets the
   administrator change them per invitation. The setting affects new users
-  only.
+  only: changing it leaves every existing access as it is, in both
+  directions. An invitation keeps the access chosen for it; for apps it does
+  not name, the default at the time it is accepted applies. A role the
+  manifest no longer has when the invitation is accepted becomes the default
+  role.
+- Access is given in paired apps only: an app that waits for pairing has no
+  roles yet.
 - **After pairing,** every hub administrator gets access with the manifest's
   `admin` role (or the default role, if there is none); with "everyone", all
   other users get the default role.

@@ -5,7 +5,8 @@
 //!   state, version, health (`health`, `health_at`, `online_at`: the last
 //!   passed check), `contacted_at` (the app's last request with its secret,
 //!   to the minute), the event delivery (`events`), the number of users
-//!   with access (`users`), the access default and the manifest's roles.
+//!   with access (`user_count`), the access default, the manifest's roles,
+//!   the address of its home (`url`) and its icon (`icon`, versioned).
 //! - `PATCH admin/apps` (`{order: [slug, …]}`): the order on the home page;
 //!   `order` names every app exactly once (422 `fields.order`: `required`,
 //!   `invalid`). Returns the list.
@@ -163,7 +164,7 @@ pub fn app_json(state: &AppState, app: &App, extra: &Extra) -> Value {
         "paired_at": app.paired_at,
         "created_at": app.created_at,
         "pairing": app.pairing_expires_at.as_ref().map(|at| json!({ "expires_at": at })),
-        "users": extra.users,
+        "user_count": extra.users,
         "events": events_json(extra.events.as_ref()),
     })
 }

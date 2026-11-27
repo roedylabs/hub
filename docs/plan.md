@@ -118,16 +118,17 @@ migrations with the milestones that use them.
 From Mail, trimmed: `schema_migrations`, `app_settings`, `users`, `sessions`
 (plus `auth_time`), `audit_log` (category `apps` added), `totp_devices`,
 `recovery_codes`, `known_devices`, `password_resets`, `email_changes`,
-`invitations` (plus the app access chosen in the form), `user_settings`
+`invitations` (the app access chosen in the form in `invitation_access`), `user_settings`
 (language, theme, accent), `assets` (logo).
 
 New:
 
 | Table | Content |
 |---|---|
-| `apps` | `id`, `slug` (unique), `internal_url`, `state` (`pending`, `paired`), `manifest_json`, `manifest_id`, `version`, `secret_hash`, `access_default` (`all`, `selected`), `position`, `health`, `health_at`, `paired_at`, `created_at` |
+| `apps` | `id`, `slug` (unique), `internal_url`, `state` (`pending`, `paired`), `manifest_json`, `manifest_id`, `version`, `secret_hash`, `access_default` (`all`, `selected`), `position`, `health`, `health_at`, `online_at`, `contacted_at`, `paired_at`, `created_at` |
 | `pairing_codes` | `app_id` (one open code per app), `code_hash`, `expires_at`, `created_by` |
 | `app_access` | `user_id`, `app_id`, `app_role`; primary key (user, app) |
+| `invitation_access` | `invitation_id`, `app_id`, `app_role` (empty: no access); what an invitation gives, other apps get their default |
 | `signing_keys` | `kid`, `private_enc`, `public`, `created_at`, `active_from`, `retired_at` |
 | `events` | `id`, `app_id`, `seq`, `type`, `data`, `created_at`; unique (app, seq) |
 | `deleted_users` | `sub`, `deleted_at`: tombstones for `GET /internal/v1/users/<sub>`, kept permanently |
@@ -456,6 +457,58 @@ checks pass in every PR; every PR has tests for what it adds.
    user and in the invitation form, 403 page.
    *Tests:* permission matrix (admin/user × access yes/no × app
    pending/paired), `access.changed` events, component tests, axe.
+   Split into two PRs (decided on 2026-11-27):
+   1. [x] **Server API** – browser API, administration of apps, access per
+      user and in invitations. Done: `GET /api/v1/apps` (`api::home`: paired
+      apps with access in the administrator's order, name and description in
+      the user's language, `url` `/<slug><home>`, the versioned `icon`,
+      `status` from the last health check; pending apps are never listed,
+      not even for hub administrators – they reach them through the
+      administration and the gateway) and `GET /api/v1/apps/<slug>/icon.svg`
+      (`web::app_icons`, outside the API's middleware: public, `ETag`,
+      `immutable` only with the current `?v=` – the first 16 hex digits of
+      the sanitized icon's SHA-256, `apps::icon_version` –, `no-cache`
+      otherwise, the contract's CSP, 404 for pending apps; the sanitized icon
+      now keeps a `viewBox`, so that it scales in an `<img>`);
+      `GET /api/v1/session` already matched § 6. Migration 0008
+      (`invitation_access`; `apps.contacted_at` – the app's last request
+      with its secret or its pairing, written at most once a minute –, and
+      `apps.online_at`, the last passed health check). `admin/apps` with the
+      status (`health`, `health_at`, `online_at`, `contacted_at`, the event
+      delivery from `event_delivery`, `user_count`, `url`, `icon`),
+      `PATCH admin/apps` (`{order}`: every slug once), `PATCH
+      admin/apps/:slug` (`{access_default}`: for new users only, existing
+      access stays as it is in both directions), `GET admin/apps/:slug/users`
+      (every user with `app_role` or `null`, and what the open invitations
+      will give); audit entries `apps.order` and `apps.access_default`.
+      Access per user: `PUT|DELETE users/:id/apps/:slug` (`{app_role?}`,
+      without one the default role; also the own account and locked ones;
+      pending apps 409 `app_pending`) and the bulk action `access` (`slug`,
+      `access`, `app_role?`; for users and invitations, the own account
+      included), `apps` (slug → role) on every user and invitation row; each
+      change writes `access.changed` (`app_access::set`, removal with
+      `access: false`), an audit entry `apps.access_grant|access_role|
+      access_revoke` and, after the commit, drops the user's gateway cache
+      entries and on removal closes their streams and WebSockets to that
+      app (`gateway::sessions::Streams` now per session and app; a request
+      that waited for the app while the access went is checked again).
+      Invitations: `apps` (slug → role or `null`) in `POST invites` and
+      `PATCH invites/:id` (only the apps named change; `role` is optional
+      now), stored in `invitation_access`, audit `apps.invite_access`;
+      accepting grants the choice and the defaults for the other apps
+      (`users::insert_with`, `app_access::grant_invited`) with
+      `access.changed` per app, and names the access in
+      `users.invite_accept`. Tests: `tests/access.rs` (the permission matrix
+      over `/api/v1/apps`, the icon and the gateway, icon headers and cache
+      busting, status, order and access default, access per user with its
+      events and audit entries, bulk, invitations up to the acceptance,
+      admin-only and CSRF for every new modifying endpoint),
+      `tests/gateway.rs` (grant, role change and removal at once, streams
+      closed) and `tests/events.rs` (role change and removal delivered to the
+      example app).
+   2. **Pages** – home page tiles, Administration › Apps (list with status,
+      order, add, pairing code, access default, the app's users), access and
+      roles in the user and invitation forms, the 403 page.
 6. **Delivery, docs, end-to-end** – Dockerfile, release workflow, image size
    and smoke test, `deploy/compose.yml` (Caddy + hub + Mail, only Caddy
    published; the example app in a test override), `.env.example`,

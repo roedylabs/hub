@@ -485,6 +485,32 @@ async fn every_change_reaches_the_apps_it_concerns() {
     assert_eq!(state.delivered_seq, 0);
     assert!(state.attempts > 0, "{state:?}");
     assert_eq!(state.last_error.as_deref(), Some("not reachable"));
+
+    // Access per user in the administration (the cleanup above ended
+    // Anna's session): a new role, then none – only to this app.
+    let admin = hub.env.session_for("anna").await;
+    let path = format!("/users/{lena}/apps/example");
+    let reply = hub
+        .env
+        .as_user(
+            &admin,
+            Method::PUT,
+            &path,
+            Some(json!({ "app_role": "owner" })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(arrived(example, 17, 1).await, [access(&lena, "owner")]);
+    let reply = hub.env.as_user(&admin, Method::DELETE, &path, None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        arrived(example, 18, 1).await,
+        [(
+            "access.changed".to_owned(),
+            json!({ "sub": lena, "access": false, "app_role": null })
+        )]
+    );
+    assert_eq!(hub.stored(&second_id).await, second_events);
     let _ = second;
 }
 

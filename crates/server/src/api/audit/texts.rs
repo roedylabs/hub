@@ -277,9 +277,9 @@ fn known(row: &Row, lang: Language) -> Option<Line> {
         )
         .warn(),
         "apps.remove" => with("ti-trash", "slug", &p.text("slug")?),
-        "apps.order" => plain("ti-arrows-sort"),
+        "apps.order" => plain("ti-layout-list"),
         "apps.access_default" => Line::new(
-            "ti-users-group",
+            "ti-users",
             act(
                 match p.text("access_default")? {
                     variant @ ("all" | "selected") => Some(variant),

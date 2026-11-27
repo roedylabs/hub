@@ -432,7 +432,7 @@ mod tests {
 
     use super::*;
     use crate::db::repo::{
-        apps::{self, tests::manifest},
+        apps::{self, AccessDefault, tests::manifest},
         users::{
             Role,
             tests::{add, conn},
@@ -515,6 +515,81 @@ mod tests {
         assert!(member_of(&conn, &mail, &max).unwrap().is_none());
         apps::delete(&conn, &mail).unwrap();
         assert!(members(&conn, &mail, None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_reports_changes_and_writes_events() {
+        let conn = conn();
+        let max = add(&conn, "max", "max@example.com", Role::User);
+        let mail = apps::insert(&conn, "mail", "http://mail.test").unwrap();
+        apps::pair(&conn, &mail, &manifest(), &[1; 32]).unwrap();
+        let events = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            set(&conn, &max, &mail, Some("user")).unwrap(),
+            Outcome::Changed { previous: None }
+        );
+        assert_eq!(
+            set(&conn, &max, &mail, Some("user")).unwrap(),
+            Outcome::Unchanged
+        );
+        assert_eq!(
+            set(&conn, &max, &mail, Some("admin")).unwrap(),
+            Outcome::Changed {
+                previous: Some("user".into())
+            }
+        );
+        assert_eq!(
+            of_user(&conn, &max)
+                .unwrap()
+                .get("mail")
+                .map(String::as_str),
+            Some("admin")
+        );
+        assert_eq!(counts(&conn).unwrap().get(&mail), Some(&1));
+        assert_eq!(
+            set(&conn, &max, &mail, None).unwrap(),
+            Outcome::Changed {
+                previous: Some("admin".into())
+            }
+        );
+        assert_eq!(set(&conn, &max, &mail, None).unwrap(), Outcome::Unchanged);
+        assert_eq!(events(&conn), 3);
+        let users = users_of(&conn, &mail).unwrap();
+        assert_eq!((users.len(), users[0].app_role.as_deref()), (1, None));
+    }
+
+    #[test]
+    fn invitations_give_their_choice_or_the_default() {
+        let conn = conn();
+        let mail = apps::insert(&conn, "mail", "http://mail.test").unwrap();
+        let notes = apps::insert(&conn, "notes", "http://notes.test").unwrap();
+        let draft = apps::insert(&conn, "draft", "http://draft.test").unwrap();
+        apps::pair(&conn, &mail, &manifest(), &[1; 32]).unwrap();
+        apps::pair(&conn, &notes, &manifest(), &[2; 32]).unwrap();
+        apps::set_access_default(&conn, &notes, AccessDefault::Selected).unwrap();
+        let all = apps::list(&conn).unwrap();
+        let app = |id: &str| all.iter().find(|a| a.id == id).unwrap().clone();
+        let (mail, notes, draft) = (app(&mail), app(&notes), app(&draft));
+        let role = |r: &str| Some(Some(r.to_owned()));
+        for (app, choice, expected) in [
+            (&mail, None, Some("user")),
+            (&notes, None, None),
+            (&mail, Some(None), None),
+            (&notes, role("admin"), Some("admin")),
+            (&notes, role("gone"), Some("user")),
+            (&draft, role("admin"), None),
+            (&draft, None, None),
+        ] {
+            assert_eq!(
+                effective_for(app, choice.as_ref()).as_deref(),
+                expected,
+                "{} {choice:?}",
+                app.slug
+            );
+        }
     }
 
     #[test]
