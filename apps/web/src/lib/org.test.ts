@@ -433,6 +433,32 @@ describe('OrgPage', () => {
     expect(session.appName).toBe(ORG0.name);
   });
 
+  it('an input made during a queued save stays even if it equals the value shown at submit', async () => {
+    const older = later();
+    const newer = later();
+    const api = mockApi({ 'PUT admin/org': [older.reply, newer.reply] });
+    const a = new OrgPage(ctx);
+    a.set('name', 'Older Ltd');
+    const first = a.save();
+    a.dispose();
+    // Opened before the first save answered: it shows the old name and changes only the website.
+    const b = new OrgPage(ctx);
+    b.set('website', 'https://example.com/b');
+    const second = b.save();
+    older.answer({ body: { ...ORG0, name: 'Older Ltd' } });
+    await first;
+    await vi.waitFor(() => expect(sent(api.calls)).toEqual(['PUT admin/org', 'PUT admin/org']));
+    expect(api.calls[1]?.body).toEqual({ website: 'https://example.com/b' });
+    expect(b.draft.name).toBe('Older Ltd');
+    // Typed back while the request runs: it was not sent, so it stays although it equals the name shown at submit.
+    b.set('name', ORG0.name ?? '');
+    newer.answer({ body: { ...ORG0, name: 'Older Ltd', website: 'https://example.com/b' } });
+    await second;
+    expect(b.edits).toEqual({ name: ORG0.name });
+    expect(b.draft.name).toBe(ORG0.name);
+    expect(b.dirty).toBe(true);
+  });
+
   it('a failed save does not hold up the next one', async () => {
     const failing = later();
     const api = mockApi({ 'PUT admin/org': [failing.reply, { body: { ...ORG0, name: 'Newer Ltd' } }] });
