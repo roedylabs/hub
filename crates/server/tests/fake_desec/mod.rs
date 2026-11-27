@@ -3,9 +3,11 @@
 //! domains/<zone>/rrsets/<subname>/<type>/` (`@` for the apex) and the bulk
 //! `PUT domains/<zone>/rrsets/`. It checks the token, the trailing slashes,
 //! the record sets (type, quoted TXT values, TTL ≥ the domain's minimum)
-//! and publishes TXT changes to fake name servers ([`FakeDns`]), each with
-//! its own delay or never. Knobs throttle (`429` with `Retry-After`) and
-//! refuse writes (`403`); every request is logged.
+//! and publishes TXT changes to fake name servers ([`FakeDns`]), each on its
+//! own schedule ([`Publish`]); an older publication never overtakes a newer
+//! one. Knobs throttle (`429` with `Retry-After`) requests or writes – with
+//! another client's change while the hub waits – and refuse writes (`403`);
+//! every request is logged.
 
 #![allow(dead_code, reason = "each test uses its own part")]
 #![allow(
@@ -49,14 +51,28 @@ pub struct RrSet {
     pub records: Vec<String>,
 }
 
+/// When a change shows on a name server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Publish {
+    Now,
+    After(Duration),
+    /// Once the server was asked for the name after the change.
+    AfterQuery,
+    Never,
+}
+
 pub struct Knobs {
     /// The next this many requests get `429` with this `Retry-After`.
     pub throttle: usize,
     pub retry_after: String,
+    /// The next this many writes get `429` …
+    pub throttle_writes: usize,
+    /// … while another client adds this value to the record set.
+    pub concurrent_value: Option<String>,
     /// Writes get `403` (a token whose policy does not allow them).
     pub forbid_writes: bool,
-    /// Per name server: when a change shows there (`None`: never).
-    pub publish: Vec<Option<Duration>>,
+    /// Per name server.
+    pub publish: Vec<Publish>,
 }
 
 struct Inner {
@@ -68,6 +84,10 @@ struct Inner {
     dns: Vec<FakeDns>,
     knobs: Knobs,
     log: Vec<Request>,
+    /// Publications: the last one numbered, and the latest applied per
+    /// server and name.
+    revision: u64,
+    applied: HashMap<(usize, String), u64>,
 }
 
 #[derive(Clone)]
@@ -88,7 +108,7 @@ impl FakeDesec {
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let publish = vec![Some(Duration::ZERO); dns.len()];
+        let publish = vec![Publish::Now; dns.len()];
         let mut rrsets = HashMap::new();
         rrsets.insert(
             (zone.to_owned(), String::new(), "NS".to_owned()),
@@ -108,10 +128,14 @@ impl FakeDesec {
                 knobs: Knobs {
                     throttle: 0,
                     retry_after: "1".into(),
+                    throttle_writes: 0,
+                    concurrent_value: None,
                     forbid_writes: false,
                     publish,
                 },
                 log: Vec::new(),
+                revision: 0,
+                applied: HashMap::new(),
             })),
         };
         let router = Router::new()
@@ -227,6 +251,65 @@ impl FakeDesec {
         self.lock().log[index].status = response.status().as_u16();
         response
     }
+
+    /// Shows `values` at `name` on each name server as its knob says.
+    fn publish(&self, name: &str, values: Vec<String>) {
+        let (revision, plan) = {
+            let mut inner = self.lock();
+            inner.revision += 1;
+            let plan: Vec<(usize, FakeDns, Publish)> = inner
+                .dns
+                .iter()
+                .cloned()
+                .zip(inner.knobs.publish.iter().copied())
+                .enumerate()
+                .map(|(index, (server, publish))| (index, server, publish))
+                .collect();
+            (inner.revision, plan)
+        };
+        for (index, server, publish) in plan {
+            let (fake, name, values) = (self.clone(), name.to_owned(), values.clone());
+            let (watched, target) = (server.clone(), name.clone());
+            let asked = move || {
+                watched
+                    .queries()
+                    .iter()
+                    .filter(|(asked, _)| *asked == target)
+                    .count()
+            };
+            let before = asked();
+            let show = move || fake.show(index, &server, &name, &values, revision);
+            match publish {
+                Publish::Now => show(),
+                Publish::After(delay) => {
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        show();
+                    });
+                }
+                Publish::AfterQuery => {
+                    tokio::spawn(async move {
+                        while asked() <= before {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                        show();
+                    });
+                }
+                Publish::Never => {}
+            }
+        }
+    }
+
+    /// Applies a publication unless a newer one is there already.
+    fn show(&self, index: usize, server: &FakeDns, name: &str, values: &[String], revision: u64) {
+        let mut inner = self.lock();
+        let applied = inner.applied.entry((index, name.to_owned())).or_insert(0);
+        if *applied > revision {
+            return;
+        }
+        *applied = revision;
+        server.set(name, values);
+    }
 }
 
 fn fqdn(zone: &str, subname: &str) -> String {
@@ -326,22 +409,73 @@ async fn bulk(
         Ok(index) => index,
         Err(response) => return response,
     };
-    let response = apply(&fake, &zone, parsed);
+    let throttled = {
+        let mut inner = fake.lock();
+        (inner.knobs.throttle_writes > 0).then(|| {
+            inner.knobs.throttle_writes -= 1;
+            (
+                inner.knobs.retry_after.clone(),
+                inner.knobs.concurrent_value.take(),
+            )
+        })
+    };
+    if let Some((wait, concurrent)) = throttled {
+        // Another client writes the set while the hub waits.
+        if let Some(value) = concurrent {
+            let subname = parsed
+                .as_ref()
+                .and_then(|body| body[0]["subname"].as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let key = (zone.clone(), subname.clone(), "TXT".to_owned());
+            let records = {
+                let mut inner = fake.lock();
+                let set = inner.rrsets.entry(key).or_insert(RrSet {
+                    ttl: 7200,
+                    records: Vec::new(),
+                });
+                set.records.push(format!("\"{value}\""));
+                set.records.clone()
+            };
+            fake.publish(&fqdn(&zone, &subname), unquote(&records));
+        }
+        let response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, wait.clone())],
+            Json(json!({"detail": format!("Request was throttled. Expected available in {wait} seconds.")})),
+        )
+            .into_response();
+        return fake.done(index, response);
+    }
+    let response = match apply(&fake, &zone, parsed) {
+        Ok(publications) => {
+            for (name, values) in publications {
+                fake.publish(&name, values);
+            }
+            Json(json!([])).into_response()
+        }
+        Err(response) => response,
+    };
     fake.done(index, response)
 }
 
-fn apply(fake: &FakeDesec, zone: &str, body: Option<Value>) -> Response {
-    let bad = |detail: Value| (StatusCode::BAD_REQUEST, Json(detail)).into_response();
+/// Validates and applies a bulk write; the TXT changes to publish.
+fn apply(
+    fake: &FakeDesec,
+    zone: &str,
+    body: Option<Value>,
+) -> Result<Vec<(String, Vec<String>)>, Response> {
+    let bad = |detail: Value| Err((StatusCode::BAD_REQUEST, Json(detail)).into_response());
     let mut inner = fake.lock();
     let Some(&(_, minimum_ttl)) = inner.domains.iter().find(|(name, _)| name == zone) else {
-        return (StatusCode::NOT_FOUND, Json(json!({"detail": "Not found."}))).into_response();
+        return Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Not found."}))).into_response());
     };
     if inner.knobs.forbid_writes {
-        return (
+        return Err((
             StatusCode::FORBIDDEN,
             Json(json!({"detail": "Insufficient token permissions.", "code": "forbidden"})),
         )
-            .into_response();
+            .into_response());
     }
     let Some(Value::Array(sets)) = body else {
         return bad(json!({"non_field_errors": ["Expected a list of items."]}));
@@ -366,7 +500,9 @@ fn apply(fake: &FakeDesec, zone: &str, body: Option<Value>) -> Response {
         {
             return bad(json!([{"records": ["TXT values must be in quotes."]}]));
         }
-        let ttl = u32::try_from(ttl).unwrap();
+        let Ok(ttl) = u32::try_from(ttl) else {
+            return bad(json!([{"ttl": ["Ensure this value is less than or equal to 86400."]}]));
+        };
         if ttl < minimum_ttl {
             return bad(json!([{"ttl": [format!(
                 "Ensure this value is greater than or equal to {minimum_ttl}."
@@ -374,8 +510,7 @@ fn apply(fake: &FakeDesec, zone: &str, body: Option<Value>) -> Response {
         }
         changes.push((subname.to_owned(), ttl, records));
     }
-    let publish = inner.knobs.publish.clone();
-    let dns = inner.dns.clone();
+    let mut publications = Vec::new();
     for (subname, ttl, records) in changes {
         let key = (zone.to_owned(), subname.clone(), "TXT".to_owned());
         if records.is_empty() {
@@ -389,20 +524,7 @@ fn apply(fake: &FakeDesec, zone: &str, body: Option<Value>) -> Response {
                 },
             );
         }
-        let name = fqdn(zone, &subname);
-        let values = unquote(&records);
-        for (server, delay) in dns.iter().zip(&publish) {
-            let Some(delay) = *delay else { continue };
-            if delay.is_zero() {
-                server.set(&name, &values);
-            } else {
-                let (server, name, values) = (server.clone(), name.clone(), values.clone());
-                tokio::spawn(async move {
-                    tokio::time::sleep(delay).await;
-                    server.set(&name, &values);
-                });
-            }
-        }
+        publications.push((fqdn(zone, &subname), unquote(&records)));
     }
-    Json(Value::Array(sets)).into_response()
+    Ok(publications)
 }

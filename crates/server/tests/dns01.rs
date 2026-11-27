@@ -17,7 +17,7 @@ use std::{
 };
 
 use fake_acme::FakeAcme;
-use fake_desec::FakeDesec;
+use fake_desec::{FakeDesec, Publish};
 use fake_dns::{FakeDns, Transport};
 use jiff::{SignedDuration, Timestamp};
 use roedy_hub_server::{
@@ -51,6 +51,8 @@ struct Setup {
     db: Db,
     /// When the CA looked the TXT record up.
     ca_lookups: Arc<Mutex<Vec<Instant>>>,
+    /// A name server that never answers, kept open for the test.
+    _silent: Option<std::net::UdpSocket>,
     _dir: tempfile::TempDir,
 }
 
@@ -125,6 +127,7 @@ async fn setup(change: impl FnOnce(&mut dns01::Settings, &FakeDesec)) -> Setup {
         resolver: tls.resolver.clone(),
         db,
         ca_lookups,
+        _silent: None,
         _dir: dir,
     }
 }
@@ -233,10 +236,9 @@ async fn keeps_other_values_of_the_record_set() {
     let added = written_records(&writes[0]);
     assert_eq!(added[0], "\"other client\"");
     assert_eq!(added.len(), 2, "{added:?}");
-    assert_eq!(
-        writes[1],
-        txt_body(SUBNAME, MINIMUM_TTL, &[quote("other client")])
-    );
+    // The set's own TTL stays, not the zone's minimum.
+    assert_eq!(writes[0], txt_body(SUBNAME, 7200, &added));
+    assert_eq!(writes[1], txt_body(SUBNAME, 7200, &[quote("other client")]));
     assert_eq!(
         setup.desec.rrset(ZONE, SUBNAME, "TXT").unwrap().records,
         ["\"other client\""]
@@ -281,15 +283,18 @@ async fn setup_with_forbidden_writes() -> Setup {
 
 #[tokio::test]
 async fn waits_until_every_name_server_has_the_record() {
-    let delay = Duration::from_millis(600);
+    // The second name server gets the value only after it was asked once.
     let setup = setup(|_, desec| {
-        desec.knobs(|knobs| knobs.publish = vec![Some(Duration::ZERO), Some(delay)]);
+        desec.knobs(|knobs| knobs.publish = vec![Publish::Now, Publish::AfterQuery]);
     })
     .await;
     setup.issuer.run_once().await.unwrap();
     // The CA (asking the first name server, which had it at once) only
-    // looked after the second one had it as well.
-    let published = setup.ns2.set_at(NAME).unwrap();
+    // looked after the second one had the value as well.
+    let value = written_records(&setup.writes()[0])[0]
+        .trim_matches('"')
+        .to_owned();
+    let published = setup.ns2.published(NAME, &value).unwrap();
     let looked = setup.ca_lookups.lock().unwrap().clone();
     assert_eq!(looked.len(), 1);
     assert!(looked[0] >= published, "the CA looked before ns2 had it");
@@ -299,14 +304,14 @@ async fn waits_until_every_name_server_has_the_record() {
         .iter()
         .filter(|(name, _)| name == NAME)
         .count();
-    assert!(asked > 2, "ns2 asked again and again ({asked})");
+    assert!(asked >= 2, "ns2 asked again ({asked})");
 }
 
 #[tokio::test]
 async fn gives_up_when_a_name_server_never_has_the_record() {
     let setup = setup(|dns, desec| {
         dns.propagation_timeout = Duration::from_millis(400);
-        desec.knobs(|knobs| knobs.publish = vec![Some(Duration::ZERO), None]);
+        desec.knobs(|knobs| knobs.publish = vec![Publish::Now, Publish::Never]);
     })
     .await;
     let error = format!("{:#}", setup.issuer.run_once().await.unwrap_err());
@@ -327,20 +332,69 @@ async fn gives_up_when_a_name_server_never_has_the_record() {
         error.contains("ns2.desec.test (no DNS answer from 127.0.0.1:"),
         "{error}"
     );
+
+    // Answers that do not count, even next to an address with the value: one
+    // without authority (whatever it holds), and an error code.
+    let lame = FakeDns::start().await;
+    lame.not_authoritative(true);
+    let failing = FakeDns::start().await;
+    failing.fail_with(Some(2));
+    for (server, expected) in [
+        (lame, "answered without authority"),
+        (failing, "answered with code 2"),
+    ] {
+        let setup = self::setup(|dns, _| {
+            dns.propagation_timeout = Duration::from_millis(300);
+            let ns2 = dns.name_servers.get_mut("ns2.desec.test").unwrap();
+            ns2.push(server.addr);
+        })
+        .await;
+        let error = format!("{:#}", setup.issuer.run_once().await.unwrap_err());
+        assert!(error.contains(expected), "{error}");
+        assert!(setup.acme.log().validations.is_empty());
+    }
 }
 
 async fn setup_with_silent_name_server() -> Setup {
     // A bound UDP socket that never answers, and no TCP.
     let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = silent.local_addr().unwrap();
-    std::mem::forget(silent);
-    setup(move |dns, _| {
+    let mut setup = setup(move |dns, _| {
         dns.propagation_timeout = Duration::from_millis(300);
         dns.query_timeout = Duration::from_millis(100);
         dns.name_servers
             .insert("ns2.desec.test".to_owned(), vec![addr]);
     })
-    .await
+    .await;
+    setup._silent = Some(silent);
+    setup
+}
+
+#[tokio::test]
+async fn a_throttled_write_starts_again_from_a_fresh_read() {
+    // The first write is throttled; meanwhile another client adds a value.
+    let setup = setup(|_, desec| {
+        desec.knobs(|knobs| {
+            knobs.throttle_writes = 1;
+            knobs.retry_after = "1".into();
+            knobs.concurrent_value = Some("concurrent".into());
+        });
+    })
+    .await;
+    setup.issuer.run_once().await.unwrap();
+    let writes = setup.writes();
+    assert_eq!(writes.len(), 2);
+    let added = written_records(&writes[0]);
+    assert_eq!(
+        added[0], "\"concurrent\"",
+        "the retry read again: {added:?}"
+    );
+    assert_eq!(added.len(), 2);
+    assert_eq!(
+        setup.desec.rrset(ZONE, SUBNAME, "TXT").unwrap().records,
+        ["\"concurrent\""],
+        "the other client's value survives"
+    );
 }
 
 #[tokio::test]

@@ -7,11 +7,11 @@
 //!
 //! 1. [`Dns01::prepare`] finds the deSEC domain that owns the name
 //!    ([`desec`]) and the addresses of its name servers (its `NS` records).
-//! 2. [`Dns01::add`] adds the value to the TXT record set (TTL: the domain's
-//!    minimum).
+//! 2. [`Dns01::add`] adds the value to the TXT record set (TTL: the set's
+//!    own, the domain's minimum for a new set).
 //! 3. [`Dns01::wait`] asks every name server ([`dns`], no recursion) until
-//!    each serves the value – only then may the CA look – or gives up after
-//!    [`Settings::propagation_timeout`].
+//!    each serves the value authoritatively – only then may the CA look – or
+//!    gives up after [`Settings::propagation_timeout`].
 //! 4. After the CA's validation, passed or failed, and after any error
 //!    since step 2, [`Dns01::remove`] takes the value out again
 //!    (`tls::issuer`).
@@ -164,21 +164,14 @@ impl Dns01 {
     /// Adds `value` to the TXT record set.
     pub async fn add(&self, target: &Target, value: &str) -> anyhow::Result<()> {
         let quoted = desec::quote(value);
-        let mut records = self
-            .desec
-            .records(&target.zone.name, &target.subname, "TXT")
-            .await?;
-        if records.contains(&quoted) {
-            return Ok(());
-        }
-        records.push(quoted);
         self.desec
-            .set_txt(
-                &target.zone.name,
-                &target.subname,
-                target.zone.ttl(),
-                &records,
-            )
+            .modify_txt(&target.zone, &target.subname, |records| {
+                (!records.contains(&quoted)).then(|| {
+                    let mut records = records.to_vec();
+                    records.push(quoted.clone());
+                    records
+                })
+            })
             .await?;
         tracing::info!(
             name = target.name,
@@ -192,32 +185,36 @@ impl Dns01 {
     /// else is left.
     pub async fn remove(&self, target: &Target, value: &str) -> anyhow::Result<()> {
         let quoted = desec::quote(value);
-        let records = self
+        let removed = self
             .desec
-            .records(&target.zone.name, &target.subname, "TXT")
+            .modify_txt(&target.zone, &target.subname, |records| {
+                records.contains(&quoted).then(|| {
+                    records
+                        .iter()
+                        .filter(|record| **record != quoted)
+                        .cloned()
+                        .collect()
+                })
+            })
             .await?;
-        if !records.contains(&quoted) {
-            return Ok(());
+        if removed {
+            tracing::info!(name = target.name, "DNS-01: TXT record removed");
         }
-        let rest: Vec<String> = records.into_iter().filter(|r| *r != quoted).collect();
-        self.desec
-            .set_txt(&target.zone.name, &target.subname, target.zone.ttl(), &rest)
-            .await?;
-        tracing::info!(name = target.name, "DNS-01: TXT record removed");
         Ok(())
     }
 
     /// Waits until every name server serves `value`. A name server counts
-    /// once one of its addresses answered and each that answered has the
-    /// value; addresses that cannot be reached (IPv6 on a host without it)
-    /// are left out.
+    /// once one of its addresses answered authoritatively and each that
+    /// answered has the value (an error answer such as `SERVFAIL` counts as
+    /// not having it); addresses that cannot be reached (IPv6 on a host
+    /// without it) are left out. No query runs past the deadline.
     pub async fn wait(&self, target: &Target, value: &str) -> anyhow::Result<()> {
         let started = tokio::time::Instant::now();
         let deadline = started + self.settings.propagation_timeout;
         loop {
             let mut missing = Vec::new();
             for ns in &target.name_servers {
-                if let Err(reason) = self.serves(ns, &target.name, value).await {
+                if let Err(reason) = self.serves(ns, &target.name, value, deadline).await {
                     missing.push(format!("{} ({reason})", ns.name));
                 }
             }
@@ -247,28 +244,48 @@ impl Dns01 {
     }
 
     /// Whether `ns` serves `value` at `name`; why not otherwise.
-    async fn serves(&self, ns: &NameServer, name: &str, value: &str) -> Result<(), String> {
-        let (mut answered, mut lacking, mut problem) = (false, false, None);
+    async fn serves(
+        &self,
+        ns: &NameServer,
+        name: &str,
+        value: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        let (mut answered, mut lacking, mut unreachable) = (false, None, None);
         for addr in &ns.addrs {
-            match dns::lookup_txt(*addr, name, self.settings.query_timeout).await {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                unreachable.get_or_insert_with(|| "out of time".to_owned());
+                break;
+            }
+            let timeout = self.settings.query_timeout.min(remaining);
+            match dns::lookup_txt(*addr, name, timeout).await {
                 Ok(response)
-                    if matches!(response.rcode, dns::RCODE_NOERROR | dns::RCODE_NXDOMAIN) =>
+                    if response.authoritative
+                        && matches!(response.rcode, dns::RCODE_NOERROR | dns::RCODE_NXDOMAIN) =>
                 {
                     answered = true;
-                    lacking |= !response.txt.iter().any(|txt| txt == value);
+                    if !response.txt.iter().any(|txt| txt == value) {
+                        lacking.get_or_insert_with(|| "not there yet".to_owned());
+                    }
+                }
+                Ok(response) if !response.authoritative => {
+                    lacking.get_or_insert_with(|| format!("{addr} answered without authority"));
                 }
                 Ok(response) => {
-                    problem.get_or_insert_with(|| format!("answered with code {}", response.rcode));
+                    lacking.get_or_insert_with(|| {
+                        format!("{addr} answered with code {}", response.rcode)
+                    });
                 }
                 Err(error) => {
-                    problem.get_or_insert_with(|| format!("{error:#}"));
+                    unreachable.get_or_insert_with(|| format!("{error:#}"));
                 }
             }
         }
-        match (answered, lacking) {
-            (true, false) => Ok(()),
-            (true, true) => Err("not there yet".to_owned()),
-            (false, _) => Err(problem.unwrap_or_else(|| "no address".to_owned())),
+        match (lacking, answered) {
+            (Some(reason), _) => Err(reason),
+            (None, true) => Ok(()),
+            (None, false) => Err(unreachable.unwrap_or_else(|| "no address".to_owned())),
         }
     }
 }

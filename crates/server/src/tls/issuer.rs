@@ -599,7 +599,8 @@ impl Issuer {
         if let Err(error) = dns.remove(&target, &value).await {
             tracing::warn!(
                 name = target.name,
-                "DNS-01: TXT record not removed, the next validation replaces it: {error:#}"
+                "DNS-01: TXT record not removed, its value may stay in the record set \
+                 (harmless; remove it at deSEC): {error:#}"
             );
         }
         let authorization = validated?;

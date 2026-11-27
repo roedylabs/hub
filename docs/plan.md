@@ -652,10 +652,13 @@ checks pass in every PR; every PR has tests for what it adds.
         `ROEDY_DESEC_TOKEN` (never logged; the start fails on incomplete
         settings). Per validation: the domain owning `_acme-challenge.<host>`
         (`GET domains/?owns_qname=`), the value added to the TXT record set by a
-        bulk `PUT` (minimum TTL, other values kept), every name server of the
-        zone (its `NS` records) asked directly until it serves the value (5 min
-        at most), then the CA; the value removed afterwards, also after a
-        failure. deSEC's `429` is waited out up to a minute, longer
+        bulk `PUT` (the set's TTL or the zone's minimum, other values kept;
+        the hub assumes it is the set's only writer – deSEC has no conditional
+        update), every name server of the zone (its `NS` records) asked
+        directly until it serves the value authoritatively (5 min at most),
+        then the CA; the value removed afterwards, also after a failure.
+        deSEC's `429` is waited out up to a minute (a write from a fresh read),
+        longer
         `Retry-After`s go to the issuer's backoff. No migration: nothing new is
         stored. ops.md documents a scoped token (token policies: read-only
         default, write only on the TXT set). *Tests:* DNS wire format

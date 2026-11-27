@@ -1,8 +1,9 @@
 //! An in-process authoritative name server for the DNS-01 tests: UDP and
 //! TCP on the same loopback port, TXT records only. Answers carry `AA`,
 //! the owner as a compression pointer to the question, and a record's
-//! strings as given; unknown names get `NXDOMAIN`. A knob truncates UDP
-//! answers (`TC`) so that the client has to ask again over TCP.
+//! strings as given; unknown names get `NXDOMAIN`. Knobs truncate UDP
+//! answers (`TC`) so that the client has to ask again over TCP, drop `AA`,
+//! or answer every query with an error code.
 
 #![allow(dead_code, reason = "each test uses its own part")]
 
@@ -28,9 +29,11 @@ pub enum Transport {
 struct Inner {
     /// TXT records by lower-case name; each record a list of strings.
     records: HashMap<String, Vec<Vec<String>>>,
-    /// When each name was last set.
-    set_at: HashMap<String, Instant>,
+    /// When each value first showed up at a name.
+    published: HashMap<(String, String), Instant>,
     truncate_udp: bool,
+    not_authoritative: bool,
+    rcode: Option<u8>,
     queries: Vec<(String, Transport)>,
 }
 
@@ -42,11 +45,17 @@ pub struct FakeDns {
 
 impl FakeDns {
     pub async fn start() -> Self {
-        // UDP and TCP on the same port: take UDP's and try TCP there.
+        // UDP and TCP on the same port: take UDP's and try TCP there; again
+        // if another socket has that TCP port.
+        let mut attempts = 0;
         let (udp, tcp) = loop {
             let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            if let Ok(tcp) = TcpListener::bind(udp.local_addr().unwrap()).await {
-                break (udp, tcp);
+            match TcpListener::bind(udp.local_addr().unwrap()).await {
+                Ok(tcp) => break (udp, tcp),
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && attempts < 20 => {
+                    attempts += 1;
+                }
+                Err(error) => panic!("fake DNS: no TCP listener: {error}"),
             }
         };
         let fake = Self {
@@ -103,7 +112,13 @@ impl FakeDns {
     pub fn set_strings(&self, name: &str, records: Vec<Vec<String>>) {
         let name = name.trim_end_matches('.').to_ascii_lowercase();
         let mut inner = self.lock();
-        inner.set_at.insert(name.clone(), Instant::now());
+        let now = Instant::now();
+        for strings in &records {
+            inner
+                .published
+                .entry((name.clone(), strings.concat()))
+                .or_insert(now);
+        }
         if records.is_empty() {
             inner.records.remove(&name);
         } else {
@@ -121,12 +136,26 @@ impl FakeDns {
             .unwrap_or_default()
     }
 
-    pub fn set_at(&self, name: &str) -> Option<Instant> {
-        self.lock().set_at.get(&name.to_ascii_lowercase()).copied()
+    /// When `value` first showed up at `name`.
+    pub fn published(&self, name: &str, value: &str) -> Option<Instant> {
+        self.lock()
+            .published
+            .get(&(name.to_ascii_lowercase(), value.to_owned()))
+            .copied()
     }
 
     pub fn truncate_udp(&self, on: bool) {
         self.lock().truncate_udp = on;
+    }
+
+    /// Answers without `AA`, as a server that is not authoritative.
+    pub fn not_authoritative(&self, on: bool) {
+        self.lock().not_authoritative = on;
+    }
+
+    /// Answers every query with this code (`SERVFAIL` = 2 …), no records.
+    pub fn fail_with(&self, rcode: Option<u8>) {
+        self.lock().rcode = rcode;
     }
 
     pub fn queries(&self) -> Vec<(String, Transport)> {
@@ -160,8 +189,14 @@ impl FakeDns {
 
         let mut inner = self.lock();
         inner.queries.push((name.clone(), transport));
-        let records = inner.records.get(&name).cloned();
+        let failure = inner.rcode;
+        let records = inner
+            .records
+            .get(&name)
+            .cloned()
+            .filter(|_| failure.is_none());
         let truncate = transport == Transport::Udp && inner.truncate_udp;
+        let authoritative = !inner.not_authoritative;
         drop(inner);
 
         let answers: Vec<Vec<String>> = match (&records, kind) {
@@ -169,9 +204,11 @@ impl FakeDns {
             _ => Vec::new(),
         };
         // QR, AA (and TC); NXDOMAIN for unknown names.
-        let mut flags: u16 = 0x8400;
-        if records.is_none() {
-            flags |= 3;
+        let mut flags: u16 = if authoritative { 0x8400 } else { 0x8000 };
+        match failure {
+            Some(rcode) => flags |= u16::from(rcode),
+            None if records.is_none() => flags |= 3,
+            None => {}
         }
         let mut answer = query[..2].to_vec();
         if truncate {

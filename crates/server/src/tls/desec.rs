@@ -11,13 +11,18 @@
 //!   record set in the list changes. TXT values go in double quotes.
 //!
 //! As deSEC's certbot plugin does, the hub reads the record set first and
-//! adds its value to the others (or removes only its own), so it does not
-//! take away values another client put there.
+//! adds its value to the others (or removes only its own), keeping the set's
+//! TTL, so it does not take away values another client put there
+//! ([`Desec::modify_txt`]). deSEC has no conditional update: a client that
+//! writes the same set between the hub's read and its write loses its change.
+//! The set belongs to the hub (docs/ops.md › DNS-01 with deSEC); other values
+//! there are only kept, not coordinated with.
 //!
 //! The token goes in `Authorization: Token …` (a header marked sensitive)
 //! and nowhere else: not in URLs, logs, errors or the audit log. Throttled
 //! requests (`429`) are sent again after `Retry-After` seconds as long as
-//! that is short; a longer wait goes to the issuer's backoff.
+//! that is short – a throttled write from a fresh read –; a longer wait goes
+//! to the issuer's backoff.
 
 use std::{fmt, time::Duration};
 
@@ -125,10 +130,13 @@ impl Zone {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct RrSet {
+/// A record set as deSEC returns it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct RrSet {
     #[serde(default)]
-    records: Vec<String>,
+    pub ttl: Option<u32>,
+    #[serde(default)]
+    pub records: Vec<String>,
 }
 
 /// A TXT value as deSEC takes it: in double quotes. The challenge's value
@@ -198,7 +206,10 @@ impl Desec {
         let mut url = self.url(&["domains", ""]);
         url.query_pairs_mut()
             .append_pair("owns_qname", name.trim_end_matches('.'));
-        let body = self.send(Method::GET, url, None).await?.unwrap_or_default();
+        let body = self
+            .send(Method::GET, url, None, true)
+            .await?
+            .unwrap_or_default();
         let zones: Vec<Zone> =
             serde_json::from_slice(&body).context("deSEC domains: unexpected answer")?;
         let zone = zones.into_iter().next().ok_or_else(|| {
@@ -213,6 +224,24 @@ impl Desec {
         Ok(zone)
     }
 
+    /// A record set; `None` if there is none.
+    pub async fn rrset(
+        &self,
+        zone: &str,
+        subname: &str,
+        kind: &str,
+    ) -> anyhow::Result<Option<RrSet>> {
+        // `@` stands for the zone's apex in URLs.
+        let subname = if subname.is_empty() { "@" } else { subname };
+        let url = self.url(&["domains", zone, "rrsets", subname, kind, ""]);
+        let Some(body) = self.send(Method::GET, url, None, true).await? else {
+            return Ok(None);
+        };
+        let set = serde_json::from_slice(&body)
+            .with_context(|| format!("deSEC record set {subname}/{kind}: unexpected answer"))?;
+        Ok(Some(set))
+    }
+
     /// The records of a record set; empty if there is none.
     pub async fn records(
         &self,
@@ -220,30 +249,51 @@ impl Desec {
         subname: &str,
         kind: &str,
     ) -> anyhow::Result<Vec<String>> {
-        // `@` stands for the zone's apex in URLs.
-        let subname = if subname.is_empty() { "@" } else { subname };
-        let url = self.url(&["domains", zone, "rrsets", subname, kind, ""]);
-        let Some(body) = self.send(Method::GET, url, None).await? else {
-            return Ok(Vec::new());
-        };
-        let set: RrSet = serde_json::from_slice(&body)
-            .with_context(|| format!("deSEC record set {subname}/{kind}: unexpected answer"))?;
-        Ok(set.records)
+        Ok(self
+            .rrset(zone, subname, kind)
+            .await?
+            .map(|set| set.records)
+            .unwrap_or_default())
     }
 
-    /// Sets the TXT record set `subname` of `zone` to `records`; empty
-    /// deletes it.
-    pub async fn set_txt(
+    /// Reads the TXT record set `subname` of `zone` and writes what `change`
+    /// makes of its records (`None`: nothing to write; empty: delete the
+    /// set), with the set's TTL, or the zone's minimum for a new set.
+    /// Throttled, it starts again from a fresh read. Whether it wrote.
+    pub async fn modify_txt(
         &self,
-        zone: &str,
+        zone: &Zone,
         subname: &str,
-        ttl: u32,
-        records: &[String],
-    ) -> anyhow::Result<()> {
-        let url = self.url(&["domains", zone, "rrsets", ""]);
-        self.send(Method::PUT, url, Some(txt_body(subname, ttl, records)))
-            .await?;
-        Ok(())
+        change: impl Fn(&[String]) -> Option<Vec<String>>,
+    ) -> anyhow::Result<bool> {
+        let mut throttled = 0;
+        loop {
+            let set = self.rrset(&zone.name, subname, "TXT").await?;
+            let current = set.as_ref().map_or(&[][..], |set| &set.records[..]);
+            let Some(records) = change(current) else {
+                return Ok(false);
+            };
+            let ttl = set.and_then(|set| set.ttl).unwrap_or_else(|| zone.ttl());
+            let url = self.url(&["domains", &zone.name, "rrsets", ""]);
+            match self
+                .send(
+                    Method::PUT,
+                    url,
+                    Some(txt_body(subname, ttl, &records)),
+                    false,
+                )
+                .await
+            {
+                Ok(_) => return Ok(true),
+                Err(error) => match throttle_wait(&error, &mut throttled) {
+                    Some(wait) => {
+                        tracing::info!(?wait, "deSEC throttles, waiting");
+                        tokio::time::sleep(wait).await;
+                    }
+                    None => return Err(error),
+                },
+            }
+        }
     }
 
     /// `api` + the segments, each percent-encoded; `""` last for the
@@ -256,13 +306,14 @@ impl Desec {
         url
     }
 
-    /// Sends a request, again after short throttling; the body of a `2xx`
-    /// answer, `None` for `404` on a `GET`.
+    /// Sends a request, with `retry_throttled` again after short
+    /// throttling; the body of a `2xx` answer, `None` for `404` on a `GET`.
     async fn send(
         &self,
         method: Method,
         url: Url,
         body: Option<Value>,
+        retry_throttled: bool,
     ) -> anyhow::Result<Option<Vec<u8>>> {
         let what = format!("deSEC {method} {}", url.path());
         let mut throttled = 0;
@@ -293,19 +344,33 @@ impl Desec {
             if status == StatusCode::NOT_FOUND && method == Method::GET {
                 return Ok(None);
             }
-            let error = DesecError::from_response(status, &headers, &body);
-            if status == StatusCode::TOO_MANY_REQUESTS && throttled < THROTTLE_RETRIES {
-                let wait = error.retry_after.unwrap_or(THROTTLE_DEFAULT_WAIT);
-                if wait <= THROTTLE_MAX_WAIT {
-                    throttled += 1;
+            let error = anyhow::Error::new(DesecError::from_response(status, &headers, &body))
+                .context(what.clone());
+            match throttle_wait(&error, &mut throttled).filter(|_| retry_throttled) {
+                Some(wait) => {
                     tracing::info!(?wait, "deSEC throttles, waiting");
                     tokio::time::sleep(wait).await;
-                    continue;
                 }
+                None => return Err(error),
             }
-            return Err(anyhow::Error::new(error).context(what));
         }
     }
+}
+
+/// How long to wait before trying a throttled request again; `None` if the
+/// error is no `429`, the retries are used up or deSEC asks for longer than
+/// [`THROTTLE_MAX_WAIT`].
+fn throttle_wait(error: &anyhow::Error, throttled: &mut usize) -> Option<Duration> {
+    let error = error.downcast_ref::<DesecError>()?;
+    if error.status != 429 || *throttled >= THROTTLE_RETRIES {
+        return None;
+    }
+    let wait = error.retry_after.unwrap_or(THROTTLE_DEFAULT_WAIT);
+    if wait > THROTTLE_MAX_WAIT {
+        return None;
+    }
+    *throttled += 1;
+    Some(wait)
 }
 
 /// reqwest's message without the URL (the path is in the context already).

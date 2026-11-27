@@ -109,8 +109,8 @@ hub listens on the unprivileged ports 8443 and 8080 in its container, Docker pub
 3. Open `https://app.example.com/setup` and enter the setup token to create the first administrator. Then pair the
    apps ([Pairing an app](#pairing-an-app)).
 
-The commands here run in the directory of `compose.yml`; from another directory use `-f <path>/compose.yml`. The
-project is called `roedy`, so the hub's volume is `roedy_roedy-hub-data` and the apps' network `roedy_apps`.
+The commands here run in the directory of `compose.yml`; from another directory use `-f <path>/compose.yml` – with
+DNS-01 also `-f <path>/compose.dns01.yml`, because `-f` replaces `COMPOSE_FILE` from `.env`. The project is called `roedy`, so the hub's volume is `roedy_roedy-hub-data` and the apps' network `roedy_apps`.
 
 **Subnet:** the network `apps` has the fixed subnet `172.30.240.0/24` for the hub's fixed address. If it collides with
 a network of the host or another Docker network (`Pool overlaps with other one on this address space`), set
@@ -331,10 +331,12 @@ ROEDY_DESEC_TOKEN_FILE=/run/secrets/desec_token
 ```
 
 For each certificate the hub asks deSEC which of the account's domains owns `_acme-challenge.<host>`, adds the
-challenge value to that TXT record set (with the domain's minimum TTL), asks deSEC's name servers (the domain's `NS`
-records, directly on port 53 over UDP and TCP) until every one of them serves it – at most 5 minutes – and only then
-tells the CA to look. Afterwards, also after a failure, it removes its value again; other values in the record set
-stay. deSEC's throttling (`429`) is waited out for up to a minute; a longer wait (its hourly and daily limits) moves the
+challenge value to that TXT record set (the domain's minimum TTL for a new set, otherwise the set's own), asks deSEC's
+name servers (the domain's `NS` records, directly on port 53 over UDP and TCP) until every one of them serves it
+authoritatively – at most 5 minutes – and only then tells the CA to look. Afterwards, also after a failure, it removes
+its value again; other values in the record set stay. deSEC has no conditional updates, so the hub assumes that it is
+the only writer of this record set: do not let another ACME client (or a second hub) write the same
+`_acme-challenge.<host>` at the same time. deSEC's throttling (`429`) is waited out for up to a minute; a longer wait (its hourly and daily limits) moves the
 attempt to the backoff above. The hub therefore needs outgoing HTTPS to `desec.io` and outgoing DNS (port 53) to
 deSEC's name servers.
 

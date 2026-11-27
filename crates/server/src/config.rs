@@ -320,6 +320,16 @@ impl Config {
                         crate::tls::x509::check_dns_name(domain).map_err(|e| {
                             invalid(format!("ROEDY_PUBLIC_URL: {e} (ROEDY_TLS=acme)"))
                         })?;
+                        // `_acme-challenge.<host>` must still be a DNS name.
+                        let challenge = crate::tls::dns01::LABEL.len() + 1 + domain.len();
+                        if self.acme_challenge == AcmeChallenge::Dns01 && challenge > 253 {
+                            return Err(invalid(format!(
+                                "ROEDY_PUBLIC_URL: the host is too long for \
+                                 ROEDY_ACME_CHALLENGE=dns-01 – _acme-challenge.<host> would have \
+                                 {challenge} characters, at most 253 fit into DNS (hosts of up to \
+                                 237 characters)"
+                            )));
+                        }
                     }
                     _ => {
                         return Err(invalid(
@@ -731,6 +741,46 @@ mod tests {
             let err = with(&extra);
             assert!(err.contains(expected), "{err}");
             assert!(!err.contains("two words"), "{err}");
+        }
+    }
+
+    #[test]
+    fn dns_01_needs_room_for_the_challenge_label() {
+        let host = |length: usize| {
+            // Labels of 63 characters and a last one with the rest.
+            let mut labels = Vec::new();
+            let mut left = length;
+            while left > 64 {
+                labels.push("a".repeat(63));
+                left -= 64;
+            }
+            labels.push("b".repeat(left));
+            format!("https://{}", labels.join("."))
+        };
+        for (length, ok) in [(237, true), (238, false)] {
+            let url = host(length);
+            let pairs = [
+                ("tls", "acme"),
+                ("acme_agree_tos", "true"),
+                ("public_url", url.as_str()),
+                ("acme_challenge", "dns-01"),
+                ("acme_dns_provider", "desec"),
+                ("desec_token", "t"),
+            ];
+            match vars(&pairs) {
+                Ok(_) => assert!(ok, "{length}"),
+                Err(err) => {
+                    assert!(!ok, "{length}: {err}");
+                    assert!(
+                        err.to_string().contains(
+                            "ROEDY_PUBLIC_URL: the host is too long for ROEDY_ACME_CHALLENGE=dns-01"
+                        ),
+                        "{err}"
+                    );
+                }
+            }
+            // TLS-ALPN-01 takes either.
+            assert!(vars(&pairs[..3]).is_ok(), "{length}");
         }
     }
 
