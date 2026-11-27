@@ -101,15 +101,38 @@ pub fn retry_after(headers: &HeaderMap, now: Timestamp) -> Option<Duration> {
     Some(Duration::try_from(at.duration_since(now)).unwrap_or(Duration::ZERO))
 }
 
+/// A URL of the CA that passed [`check_url`]: HTTPS (plain HTTP only to a
+/// test CA on loopback). The directory's URLs can only be read as this.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct CaUrl(String);
+
+impl CaUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CaUrl {
+    type Error = anyhow::Error;
+
+    fn try_from(url: String) -> anyhow::Result<Self> {
+        check_url(&url)?;
+        Ok(Self(url))
+    }
+}
+
 /// The URLs of the CA (§ 7.1.1).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Directory {
-    pub new_nonce: String,
-    pub new_account: String,
-    pub new_order: String,
+    pub new_nonce: CaUrl,
+    /// `newAccount`: where an account key is registered.
+    #[serde(rename = "newAccount")]
+    pub registration: CaUrl,
+    pub new_order: CaUrl,
     #[serde(default)]
-    pub renewal_info: Option<String>,
+    pub renewal_info: Option<CaUrl>,
     #[serde(default)]
     pub meta: DirectoryMeta,
 }
@@ -228,8 +251,10 @@ impl Client {
     /// § 7.3.1), and brings its contact up to date. Returns its URL.
     pub async fn account(&mut self, contact: &[String]) -> anyhow::Result<String> {
         let payload = json!({ "termsOfServiceAgreed": true, "contact": contact });
-        let url = self.directory.new_account.clone();
-        let reply = self.post_with(&url, Some(&payload), Signer::Jwk).await?;
+        let url = self.directory.registration.clone();
+        let reply = self
+            .post_with(url.as_str(), Some(&payload), Signer::Jwk)
+            .await?;
         let kid = reply.location("new account")?;
         self.kid = Some(kid.clone());
         #[derive(Deserialize)]
@@ -267,7 +292,7 @@ impl Client {
             payload["replaces"] = replaces.into();
         }
         let url = self.directory.new_order.clone();
-        let reply = self.post(&url, Some(&payload)).await?;
+        let reply = self.post(url.as_str(), Some(&payload)).await?;
         Ok((reply.location("new order")?, reply.json("order")?))
     }
 
@@ -379,10 +404,9 @@ impl Client {
     }
 
     async fn fresh_nonce(&mut self) -> anyhow::Result<String> {
-        check_url(&self.directory.new_nonce)?;
         let response = self
             .http
-            .head(&self.directory.new_nonce)
+            .head(self.directory.new_nonce.as_str())
             .send()
             .await
             .context("ACME nonce not fetched")?;
@@ -457,7 +481,7 @@ pub async fn renewal_info(
     let Some(base) = &directory.renewal_info else {
         return Ok(None);
     };
-    let url = format!("{}/{ari_id}", base.trim_end_matches('/'));
+    let url = format!("{}/{ari_id}", base.as_str().trim_end_matches('/'));
     check_url(&url)?;
     let response = http.get(&url).send().await?;
     let status = response.status();
@@ -583,6 +607,27 @@ mod tests {
         let problem = Problem::from_response(StatusCode::BAD_GATEWAY, &HeaderMap::new(), b"<html>");
         assert_eq!(problem.kind, "unknown");
         assert_eq!(problem.to_string(), "the CA answered 502 (unknown)");
+    }
+
+    #[test]
+    fn a_directory_with_plain_http_urls_is_refused() {
+        let directory = |nonce: &str| {
+            serde_json::from_value::<Directory>(json!({
+                "newNonce": nonce,
+                "newAccount": "https://ca.example.test/acme/new-acct",
+                "newOrder": "https://ca.example.test/acme/new-order",
+            }))
+        };
+        let ok = directory("https://ca.example.test/acme/new-nonce").unwrap();
+        assert_eq!(
+            ok.registration.as_str(),
+            "https://ca.example.test/acme/new-acct"
+        );
+        assert_eq!(ok.renewal_info, None);
+        let err = directory("http://ca.example.test/acme/new-nonce")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be reached over HTTPS"), "{err}");
     }
 
     #[test]
