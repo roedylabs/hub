@@ -157,6 +157,10 @@ export class AppsPage {
   #formId = 0;
   #disposed = false;
   readonly #order = serial();
+  /** Order writes not settled yet. */
+  #ordering = 0;
+  /** An order write failed: load the list once all have settled. */
+  #reconcile = false;
 
   start(): void {
     void this.load();
@@ -204,15 +208,23 @@ export class AppsPage {
     const order = rows.map((a) => a.slug);
     // Invalidate a list load on its way: it may predate this order.
     this.#seq++;
-    void this.#order(() => api<{ apps: AdminApp[] }>('PATCH', 'admin/apps', { order })).then(
-      () => {},
-      (error: unknown) => {
-        if (isApiError(error, 422)) ui.toasts.error(m.apps_order_changed());
-        else ui.toasts.error(failText(error, m.apps_order_failed()));
-        if (this.#disposed || lostAccess(error)) return;
-        void this.load();
-      },
-    );
+    this.#ordering++;
+    void this.#order(() => api<{ apps: AdminApp[] }>('PATCH', 'admin/apps', { order }))
+      .then(
+        () => {},
+        (error: unknown) => {
+          if (isApiError(error, 422)) ui.toasts.error(m.apps_order_changed());
+          else ui.toasts.error(failText(error, m.apps_order_failed()));
+          if (!lostAccess(error)) this.#reconcile = true;
+        },
+      )
+      .finally(() => {
+        // Reload only once the queued writes have settled, so the list shows the order the server ended with;
+        // a move after that invalidates this load (`#seq`).
+        if (--this.#ordering > 0 || !this.#reconcile) return;
+        this.#reconcile = false;
+        if (!this.#disposed) void this.load();
+      });
   }
 
   // Adding
@@ -327,6 +339,8 @@ export class AppPage {
   #usersSeq = 0;
   #disposed = false;
   readonly #save = serial();
+  /** Counts `setDefault` calls: only the latest one's response or failure shows. */
+  #defaultGen = 0;
 
   constructor(slug: string, ctx: AppPageContext) {
     this.#slug = slug;
@@ -425,14 +439,19 @@ export class AppPage {
     const app = this.app;
     if (!app || app.access_default === value) return;
     const before = app.access_default;
+    const gen = ++this.#defaultGen;
+    // A load on its way predates this change: it would show the old default.
+    this.#seq++;
     this.app = { ...app, access_default: value };
+    const current = () => !this.#disposed && gen === this.#defaultGen && !!this.app;
     void this.#save(() => api<{ app: AdminApp }>('PATCH', `admin/apps/${this.#slug}`, { access_default: value })).then(
       (res) => {
-        if (!this.#disposed && this.app?.access_default === value) this.app = res.app;
+        if (current()) this.app = res.app;
         ui.toasts.show(m.apps_default_saved());
       },
       (error: unknown) => {
-        if (!this.#disposed && this.app?.access_default === value) this.app = { ...this.app, access_default: before };
+        if (current() && this.app) this.app = { ...this.app, access_default: before };
+        // Every failure loads the app again: the server's default then shows.
         this.#failed(error, m.apps_default_failed());
       },
     );

@@ -440,11 +440,21 @@ describe('Users page › app access', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await fireEvent.click(toggle);
     const panel = view.getByRole('group', { name: 'App access for 1 person' });
-    const group = within(panel).getByRole('radiogroup', { name: 'Access to Mail' });
-    expect(within(group).getByRole('radio', { name: 'Unchanged' })).toHaveAttribute('aria-checked', 'true');
+    expect(
+      within(within(panel).getByRole('radiogroup', { name: 'Access to Mail' })).getByRole('radio', {
+        name: 'Unchanged',
+      }),
+    ).toHaveAttribute('aria-checked', 'true');
     expect(within(panel).getByRole('button', { name: 'Apply' })).toHaveAttribute('aria-disabled', 'true');
+    // "Cancel" puts the focus back on the toggle.
+    within(panel).getByRole('button', { name: 'Cancel' }).focus();
+    await fireEvent.click(within(panel).getByRole('button', { name: 'Cancel' }));
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'App access' })).toHaveFocus());
+    await fireEvent.click(view.getByRole('button', { name: 'App access' }));
+    const again = view.getByRole('group', { name: 'App access for 1 person' });
+    const group = within(again).getByRole('radiogroup', { name: 'Access to Mail' });
     await fireEvent.click(within(group).getByRole('radio', { name: /^User/ }));
-    await fireEvent.click(within(panel).getByRole('button', { name: 'Apply' }));
+    await fireEvent.click(within(again).getByRole('button', { name: 'Apply' }));
     await vi.waitFor(() => expect(ui.toast?.text).toBe('App access changed for Sophie Taylor'));
     expect(view.queryByRole('group', { name: 'App access for 1 person' })).toBeNull();
   });

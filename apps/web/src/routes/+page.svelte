@@ -22,11 +22,11 @@
   const v = $derived(homeValues(p, { openApps: () => void goto(resolve('/admin/apps')) }));
   const isMobile = $derived(ui.isMobile);
   const uid = $props.id();
-  /** Tiles with the ids of what describes the link: the description and "Offline". */
+  /** Tiles with the ids of what describes the link: the description and "Offline" (own prefixes: slugs cannot collide). */
   const tiles = $derived(
     v.tiles.map((t) => ({
       ...t,
-      described: t.offline ? `${uid}-${t.slug} ${uid}-${t.slug}-off` : `${uid}-${t.slug}`,
+      described: t.offline ? `${uid}-desc-${t.slug} ${uid}-off-${t.slug}` : `${uid}-desc-${t.slug}`,
     })),
   );
 
@@ -87,10 +87,10 @@
             <!-- eslint-disable svelte/no-navigation-without-resolve -- the app's own path, outside the hub's routes -->
             <a class="name" href={t.url} aria-describedby={t.described}>{t.name}</a>
             <!-- eslint-enable svelte/no-navigation-without-resolve -->
-            <span class="desc" id="{uid}-{t.slug}">{t.desc}</span>
+            <span class="desc" id="{uid}-desc-{t.slug}">{t.desc}</span>
           </span>
           {#if t.offline}
-            <span class="off" id="{uid}-{t.slug}-off"><Icon name="ti-plug-connected-x" />{m.home_tile_offline()}</span>
+            <span class="off" id="{uid}-off-{t.slug}"><Icon name="ti-plug-connected-x" />{m.home_tile_offline()}</span>
           {/if}
         </li>
       {/each}

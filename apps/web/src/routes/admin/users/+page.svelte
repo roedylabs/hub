@@ -346,7 +346,7 @@
           </button>
           {#if v.uCanBulkAccess}
             <button
-              class="sel-icon"
+              class="sel-icon bulk-access-toggle"
               onclick={v.uBulkAccessToggle}
               aria-label={m.users_access_bulk()}
               aria-expanded={v.uBulkAccessOpen}
@@ -420,7 +420,7 @@
             {/if}
           </div>
           {#if v.uCanBulkAccess}
-            <button class="sel-btn" onclick={v.uBulkAccessToggle} aria-expanded={v.uBulkAccessOpen}>
+            <button class="sel-btn bulk-access-toggle" onclick={v.uBulkAccessToggle} aria-expanded={v.uBulkAccessOpen}>
               <Icon name="ti-apps" />{m.users_access_bulk()}
             </button>
           {/if}
@@ -435,7 +435,14 @@
       </div>
       {#if v.uBulkAccess}
         {@const b = v.uBulkAccess}
-        <div class="invite bulk-access" class:mobile={isMobile} role="group" aria-labelledby="{uid}-bulk-access">
+        <!-- Closing it ("Cancel", applied) removes the focused control: focus goes back to "App access". -->
+        <div
+          class="invite bulk-access"
+          class:mobile={isMobile}
+          role="group"
+          aria-labelledby="{uid}-bulk-access"
+          use:focusback={'.bulk-access-toggle'}
+        >
           <div class="invite-title" id="{uid}-bulk-access">{b.title}</div>
           <div class="invite-hint">{m.users_access_bulk_hint()}</div>
           {@render accessList(b.rows, 'bulk')}

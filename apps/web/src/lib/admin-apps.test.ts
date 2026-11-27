@@ -105,6 +105,26 @@ describe('Administration › Apps list', () => {
     await vi.waitFor(() => expect(calls.filter((c) => c.path === 'admin/apps' && c.method === 'GET')).toHaveLength(3));
   });
 
+  it('reconciles a failed order only after the queued writes settled', async () => {
+    let fail: (a: { status: number; body: unknown }) => void = () => {};
+    let pass: (a: { body: unknown }) => void = () => {};
+    const final = [APPS[2], APPS[0], APPS[1]].filter((a) => a !== undefined);
+    const { p, calls } = await list({
+      'PATCH admin/apps': [() => new Promise((r) => (fail = r)), () => new Promise((r) => (pass = r))],
+      'GET admin/apps': [{ body: { apps: APPS } }, { body: { apps: final } }],
+    });
+    p.move('notes', -1);
+    p.move('notes', -1);
+    fail({ status: 500, body: { error: 'internal' } });
+    await tick();
+    // The second write is still queued: no reload yet.
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1);
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(2));
+    pass({ body: { apps: final } });
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'GET')).toHaveLength(2));
+    await vi.waitFor(() => expect(p.rows.map((a) => a.slug)).toEqual(['notes', 'mail', 'wiki']));
+  });
+
   it('checks the form before sending and adds the app with its pairing code', async () => {
     const created = pendingApp('2026-10-26T12:15:00Z', { slug: 'chat' });
     const { p, calls } = await list({ 'POST admin/apps': [{ status: 201, body: { app: created, pairing: PAIRING } }] });
@@ -250,6 +270,44 @@ describe('Administration › Apps › an app', () => {
     expect(p.app?.access_default).toBe('all');
     await vi.waitFor(() => expect(ui.toast?.text).toBe('The default wasn’t saved. Please try again.'));
     await vi.waitFor(() => expect(calls.filter((c) => c.path === 'admin/apps/mail')).toHaveLength(4));
+    expect(p.app?.access_default).toBe('selected');
+  });
+
+  it('shows the latest default even when an earlier save of it fails', async () => {
+    let first: (a: { status: number; body: unknown }) => void = () => {};
+    const { p } = await app({
+      'GET admin/apps/mail': [
+        { body: { app: pairedApp() } },
+        { body: { app: pairedApp({ access_default: 'selected' }) } },
+      ],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [
+        () => new Promise((r) => (first = r)),
+        { body: { app: pairedApp({ access_default: 'all' }) } },
+        { body: { app: pairedApp({ access_default: 'selected' }) } },
+      ],
+    });
+    p.setDefault('selected');
+    p.setDefault('all');
+    p.setDefault('selected');
+    first({ status: 500, body: { error: 'internal' } });
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Default for new users saved'));
+    await tick();
+    expect(p.app?.access_default).toBe('selected');
+  });
+
+  it('drops a load that started before a default change', async () => {
+    let late: (a: { body: unknown }) => void = () => {};
+    const { p } = await app({
+      'GET admin/apps/mail': [{ body: { app: pairedApp() } }, () => new Promise((r) => (late = r))],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [{ body: { app: pairedApp({ access_default: 'selected' }) } }],
+    });
+    void p.load();
+    p.setDefault('selected');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Default for new users saved'));
+    late({ body: { app: pairedApp() } });
+    await tick();
     expect(p.app?.access_default).toBe('selected');
   });
 
