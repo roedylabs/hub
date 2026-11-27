@@ -265,6 +265,17 @@ curl -fsSLO https://raw.githubusercontent.com/roedylabs/hub/main/deploy/restore.
 ROEDY_UID=65532 ROEDY_GID=65532 ./restore.sh roedy-hub-20261127T030000Z.tar.gz   # IDs as in .env
 ```
 
+With the default named volume nothing else is needed. With a [bind mount](#with-docker-compose) such as
+`/srv/roedy-hub:/data`, name its host directory, for the restore as well as for `--recover`:
+
+```sh
+ROEDY_HUB_VOLUME=/srv/roedy-hub ./restore.sh roedy-hub-20261127T030000Z.tar.gz
+ROEDY_HUB_VOLUME=/srv/roedy-hub ./restore.sh --recover
+```
+
+Only one restore or recovery runs at a time: the script holds the lock directory `.roedy-restore.lock` next to
+`compose.yml` until the hub has started again.
+
 It stops the hub and works in a helper container (`alpine`, which installs `sqlite`, so it needs internet access): it
 unpacks the archive there and checks the database with SQLite's `integrity_check`, copies it into the volume next to
 the current data and then swaps them by renaming; the current data is moved to `.before-restore` and only deleted once

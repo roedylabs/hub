@@ -141,6 +141,15 @@ check "the data is unchanged after a failed restore" [ "$(token)" = "$other" ]
 check "restore.sh restores the backup" restore "$backup/hub.tar.gz"
 healthy
 check "the original database after the restore" [ "$(token)" = "$original" ]
+# One restore at a time: a held lock refuses a second one before any change.
+mkdir deploy/.roedy-restore.lock
+if out=$(restore --recover 2>&1); then
+  rmdir deploy/.roedy-restore.lock
+  fail "restore.sh ran while the lock was held"
+fi
+rmdir deploy/.roedy-restore.lock
+check "restore.sh refuses to run while locked" sh -c "printf '%s' \"\$1\" | grep -q 'another restore'" sh "$out"
+check "the hub keeps running when refused" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub)" = true ]
 check "restore.sh --recover with nothing to recover" restore --recover
 healthy
 

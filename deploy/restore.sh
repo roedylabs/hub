@@ -13,8 +13,13 @@
 # data back; the hub only starts again after a successful restore or recovery.
 # secret.key in the volume is never touched.
 #
+# One restore or recovery at a time: the lock directory .roedy-restore.lock in
+# the current directory is held from before the first check until the hub has
+# started again; a second invocation fails before it changes anything.
+#
 # Environment: ROEDY_UID / ROEDY_GID (owner of the data, default 65532),
-# ROEDY_HUB_VOLUME (default roedy_roedy-hub-data).
+# ROEDY_HUB_VOLUME (default roedy_roedy-hub-data; for a bind mount its host
+# directory, e.g. /srv/roedy-hub).
 set -eu
 
 volume=${ROEDY_HUB_VOLUME:-roedy_roedy-hub-data}
@@ -121,6 +126,11 @@ case ${1:-} in
   ;;
 esac
 
+lock=.roedy-restore.lock
+mkdir "$lock" 2>/dev/null ||
+  die "another restore or recovery is running here ($lock exists; remove it only if none is)"
+trap 'rmdir "$lock"' EXIT
+trap 'exit 130' INT TERM
 docker compose stop roedy-hub
 docker run --rm -e OWNER="$owner" -v "$volume:/data" -v "$dir:/backup:ro" "$alpine" \
   sh -ec "$helper" restore-helper "$mode" "$file" ||
