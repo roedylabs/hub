@@ -257,22 +257,34 @@ docker compose start roedy-hub
 Copy the archive off the host (it holds password hashes and personal data, so keep it as protected as the server).
 The apps back up their own data; for Roedy Mail see its `docs/ops.md`.
 
-**Restore** (same key; the volume's content is replaced by the archive's). The helper container first unpacks the
-archive into its own file system and checks it; only then does it replace the volume's content, and the hub only
-starts again if every step succeeded (`sh -e`, one step per line, `&&`). A missing or damaged archive leaves the data as it was:
+**Restore** (same key; the volume's content is replaced by the archive's). The helper container unpacks the archive
+into its own file system and checks the database with SQLite's `integrity_check`; only then does it move the current
+data aside, copy the archive's in and delete the old data. If copying fails (e.g. a full disk), it puts the old data
+back. Each step is its own line under `sh -e`, and the commands are chained with `&&`: the restore only runs once the
+hub has stopped, and the hub only starts again if the restore succeeded. The volume needs free space for the archive's
+database while the old one is kept; `apk` needs internet access for `sqlite`.
 
 ```sh
 file=roedy-hub-20261127T030000Z.tar.gz
 uid=65532 gid=65532   # or ROEDY_UID / ROEDY_GID from .env
-docker compose stop roedy-hub
+docker compose stop roedy-hub &&
 docker run --rm -v roedy_roedy-hub-data:/data -v "$PWD":/backup:ro alpine:3.24 sh -ec "
+  apk add --no-cache sqlite >/dev/null
   mkdir /restore
   tar -xzf /backup/$file -C /restore
-  test -s /restore/roedy.sqlite3
-  find /data -mindepth 1 -maxdepth 1 ! -name secret.key -exec rm -rf {} +
-  cp -a /restore/. /data/
+  test \"\$(sqlite3 /restore/roedy.sqlite3 'PRAGMA integrity_check')\" = ok
+  mkdir /data/.before-restore
+  find /data -mindepth 1 -maxdepth 1 ! -name secret.key ! -name .before-restore -exec mv {} /data/.before-restore/ ';'
+  if ! cp -a /restore/. /data/; then
+    find /data -mindepth 1 -maxdepth 1 ! -name secret.key ! -name .before-restore -exec rm -rf {} +
+    find /data/.before-restore -mindepth 1 -maxdepth 1 -exec mv {} /data/ ';'
+    rmdir /data/.before-restore
+    echo 'restore failed, previous data kept' >&2
+    exit 1
+  fi
+  rm -rf /data/.before-restore
   chown -R $uid:$gid /data" &&
-  docker compose start roedy-hub
+docker compose start roedy-hub
 ```
 
 On a new host start with the same key (`ROEDY_SECRET_KEY` in `.env`, or `secret.key` restored into the volume). If
