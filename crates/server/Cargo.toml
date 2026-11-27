@@ -113,7 +113,7 @@ tempfile = "3.27.0"
 # (`tls::x509` tests); the verifier rustls brings.
 webpki = { package = "rustls-webpki", version = "0.103.17", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1.54.1", features = ["test-util"] }
-tokio-tungstenite = "0.29.0"
+tokio-tungstenite = "0.30.0"
 tower = { version = "0.5", features = ["util"] }
 
 [lints]
