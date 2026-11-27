@@ -35,7 +35,10 @@ fail() {
   exit 1
 }
 backup=
+# The restore lock this run created itself, if any (never someone else's).
+test_lock=
 cleanup() {
+  [ -z "$test_lock" ] || rmdir "$test_lock" 2>/dev/null || true
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   [ -z "$backup" ] || docker run --rm -v "$backup:/backup" "$alpine" sh -c 'rm -rf /backup/*' >/dev/null 2>&1 || true
 }
@@ -143,11 +146,12 @@ healthy
 check "the original database after the restore" [ "$(token)" = "$original" ]
 # One restore at a time: a held lock refuses a second one before any change.
 mkdir deploy/.roedy-restore.lock
+test_lock=deploy/.roedy-restore.lock
 if out=$(restore --recover 2>&1); then
-  rmdir deploy/.roedy-restore.lock
   fail "restore.sh ran while the lock was held"
 fi
-rmdir deploy/.roedy-restore.lock
+rmdir "$test_lock"
+test_lock=
 check "restore.sh refuses to run while locked" sh -c "printf '%s' \"\$1\" | grep -q 'another restore'" sh "$out"
 check "the hub keeps running when refused" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub)" = true ]
 check "restore.sh --recover with nothing to recover" restore --recover
