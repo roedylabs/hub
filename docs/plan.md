@@ -469,7 +469,9 @@ checks pass in every PR; every PR has tests for what it adds.
       `immutable` only with the current `?v=` – the first 16 hex digits of
       the sanitized icon's SHA-256, `apps::icon_version` –, `no-cache`
       otherwise, the contract's CSP, 404 for pending apps; the sanitized icon
-      now keeps a `viewBox`, so that it scales in an `<img>`);
+      now keeps a `viewBox`, so that it scales in an `<img>` – a square
+      `viewBox` with a rectangular size is `not_square`, and icons stored
+      before get theirs when read, `apps::stored_icon`);
       `GET /api/v1/session` already matched § 6. Migration 0008
       (`invitation_access`; `apps.contacted_at` – the app's last request
       with its secret or its pairing, written at most once a minute –, and

@@ -507,6 +507,45 @@ async fn icons_are_cacheable_and_change_their_address() {
     let reply = hub.admin(Method::GET, "/admin/apps/mail", None).await;
     assert_eq!(reply.json()["app"]["icon"], moved.as_str());
     assert_eq!(reply.json()["app"]["url"], "/mail/");
+
+    // An icon stored before the sanitizer kept a `viewBox` gets one when
+    // served; its version and ETag follow the bytes served.
+    let old = r#"<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h20v20H2z"/></svg>"#;
+    let table = hub.env.state.apps.clone();
+    hub.env
+        .sql(move |c| {
+            c.execute(
+                "UPDATE apps SET manifest_json = json_set(manifest_json, '$.icon', ?1) \
+                 WHERE slug = 'mail'",
+                [old],
+            )?;
+            table.reload(c).unwrap();
+            Ok(())
+        })
+        .await;
+    let url = hub
+        .env
+        .as_user(&max, Method::GET, "/apps", None)
+        .await
+        .json()["apps"][0]["icon"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reply = hub.get(&url, None, &[]).await;
+    assert!(
+        reply.body.starts_with(r#"<svg viewBox="0 0 24 24""#),
+        "{}",
+        reply.body
+    );
+    assert_eq!(
+        header(&reply.headers, "cache-control"),
+        Some("public, max-age=31536000, immutable")
+    );
+    let version = url.split("?v=").nth(1).unwrap();
+    assert_eq!(
+        header(&reply.headers, "etag"),
+        Some(format!("\"{version}\"").as_str())
+    );
 }
 
 #[tokio::test]
