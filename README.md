@@ -41,7 +41,7 @@ open:
 
 ```sh
 mkdir roedy && cd roedy
-for f in compose.yml .env.example; do
+for f in compose.yml compose.dns01.yml .env.example; do
   curl -fsSLO "https://raw.githubusercontent.com/roedylabs/hub/main/deploy/$f"
 done
 cp .env.example .env && chmod 600 .env   # set ROEDY_PUBLIC_URL=https://app.example.com
@@ -49,6 +49,10 @@ cp .env.example .env && chmod 600 .env   # set ROEDY_PUBLIC_URL=https://app.exam
 docker compose up -d
 docker compose logs roedy-hub | grep Setup-Token
 ```
+
+With the domain at [deSEC](https://desec.io), validate by DNS instead (recommended; no port has to be reachable for
+the CA): a scoped deSEC token in `desec_token` and `COMPOSE_FILE=compose.yml:compose.dns01.yml` in `.env`
+([DNS-01 with deSEC](docs/ops.md#dns-01-with-desec)).
 
 Then open `https://app.example.com/setup`, create the first administrator with the setup token and pair the apps
 under Administration › Apps ([pairing an app](docs/ops.md#pairing-an-app)). The image `ghcr.io/roedylabs/hub` is

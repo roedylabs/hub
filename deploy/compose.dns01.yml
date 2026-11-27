@@ -1,0 +1,32 @@
+# DNS-01 with deSEC for deploy/compose.yml (docs/ops.md › DNS-01 with deSEC):
+# the CA validates the domain through a TXT record that the hub puts up at
+# deSEC, instead of connecting to ports 443 and 80. The recommended way when
+# the domain is hosted at deSEC. Turn it on in .env:
+#
+#   COMPOSE_FILE=compose.yml:compose.dns01.yml
+#
+# and put a scoped deSEC token (write access to the TXT records of
+# _acme-challenge.<host> only) into ./desec_token next to compose.yml, readable
+# by the hub's user (ROEDY_UID, default 65532) and nobody else:
+#
+#   sudo sh -c 'umask 077 && cat > desec_token'   # paste the token, Ctrl-D
+#   sudo chown 65532:65532 desec_token
+#
+# The file is never committed (.gitignore) and never in .env. Another path:
+# ROEDY_DESEC_TOKEN_SECRET in .env. Port 80 then only redirects http:// to
+# https://; remove "80:8080" from compose.yml if you do not want that.
+
+services:
+  roedy-hub:
+    environment:
+      ROEDY_ACME_CHALLENGE: dns-01
+      ROEDY_ACME_DNS_PROVIDER: desec
+      # Docker mounts the secret here (read at the start; restart after
+      # replacing the token).
+      ROEDY_DESEC_TOKEN_FILE: /run/secrets/desec_token
+    secrets:
+      - desec_token
+
+secrets:
+  desec_token:
+    file: ${ROEDY_DESEC_TOKEN_SECRET:-./desec_token}

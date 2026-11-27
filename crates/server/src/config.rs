@@ -19,6 +19,9 @@
 //! With TLS on, `ROEDY_LISTEN` is the HTTPS listener and defaults to
 //! `0.0.0.0:8443`, and `ROEDY_HTTP_LISTEN` serves the ACME HTTP-01
 //! challenges and redirects everything else to `ROEDY_PUBLIC_URL`.
+//! `ROEDY_ACME_CHALLENGE=dns-01` validates with a TXT record at deSEC
+//! instead (`ROEDY_ACME_DNS_PROVIDER=desec`, the API token in
+//! `ROEDY_DESEC_TOKEN` or `ROEDY_DESEC_TOKEN_FILE`).
 
 use std::{
     collections::BTreeMap,
@@ -90,6 +93,16 @@ pub struct Config {
     pub acme_directory: Url,
     /// Contact address for the ACME account (`ROEDY_ACME_EMAIL`).
     pub acme_email: Option<String>,
+    /// How the CA validates the domain (`ROEDY_ACME_CHALLENGE`).
+    pub acme_challenge: AcmeChallenge,
+    /// Where the DNS-01 record goes (`ROEDY_ACME_DNS_PROVIDER`); required
+    /// with `dns-01`.
+    pub acme_dns_provider: Option<DnsProvider>,
+    /// deSEC's API token (`ROEDY_DESEC_TOKEN`).
+    pub desec_token: Option<Secret>,
+    /// File with that token (`ROEDY_DESEC_TOKEN_FILE`, e.g. a Docker
+    /// secret); read at the start.
+    pub desec_token_file: Option<PathBuf>,
     /// The operator accepts the CA's terms of service
     /// (`ROEDY_ACME_AGREE_TOS`); required for `acme`.
     #[serde(deserialize_with = "flag")]
@@ -119,6 +132,28 @@ impl TlsMode {
     pub fn enabled(self) -> bool {
         self != Self::Off
     }
+}
+
+/// How the ACME CA validates the domain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum AcmeChallenge {
+    /// The CA connects to the hub: TLS-ALPN-01 on the HTTPS port, HTTP-01
+    /// on `ROEDY_HTTP_LISTEN` after a failed validation (default).
+    #[default]
+    #[serde(rename = "tls-alpn-01")]
+    TlsAlpn01,
+    /// The CA looks up a TXT record that the hub puts up at the DNS
+    /// provider; neither port has to be reachable.
+    #[serde(rename = "dns-01")]
+    Dns01,
+}
+
+/// DNS providers for DNS-01.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsProvider {
+    /// deSEC (desec.io).
+    Desec,
 }
 
 /// Value that never appears in `Debug` output or logs.
@@ -188,6 +223,10 @@ impl Default for Config {
             http_listen: SocketAddr::from(([0, 0, 0, 0], 8080)),
             acme_directory: Url::parse(LETS_ENCRYPT).unwrap_or_else(|_| unreachable!()),
             acme_email: None,
+            acme_challenge: AcmeChallenge::default(),
+            acme_dns_provider: None,
+            desec_token: None,
+            desec_token_file: None,
             acme_agree_tos: false,
             tls_cert_file: None,
             tls_key_file: None,
@@ -281,6 +320,16 @@ impl Config {
                         crate::tls::x509::check_dns_name(domain).map_err(|e| {
                             invalid(format!("ROEDY_PUBLIC_URL: {e} (ROEDY_TLS=acme)"))
                         })?;
+                        // `_acme-challenge.<host>` must still be a DNS name.
+                        let challenge = crate::tls::dns01::LABEL.len() + 1 + domain.len();
+                        if self.acme_challenge == AcmeChallenge::Dns01 && challenge > 253 {
+                            return Err(invalid(format!(
+                                "ROEDY_PUBLIC_URL: the host is too long for \
+                                 ROEDY_ACME_CHALLENGE=dns-01 – _acme-challenge.<host> would have \
+                                 {challenge} characters, at most 253 fit into DNS (hosts of up to \
+                                 237 characters)"
+                            )));
+                        }
                     }
                     _ => {
                         return Err(invalid(
@@ -297,6 +346,9 @@ impl Config {
                          them",
                         self.acme_directory
                     )));
+                }
+                if self.acme_challenge == AcmeChallenge::Dns01 {
+                    self.check_dns01().map_err(|e| invalid(e.to_string()))?;
                 }
                 if let Some(email) = &self.acme_email {
                     let plausible = email.split_once('@').is_some_and(|(local, domain)| {
@@ -323,6 +375,53 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// DNS-01 needs a provider and its credentials.
+    fn check_dns01(&self) -> anyhow::Result<()> {
+        match self.acme_dns_provider {
+            None => {
+                bail!("ROEDY_ACME_DNS_PROVIDER: required with ROEDY_ACME_CHALLENGE=dns-01 (desec)")
+            }
+            Some(DnsProvider::Desec) => match (&self.desec_token, &self.desec_token_file) {
+                (Some(_), Some(_)) => bail!(
+                    "ROEDY_DESEC_TOKEN and ROEDY_DESEC_TOKEN_FILE are both set – please use only \
+                     one of the two variables"
+                ),
+                (None, None) => bail!(
+                    "ROEDY_DESEC_TOKEN_FILE: ROEDY_ACME_DNS_PROVIDER=desec needs deSEC's API token \
+                     in ROEDY_DESEC_TOKEN_FILE (or ROEDY_DESEC_TOKEN)"
+                ),
+                (Some(token), None) => {
+                    check_desec_token(token.expose()).map_err(|e| anyhow!("ROEDY_DESEC_TOKEN: {e}"))
+                }
+                (None, Some(_)) => Ok(()),
+            },
+        }
+    }
+
+    /// deSEC's API token, from `ROEDY_DESEC_TOKEN` or read from
+    /// `ROEDY_DESEC_TOKEN_FILE`. Errors never contain the token. Blocks
+    /// (file access).
+    pub fn desec_token(&self) -> anyhow::Result<Secret> {
+        if let Some(token) = &self.desec_token {
+            return Ok(token.clone());
+        }
+        let path = self
+            .desec_token_file
+            .as_ref()
+            .ok_or_else(|| anyhow!("ROEDY_DESEC_TOKEN_FILE is not set"))?;
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            anyhow!(
+                "ROEDY_DESEC_TOKEN_FILE: {} not readable: {}",
+                path.display(),
+                e.kind()
+            )
+        })?;
+        let token = text.trim();
+        check_desec_token(token)
+            .map_err(|e| anyhow!("ROEDY_DESEC_TOKEN_FILE ({}): {e}", path.display()))?;
+        Ok(Secret::new(token))
     }
 
     /// The public address, which `serve` needs for links, the gateway's
@@ -371,6 +470,18 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// A deSEC token is one word of printable ASCII (28 characters of base58
+/// today); the message never repeats it.
+fn check_desec_token(token: &str) -> anyhow::Result<()> {
+    if token.is_empty() {
+        bail!("empty");
+    }
+    if !token.bytes().all(|b| b.is_ascii_graphic()) {
+        bail!("not a deSEC token (one line of printable ASCII without spaces)");
+    }
+    Ok(())
 }
 
 fn internal_listen<'de, D: Deserializer<'de>>(
@@ -496,7 +607,7 @@ mod tests {
     use figment::Jail;
 
     /// Every variable the hub reads.
-    const ALL: [&str; 17] = [
+    const ALL: [&str; 21] = [
         "ROEDY_LISTEN",
         "ROEDY_INTERNAL_LISTEN",
         "ROEDY_DATA_DIR",
@@ -512,6 +623,10 @@ mod tests {
         "ROEDY_ACME_DIRECTORY",
         "ROEDY_ACME_EMAIL",
         "ROEDY_ACME_AGREE_TOS",
+        "ROEDY_ACME_CHALLENGE",
+        "ROEDY_ACME_DNS_PROVIDER",
+        "ROEDY_DESEC_TOKEN",
+        "ROEDY_DESEC_TOKEN_FILE",
         "ROEDY_TLS_CERT_FILE",
         "ROEDY_TLS_KEY_FILE",
     ];
@@ -538,8 +653,170 @@ mod tests {
         assert_eq!(config.acme_directory.as_str(), LETS_ENCRYPT);
         assert_eq!(config.acme_email, None);
         assert!(!config.acme_agree_tos);
+        assert_eq!(config.acme_challenge, AcmeChallenge::TlsAlpn01);
+        assert_eq!(config.acme_dns_provider, None);
+        assert_eq!(config.desec_token, None);
+        assert_eq!(config.desec_token_file, None);
         assert_eq!(config.tls_cert_file, None);
         assert_eq!(config.tls_key_file, None);
+    }
+
+    #[test]
+    fn dns_01_with_desec() {
+        let mut dns = ACME.to_vec();
+        dns.extend([
+            ("acme_challenge", "dns-01"),
+            ("acme_dns_provider", "desec"),
+            ("desec_token_file", "/run/secrets/desec_token"),
+        ]);
+        let config = vars(&dns).unwrap();
+        assert_eq!(config.acme_challenge, AcmeChallenge::Dns01);
+        assert_eq!(config.acme_dns_provider, Some(DnsProvider::Desec));
+        assert_eq!(
+            config.desec_token_file,
+            Some(PathBuf::from("/run/secrets/desec_token"))
+        );
+
+        let mut direct = ACME.to_vec();
+        direct.extend([
+            ("acme_challenge", "dns-01"),
+            ("acme_dns_provider", "desec"),
+            ("desec_token", "Abc123xyz"),
+        ]);
+        let config = vars(&direct).unwrap();
+        assert_eq!(config.desec_token_file, None);
+        assert_eq!(config.desec_token().unwrap().expose(), "Abc123xyz");
+        assert!(!format!("{config:?}").contains("Abc123xyz"));
+
+        // The other ways are untouched; without ACME nothing is checked.
+        let config = vars(&[("tls", "off"), ("acme_challenge", "dns-01")]).unwrap();
+        assert_eq!(config.acme_challenge, AcmeChallenge::Dns01);
+        let mut alpn = ACME.to_vec();
+        alpn.push(("acme_challenge", "tls-alpn-01"));
+        assert_eq!(
+            vars(&alpn).unwrap().acme_challenge,
+            AcmeChallenge::TlsAlpn01
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_dns_01_settings() {
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut pairs = ACME.to_vec();
+            pairs.push(("acme_challenge", "dns-01"));
+            pairs.extend_from_slice(extra);
+            vars(&pairs).unwrap_err().to_string()
+        };
+        let cases: [(Vec<(&str, &str)>, &str); 6] = [
+            (
+                vec![("desec_token", "t")],
+                "ROEDY_ACME_DNS_PROVIDER: required with ROEDY_ACME_CHALLENGE=dns-01 (desec)",
+            ),
+            (
+                vec![("acme_dns_provider", "desec")],
+                "ROEDY_DESEC_TOKEN_FILE: ROEDY_ACME_DNS_PROVIDER=desec needs deSEC's API token",
+            ),
+            (
+                vec![
+                    ("acme_dns_provider", "desec"),
+                    ("desec_token", "t"),
+                    ("desec_token_file", "/t"),
+                ],
+                "ROEDY_DESEC_TOKEN and ROEDY_DESEC_TOKEN_FILE are both set",
+            ),
+            (
+                vec![("acme_dns_provider", "desec"), ("desec_token", "two words")],
+                "ROEDY_DESEC_TOKEN: not a deSEC token",
+            ),
+            (
+                vec![("acme_dns_provider", "cloudflare"), ("desec_token", "t")],
+                "ROEDY_ACME_DNS_PROVIDER: unknown variant: found `cloudflare`",
+            ),
+            (
+                vec![("acme_challenge", "dns")],
+                "ROEDY_ACME_CHALLENGE: unknown variant: found `dns`",
+            ),
+        ];
+        for (extra, expected) in cases {
+            let err = with(&extra);
+            assert!(err.contains(expected), "{err}");
+            assert!(!err.contains("two words"), "{err}");
+        }
+    }
+
+    #[test]
+    fn dns_01_needs_room_for_the_challenge_label() {
+        let host = |length: usize| {
+            // Labels of 63 characters and a last one with the rest.
+            let mut labels = Vec::new();
+            let mut left = length;
+            while left > 64 {
+                labels.push("a".repeat(63));
+                left -= 64;
+            }
+            labels.push("b".repeat(left));
+            format!("https://{}", labels.join("."))
+        };
+        for (length, ok) in [(237, true), (238, false)] {
+            let url = host(length);
+            let pairs = [
+                ("tls", "acme"),
+                ("acme_agree_tos", "true"),
+                ("public_url", url.as_str()),
+                ("acme_challenge", "dns-01"),
+                ("acme_dns_provider", "desec"),
+                ("desec_token", "t"),
+            ];
+            match vars(&pairs) {
+                Ok(_) => assert!(ok, "{length}"),
+                Err(err) => {
+                    assert!(!ok, "{length}: {err}");
+                    assert!(
+                        err.to_string().contains(
+                            "ROEDY_PUBLIC_URL: the host is too long for ROEDY_ACME_CHALLENGE=dns-01"
+                        ),
+                        "{err}"
+                    );
+                }
+            }
+            // TLS-ALPN-01 takes either.
+            assert!(vars(&pairs[..3]).is_ok(), "{length}");
+        }
+    }
+
+    #[test]
+    fn reads_the_desec_token_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("desec_token");
+        std::fs::write(&file, "S3cretT0ken\n").unwrap();
+        let config = Config {
+            desec_token_file: Some(file.clone()),
+            ..Config::default()
+        };
+        assert_eq!(config.desec_token().unwrap().expose(), "S3cretT0ken");
+
+        std::fs::write(&file, "S3cret T0ken\n").unwrap();
+        let err = config.desec_token().unwrap_err().to_string();
+        assert!(err.contains("not a deSEC token"), "{err}");
+        assert!(!err.contains("S3cret"), "{err}");
+        std::fs::write(&file, "\n").unwrap();
+        assert!(
+            config
+                .desec_token()
+                .unwrap_err()
+                .to_string()
+                .contains("empty")
+        );
+
+        let missing = Config {
+            desec_token_file: Some(dir.path().join("missing")),
+            ..Config::default()
+        };
+        let err = missing.desec_token().unwrap_err().to_string();
+        assert!(
+            err.contains("ROEDY_DESEC_TOKEN_FILE") && err.contains("not readable"),
+            "{err}"
+        );
     }
 
     fn vars(pairs: &[(&str, &str)]) -> anyhow::Result<Config> {

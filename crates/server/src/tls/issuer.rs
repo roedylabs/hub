@@ -19,7 +19,10 @@
 //!   and renewal.
 //! - **Validation:** TLS-ALPN-01 on the HTTPS port first (port 80 then is
 //!   optional), HTTP-01 on `ROEDY_HTTP_LISTEN` after a failed validation,
-//!   alternating.
+//!   alternating. With `ROEDY_ACME_CHALLENGE=dns-01` DNS-01 only: a TXT
+//!   record at deSEC ([`super::dns01`]), taken down again after the
+//!   validation, also after a failure. deSEC's throttling waits as long as
+//!   its `Retry-After` says, like the CA's.
 //! - **Storage:** account key, certificate key and chain in the database,
 //!   the keys sealed with the instance key; with another instance key they
 //!   cannot be opened, and the hub creates a new account and certificate.
@@ -42,7 +45,10 @@ use sha2::{Digest as _, Sha256};
 use super::{
     CertResolver, Challenges,
     acme::{self, Client, Problem},
-    certified_key, jose,
+    certified_key,
+    desec::DesecError,
+    dns01::{self, Dns01},
+    jose,
     key::P256Key,
     x509::{self, CertInfo},
 };
@@ -100,6 +106,8 @@ pub struct Settings {
     pub contact: Vec<String>,
     /// The DNS name of the certificate.
     pub domain: String,
+    /// DNS-01 instead of TLS-ALPN-01 and HTTP-01.
+    pub dns01: Option<dns01::Settings>,
 }
 
 /// What a run did.
@@ -232,9 +240,7 @@ impl Issuer {
                 let step = usize::try_from(failures - 1)
                     .unwrap_or(usize::MAX)
                     .min(self.backoff.len() - 1);
-                let asked = error
-                    .downcast_ref::<Problem>()
-                    .and_then(|problem| problem.retry_after);
+                let asked = asked_wait(&error);
                 let wait = self.backoff[step]
                     .max(asked.unwrap_or_default())
                     .min(MAX_WAIT);
@@ -513,6 +519,11 @@ impl Issuer {
         if authorization.identifier.kind != "dns" || domain != self.settings.domain {
             bail!("unexpected identifier {}", authorization.identifier.value);
         }
+        if let Some(dns) = &self.settings.dns01 {
+            return self
+                .authorize_dns(client, url, &authorization, thumbprint, dns)
+                .await;
+        }
         let order = if self.prefer_http.load(Ordering::Relaxed) {
             [acme::HTTP_01, acme::TLS_ALPN_01]
         } else {
@@ -551,6 +562,62 @@ impl Issuer {
         )
     }
 
+    /// DNS-01: the TXT record up, the CA told once every name server has
+    /// it, the record down again – whatever happened in between.
+    async fn authorize_dns(
+        &self,
+        client: &mut Client,
+        url: &str,
+        authorization: &acme::Authorization,
+        thumbprint: &str,
+        settings: &dns01::Settings,
+    ) -> anyhow::Result<()> {
+        let domain = authorization.identifier.value.as_str();
+        let challenge = authorization
+            .challenges
+            .iter()
+            .find(|c| c.kind == acme::DNS_01)
+            .ok_or_else(|| anyhow!("the CA does not offer DNS-01"))?;
+        check_token(&challenge.token)?;
+        let value = dns01::txt_value(&format!("{}.{thumbprint}", challenge.token));
+        let dns = Dns01::new(settings, self.http.clone())?;
+        let target = dns.prepare(domain).await?;
+        tracing::info!(
+            domain,
+            challenge = challenge.kind,
+            zone = target.zone.name,
+            "validating the domain"
+        );
+        let validated = async {
+            dns.add(&target, &value).await?;
+            dns.wait(&target, &value).await?;
+            client.respond(&challenge.url).await?;
+            client.wait_for_authorization(url).await
+        }
+        .await;
+        // Also after a failed `add`: its request may have gone through.
+        if let Err(error) = dns.remove(&target, &value).await {
+            tracing::warn!(
+                name = target.name,
+                "DNS-01: TXT record not removed, its value may stay in the record set \
+                 (harmless; remove it at deSEC): {error:#}"
+            );
+        }
+        let authorization = validated?;
+        if authorization.status == "valid" {
+            return Ok(());
+        }
+        let reason = authorization
+            .challenges
+            .iter()
+            .find(|c| c.url == challenge.url)
+            .and_then(|c| c.error.as_ref());
+        bail!(
+            "dns-01 validation of {domain} failed: {}",
+            acme::describe_error(reason)
+        )
+    }
+
     /// Puts the answer up for the validation; removed when the guard drops.
     fn answer(
         &self,
@@ -559,13 +626,7 @@ impl Issuer {
         domain: &str,
         key_authorization: &str,
     ) -> anyhow::Result<Answer> {
-        if !token
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            || token.is_empty()
-        {
-            bail!("the CA sent an invalid token");
-        }
+        check_token(token)?;
         if kind == acme::HTTP_01 {
             self.challenges.add_http(token, key_authorization);
             return Ok(Answer::Http(self.challenges.clone(), token.to_owned()));
@@ -629,6 +690,32 @@ impl Drop for Answer {
             Self::Alpn(challenges, domain) => challenges.remove_alpn(domain),
         }
     }
+}
+
+/// A challenge token as RFC 8555 § 8.1 allows it (base64url).
+fn check_token(token: &str) -> anyhow::Result<()> {
+    if token.is_empty()
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        bail!("the CA sent an invalid token");
+    }
+    Ok(())
+}
+
+/// How long the CA or deSEC asked to wait (`Retry-After`).
+fn asked_wait(error: &anyhow::Error) -> Option<Duration> {
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<Problem>()
+            .and_then(|problem| problem.retry_after)
+            .or_else(|| {
+                cause
+                    .downcast_ref::<DesecError>()
+                    .and_then(|error| error.retry_after)
+            })
+    })
 }
 
 /// When a certificate is due: 30 days before its end, or after two thirds

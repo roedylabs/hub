@@ -1,6 +1,6 @@
 //! The hub's own ACME client (RFC 8555), as far as one certificate for one
 //! DNS name needs it: directory, nonces, account, order, authorizations
-//! with HTTP-01 or TLS-ALPN-01 (RFC 8737), finalize, download, and ARI
+//! with HTTP-01, TLS-ALPN-01 (RFC 8737) or DNS-01, finalize, download, and ARI
 //! renewal information (RFC 9773). Requests are JWS with the account key
 //! ([`jose`]); every response's `Replay-Nonce` is kept for the next request.
 //!
@@ -38,6 +38,7 @@ const MAX_BODY: usize = 1024 * 1024;
 
 pub const HTTP_01: &str = "http-01";
 pub const TLS_ALPN_01: &str = "tls-alpn-01";
+pub const DNS_01: &str = "dns-01";
 
 /// An error document from the CA (RFC 8555 § 6.7, RFC 7807).
 #[derive(Debug, Clone, PartialEq, Eq)]

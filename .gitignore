@@ -17,6 +17,8 @@ apps/web/src/lib/paraglide/
 *.sqlite3
 *.sqlite3-*
 secret.key
+# deSEC's API token for deploy/compose.dns01.yml
+desec_token
 vapid.json
 .env
 .env.*

@@ -23,6 +23,13 @@ infrastructure image. roedy-hub terminates TLS itself and gets its
 certificates itself with its own ACME client; `ROEDY_TLS=off` keeps plain
 HTTP for development and for operators with a proxy of their own.
 
+**DNS-01 with deSEC (decided on 2026-11-27):** the user's certificates are
+validated with DNS-01 (a TXT record at `_acme-challenge.<host>`); the
+domains are hosted at deSEC. `ROEDY_ACME_CHALLENGE=dns-01` with
+`ROEDY_ACME_DNS_PROVIDER=desec`; TLS-ALPN-01/HTTP-01 stay the default.
+deSEC client and the DNS queries of the propagation check are in-house, as
+the rest of the ACME client.
+
 Everything an app needs is in `docs/app-contract.md`; this file covers how the
 hub itself is built.
 
@@ -71,7 +78,7 @@ Each can follow later; v1 stays small.
 | `apps/web` | `@roedy/hub-web`: SvelteKit SPA (home page, sign-in, setup, account, administration) |
 | `packages/tokens` | Copy of Roedy Mail's design tokens |
 | `docs/` | `app-contract.md`, `ops.md`, `plan.md`, setup guides |
-| `deploy/` | `compose.yml` (the hub publishes 443 and 80 itself, no proxy), `.env.example`, `restore.sh`, the test override `compose.test.yml` |
+| `deploy/` | `compose.yml` (the hub publishes 443 and 80 itself, no proxy), `compose.dns01.yml` (DNS-01 with deSEC), `.env.example`, `restore.sh`, the test override `compose.test.yml` |
 | `scripts/` | Hooks, E2E runner, image smoke test, pin tests |
 
 Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
@@ -86,7 +93,8 @@ Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
   `/.well-known/change-password` (→ `/account/security`), and the gateway for
   every other first path segment that is a known slug.
 - **HTTP** (`ROEDY_HTTP_LISTEN`, `0.0.0.0:8080`, only with `ROEDY_TLS`):
-  ACME HTTP-01 challenges and a `308` to `ROEDY_PUBLIC_URL`, nothing else.
+  ACME HTTP-01 challenges and a `308` to `ROEDY_PUBLIC_URL`, nothing else
+  (with DNS-01 only the redirect; publishing it is optional).
 - **Internal** (`ROEDY_INTERNAL_LISTEN`, `0.0.0.0:8081`): `/internal/v1/…`
   only. Empty value turns it off (then no app can pair).
 
@@ -164,6 +172,12 @@ No ACME and no X.509 library either (decided on 2026-11-27): the ACME client
 (RFC 8555 with TLS-ALPN-01 from RFC 8737 and ARI from RFC 9773), the ES256
 JWS and the DER of the CSR and of the TLS-ALPN-01 certificate are written in
 `tls` on top of `ring`, `reqwest` and `rustls`.
+
+No DNS library either (decided on 2026-11-27): DNS-01's deSEC client
+(`tls::desec`, on `reqwest`) and the TXT queries to the zone's name servers
+(`tls::dns`: RFC 1035 wire format over UDP with TCP fallback, ~250 lines)
+are the hub's own; one question type without recursion does not need a
+resolver.
 
 ## 5. Web app
 
@@ -631,6 +645,41 @@ checks pass in every PR; every PR has tests for what it adds.
       rustls client trusting the fake CA. Open: an admin view of the
       certificate's state (the audit log and the log have it for now); a CI
       job against Pebble.
+      - [x] **ACME DNS-01 with deSEC** (extra PR, decided on 2026-11-27: the
+        user's domains are at deSEC and validated by DNS). Done:
+        `ROEDY_ACME_CHALLENGE` (`tls-alpn-01` by default, `dns-01`),
+        `ROEDY_ACME_DNS_PROVIDER=desec`, `ROEDY_DESEC_TOKEN_FILE` or
+        `ROEDY_DESEC_TOKEN` (never logged; the start fails on incomplete
+        settings). Per validation: the domain owning `_acme-challenge.<host>`
+        (`GET domains/?owns_qname=`), the value added to the TXT record set by a
+        bulk `PUT` (the set's TTL or the zone's minimum, other values kept;
+        the hub assumes it is the set's only writer – deSEC has no conditional
+        update), every name server of the zone (its `NS` records) asked
+        directly until it serves the value authoritatively (5 min at most),
+        then the CA; afterwards, also after a failure, the value's removal is
+        tried (a refused one is logged, the value stays). deSEC's `429` is
+        waited out in place for each `Retry-After` of up to a minute, three
+        times per request (a write from a fresh read); a longer one ends the
+        certificate attempt (the issuer's backoff) or, during the removal, is
+        logged and the value stays. No migration: nothing new is
+        stored. ops.md documents a scoped token (token policies: read-only
+        default, write only on the TXT set). *Tests:* DNS wire format
+        (compression pointers, loops, truncation, several strings), deSEC
+        bodies and errors, config validation, and with an in-process fake deSEC
+        and two fake name servers next to the fake ACME server: issuance and
+        renewal over DNS-01, record set created, updated and deleted, cleanup
+        after a failed validation, `403`, `429` short and long, waiting for a
+        slow name server, giving up on one that never serves the value or does
+        not answer, a name outside the account, TCP fallback, and the token in
+        no log line, error or audit entry. Deploy (after "Deploy without
+        Caddy"): `deploy/compose.dns01.yml` adds DNS-01 to `compose.yml`
+        (`COMPOSE_FILE` in `.env`, the token as the Docker secret
+        `./desec_token`, gitignored; port 80 only redirects then) –
+        recommended in `.env.example`, README and ops.md; an override rather
+        than variables in `compose.yml`, because a Compose secret whose file
+        is missing fails every setup without deSEC. `compose-smoke.sh`
+        validates it. Open: a CNAME at `_acme-challenge` (delegation) is not
+        followed.
    3. [x] **Deploy without Caddy** – compose publishes the hub's 443 and 80
       (`443:8443`, `80:8080`) and drops Caddy and `deploy/Caddyfile`,
       `ROEDY_TLS=acme` in `.env.example`, ops docs, smoke tests with TLS.
