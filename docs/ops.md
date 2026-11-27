@@ -257,35 +257,24 @@ docker compose start roedy-hub
 Copy the archive off the host (it holds password hashes and personal data, so keep it as protected as the server).
 The apps back up their own data; for Roedy Mail see its `docs/ops.md`.
 
-**Restore** (same key; the volume's content is replaced by the archive's). The helper container unpacks the archive
-into its own file system and checks the database with SQLite's `integrity_check`; only then does it move the current
-data aside, copy the archive's in and delete the old data. If copying fails (e.g. a full disk), it puts the old data
-back. Each step is its own line under `sh -e`, and the commands are chained with `&&`: the restore only runs once the
-hub has stopped, and the hub only starts again if the restore succeeded. The volume needs free space for the archive's
-database while the old one is kept; `apk` needs internet access for `sqlite`.
+**Restore** (same key; the volume's content is replaced by the archive's) with
+[`deploy/restore.sh`](../deploy/restore.sh), in the directory of `compose.yml`:
 
 ```sh
-file=roedy-hub-20261127T030000Z.tar.gz
-uid=65532 gid=65532   # or ROEDY_UID / ROEDY_GID from .env
-docker compose stop roedy-hub &&
-docker run --rm -v roedy_roedy-hub-data:/data -v "$PWD":/backup:ro alpine:3.24 sh -ec "
-  apk add --no-cache sqlite >/dev/null
-  mkdir /restore
-  tar -xzf /backup/$file -C /restore
-  test \"\$(sqlite3 /restore/roedy.sqlite3 'PRAGMA integrity_check')\" = ok
-  mkdir /data/.before-restore
-  find /data -mindepth 1 -maxdepth 1 ! -name secret.key ! -name .before-restore -exec mv {} /data/.before-restore/ ';'
-  if ! cp -a /restore/. /data/; then
-    find /data -mindepth 1 -maxdepth 1 ! -name secret.key ! -name .before-restore -exec rm -rf {} +
-    find /data/.before-restore -mindepth 1 -maxdepth 1 -exec mv {} /data/ ';'
-    rmdir /data/.before-restore
-    echo 'restore failed, previous data kept' >&2
-    exit 1
-  fi
-  rm -rf /data/.before-restore
-  chown -R $uid:$gid /data" &&
-docker compose start roedy-hub
+curl -fsSLO https://raw.githubusercontent.com/roedylabs/hub/main/deploy/restore.sh && chmod +x restore.sh
+ROEDY_UID=65532 ROEDY_GID=65532 ./restore.sh roedy-hub-20261127T030000Z.tar.gz   # IDs as in .env
 ```
+
+It stops the hub and works in a helper container (`alpine`, which installs `sqlite`, so it needs internet access): it
+unpacks the archive there and checks the database with SQLite's `integrity_check`, copies it into the volume next to
+the current data and then swaps them by renaming; the current data is moved to `.before-restore` and only deleted once
+the new data is in place. Any failure – a missing or damaged archive, a full disk, a failed rename – puts the previous
+data back and leaves the hub stopped; it only starts again after a successful restore. `secret.key` is never touched.
+The volume needs free space for a second copy of the database.
+
+**Interrupted restore** (the helper was killed, the host went down): the previous data is in `.before-restore` in the
+volume, and a new restore refuses to start. `./restore.sh --recover` puts it back (and removes a half-copied
+archive), then starts the hub; run the restore again afterwards.
 
 On a new host start with the same key (`ROEDY_SECRET_KEY` in `.env`, or `secret.key` restored into the volume). If
 the archive is older than the program version, the start applies the missing migrations. Everything since the backup

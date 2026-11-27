@@ -76,7 +76,7 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
-| `deploy/` | Docker Compose setup with Caddy (`compose.yml`, `Caddyfile`, `.env.example`), the test override with the example app |
+| `deploy/` | Docker Compose setup with Caddy (`compose.yml`, `Caddyfile`, `.env.example`), `restore.sh` for backups, the test override with the example app |
 | `Dockerfile` | The image: packages `dist/<arch>/roedy-hub` on `scratch` |
 | `scripts/` | Git hooks, smoke tests of the image and the Compose setup, release script and developer tooling |
 

@@ -34,7 +34,11 @@ fail() {
   compose logs >&2 2>&1 || true
   exit 1
 }
-cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
+backup=
+cleanup() {
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
+  [ -z "$backup" ] || docker run --rm -v "$backup:/backup" "$alpine" sh -c 'rm -rf /backup/*' >/dev/null 2>&1 || true
+}
 check() { # <description> <command …>
   what=$1
   shift
@@ -93,5 +97,47 @@ check "Caddy does not reach the example app" sh -c "! docker exec roedy-caddy wg
 check "the apps' network reaches the internal listener" sh -c \
   "docker run --rm --network '${project}_apps' '$alpine' wget -q -T 5 -O - http://roedy-hub:8081/internal/v1/jwks | grep -q '\"keys\"'"
 check "the example app is running" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub-example)" = true ]
+
+# Backup and restore as in docs/ops.md, with deploy/restore.sh: the setup token
+# lives in the database, so it shows which database the hub runs on.
+volume="${project}_roedy-hub-data"
+backup=$(mktemp -d)
+token() { docker exec roedy-hub roedy-hub setup-token | sed -n 's/^Setup-Token: //p'; }
+healthy() {
+  i=0
+  until [ "$(docker inspect -f '{{.State.Health.Status}}' roedy-hub)" = healthy ]; do
+    i=$((i + 1))
+    [ "$i" -le 30 ] || fail "roedy-hub not healthy after 30 s"
+    sleep 1
+  done
+}
+restore() { (cd deploy && COMPOSE_PROJECT_NAME="$project" ROEDY_HUB_VOLUME="$volume" ./restore.sh "$@"); }
+original=$(token)
+check "setup token before the backup" [ -n "$original" ]
+compose stop roedy-hub >/dev/null
+docker run --rm -v "$volume:/data:ro" -v "$backup:/backup" "$alpine" \
+  tar -czf /backup/hub.tar.gz -C /data --exclude=./secret.key .
+# Another database: the hub starts with a new token.
+docker run --rm -v "$volume:/data" "$alpine" sh -c 'rm -f /data/roedy.sqlite3 /data/roedy.sqlite3-wal /data/roedy.sqlite3-shm'
+compose start roedy-hub >/dev/null
+healthy
+other=$(token)
+check "setup token of the new database" [ -n "$other" ]
+check "a new database after removing it" [ "$other" != "$original" ]
+# A damaged archive is refused, the data stays as it was.
+mkdir "$backup/bad"
+head -c 4096 /dev/urandom >"$backup/bad/roedy.sqlite3"
+tar -czf "$backup/bad.tar.gz" -C "$backup/bad" .
+check "restore.sh refuses a damaged archive" sh -c "! (cd deploy && COMPOSE_PROJECT_NAME='$project' ROEDY_HUB_VOLUME='$volume' ./restore.sh '$backup/bad.tar.gz')"
+check "the hub stays stopped after a failed restore" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub)" = false ]
+compose start roedy-hub >/dev/null
+healthy
+check "the data is unchanged after a failed restore" [ "$(token)" = "$other" ]
+# The backup restores the original database.
+check "restore.sh restores the backup" restore "$backup/hub.tar.gz"
+healthy
+check "the original database after the restore" [ "$(token)" = "$original" ]
+check "restore.sh --recover with nothing to recover" restore --recover
+healthy
 
 echo "Compose smoke test passed"
