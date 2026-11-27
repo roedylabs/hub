@@ -12,9 +12,11 @@
 //!   connections.
 //! - **Failures** wait 1 min, 5 min, 15 min, 1 h, then 3 h between
 //!   attempts, or longer if the CA says so (`Retry-After`, e.g. a rate
-//!   limit). The time of the next attempt is stored (`app_settings`), so a
-//!   restart does not hammer the CA. The first failure of a series goes to
-//!   the audit log, as do issuance and renewal.
+//!   limit). The time of the next attempt is stored (`app_settings`, with
+//!   the CA it applies to), so a restart does not hammer the CA, while
+//!   switching to another CA does not wait for the previous one's backoff.
+//!   The first failure of a series goes to the audit log, as do issuance
+//!   and renewal.
 //! - **Validation:** TLS-ALPN-01 on the HTTPS port first (port 80 then is
 //!   optional), HTTP-01 on `ROEDY_HTTP_LISTEN` after a failed validation,
 //!   alternating.
@@ -124,6 +126,10 @@ struct Retry {
 struct StoredRetry {
     failures: u32,
     at: Option<String>,
+    /// The CA the failures were with: another `ROEDY_ACME_DIRECTORY` starts
+    /// afresh instead of waiting for the previous CA's backoff.
+    #[serde(default)]
+    directory: Option<String>,
 }
 
 pub struct Issuer {
@@ -217,9 +223,8 @@ impl Issuer {
         }
         match self.ensure().await {
             Ok(outcome) => {
-                if retry != Retry::default() {
-                    self.set_retry(Retry::default(), None).await?;
-                }
+                // Also removes a stale row of another CA.
+                self.set_retry(Retry::default(), None).await?;
                 Ok(outcome)
             }
             Err(error) => {
@@ -417,9 +422,15 @@ impl Issuer {
 
         let (order_url, order) = match client.new_order(domain, replaces).await {
             Ok(order) => order,
-            // The CA does not take the replaced certificate (e.g. it was
-            // replaced already): order without.
-            Err(error) if replaces.is_some() && error.downcast_ref::<Problem>().is_some() => {
+            // The CA does not take the replaced certificate (RFC 9773 § 5:
+            // replaced already, or an ID it does not know): order without.
+            // Any other error – a rate limit above all – stays an error.
+            Err(error)
+                if replaces.is_some()
+                    && error.downcast_ref::<Problem>().is_some_and(|problem| {
+                        matches!(problem.kind.as_str(), "alreadyReplaced" | "malformed")
+                    }) =>
+            {
                 tracing::debug!("order with `replaces` refused, ordering without: {error:#}");
                 client.new_order(domain, None).await?
             }
@@ -569,6 +580,9 @@ impl Issuer {
             Ok(app_settings::get::<StoredRetry>(conn, RETRY_KEY)?.unwrap_or_default())
         })
         .await?;
+        if stored.directory.as_deref() != Some(self.settings.directory.as_str()) {
+            return Ok(Retry::default());
+        }
         Ok(Retry {
             failures: stored.failures,
             at: stored.at.and_then(|at| at.parse().ok()),
@@ -576,6 +590,7 @@ impl Issuer {
     }
 
     async fn set_retry(&self, retry: Retry, audit: Option<Entry>) -> anyhow::Result<()> {
+        let directory = self.settings.directory.clone();
         db::call(&self.db, move |conn| {
             let tx = conn.transaction()?;
             if retry == Retry::default() {
@@ -584,6 +599,7 @@ impl Issuer {
                 let stored = StoredRetry {
                     failures: retry.failures,
                     at: retry.at.map(|at| at.to_string()),
+                    directory: Some(directory),
                 };
                 app_settings::set(&tx, RETRY_KEY, &stored)?;
             }

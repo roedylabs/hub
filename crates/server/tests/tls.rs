@@ -474,6 +474,67 @@ async fn renews_and_swaps_without_dropping_connections() {
 
     let actions: Vec<String> = hub.audit().await.into_iter().map(|(a, _)| a).collect();
     assert_eq!(actions, ["tls.issue", "tls.renew", "tls.renew"]);
+
+    // The CA refuses `replaces` (replaced already): ordered again without.
+    fake.knobs(|k| k.refuse_replaces = true);
+    let outcome = hub.issuer().run_once().await.unwrap();
+    assert!(
+        matches!(outcome, Outcome::Issued { renewed: true, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(fake.log().orders.len(), 4);
+    assert_eq!(fake.log().orders[3], None);
+    hub.stop().await;
+}
+
+#[tokio::test]
+async fn another_ca_does_not_wait_for_the_previous_cas_backoff() {
+    // A certificate from CA A, then a failed renewal there that would wait
+    // an hour.
+    let a = FakeAcme::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let secrets = SecretKey::random().unwrap();
+    let hub = start(&a, tmp.path(), secrets.clone()).await;
+    hub.wait_for_certificate().await;
+    a.knobs(|k| {
+        k.ari = Some((
+            SignedDuration::from_hours(-1),
+            SignedDuration::from_hours(1),
+        ));
+        k.rate_limited = 1;
+        k.retry_after = 3600;
+    });
+    // A rate limit on the order with `replaces` is no reason to order
+    // again without it.
+    let outcome = hub.issuer().run_once().await;
+    assert!(outcome.is_err(), "{outcome:?}");
+    assert_eq!(a.log().orders.len(), 1, "no second order");
+    assert_eq!(retry_state(&hub).await.unwrap()["failures"], 1);
+    hub.stop().await;
+
+    // Switched to CA B: it issues at once, not after A's hour.
+    let b = FakeAcme::start().await;
+    let hub = start(&b, tmp.path(), secrets).await;
+    // Until then the previous CA's certificate is served.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while b.log().issued == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "CA B issued nothing"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while connect(hub.https, HOST, &b.ca_cert).await.is_err() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "CA B's certificate not served"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(connect(hub.https, HOST, &a.ca_cert).await.is_err());
+    let actions: Vec<String> = hub.audit().await.into_iter().map(|(a, _)| a).collect();
+    assert_eq!(actions, ["tls.issue", "tls.fail", "tls.issue"]);
     hub.stop().await;
 }
 

@@ -73,6 +73,8 @@ pub struct Knobs {
     pub fail: Vec<&'static str>,
     /// New orders (after a rate limit) wait while this is set.
     pub hold_orders: bool,
+    /// Orders with `replaces` get `alreadyReplaced` (RFC 9773 § 5).
+    pub refuse_replaces: bool,
 }
 
 impl Default for Knobs {
@@ -92,6 +94,7 @@ impl Default for Knobs {
             )),
             fail: Vec::new(),
             hold_orders: false,
+            refuse_replaces: false,
         }
     }
 }
@@ -694,6 +697,13 @@ async fn new_order(State(fake): State<FakeAcme>, uri: Uri, body: Bytes) -> Respo
     }
     let domain = identifier["value"].as_str().unwrap_or_default().to_owned();
     let replaces = payload["replaces"].as_str().map(str::to_owned);
+    if replaces.is_some() && fake.lock().knobs.refuse_replaces {
+        return fake.problem(
+            StatusCode::CONFLICT,
+            "alreadyReplaced",
+            "the certificate was replaced already",
+        );
+    }
     let (order_id, authz_id) = (fake.id(), fake.id());
     let offer = fake.lock().knobs.offer.clone();
     let order = Order {
