@@ -25,7 +25,9 @@ use crate::{
     long_about = "Roedy Hub – gateway, sign-in and home page for the Roedy apps.\n\n\
                   Configuration via environment variables: ROEDY_PUBLIC_URL, ROEDY_LISTEN, \
                   ROEDY_INTERNAL_LISTEN, ROEDY_DATA_DIR, ROEDY_LOG, ROEDY_LOG_FORMAT, \
-                  ROEDY_WEB_DIR, ROEDY_TRUST_PROXY, ROEDY_SECRET_KEY, ROEDY_SECRET_KEY_FILE."
+                  ROEDY_WEB_DIR, ROEDY_TRUST_PROXY, ROEDY_SECRET_KEY, ROEDY_SECRET_KEY_FILE, \
+                  ROEDY_TLS, ROEDY_HTTP_LISTEN, ROEDY_ACME_DIRECTORY, ROEDY_ACME_EMAIL, \
+                  ROEDY_ACME_AGREE_TOS, ROEDY_TLS_CERT_FILE, ROEDY_TLS_KEY_FILE."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -62,7 +64,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Serve => app::serve(config).await,
         Command::Healthcheck => {
-            healthcheck::check(config.listen, healthcheck::DEFAULT_TIMEOUT).await?;
+            match config.tls_host().filter(|_| config.tls.enabled()) {
+                Some(host) => {
+                    healthcheck::check_tls(config.listen, &host, healthcheck::DEFAULT_TIMEOUT)
+                        .await?;
+                }
+                None => healthcheck::check(config.listen, healthcheck::DEFAULT_TIMEOUT).await?,
+            }
             println!("ok");
             Ok(())
         }

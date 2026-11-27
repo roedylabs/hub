@@ -54,6 +54,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "access",
         sql: include_str!("migrations/0008_access.sql"),
     },
+    Migration {
+        version: 9,
+        name: "tls",
+        sql: include_str!("migrations/0009_tls.sql"),
+    },
 ];
 
 /// Applies all pending migrations and returns the schema version.
@@ -161,6 +166,7 @@ mod tests {
         assert_eq!(
             table_names(&conn),
             [
+                "acme_accounts",
                 "app_access",
                 "app_settings",
                 "apps",
@@ -179,6 +185,7 @@ mod tests {
                 "schema_migrations",
                 "sessions",
                 "signing_keys",
+                "tls_certificates",
                 "totp_devices",
                 "user_settings",
                 "users"

@@ -3,11 +3,12 @@
 //!
 //! Taken over from Roedy Mail (`crates/server/src/jobs/mod.rs`) with the two
 //! cleanup jobs the hub needs, plus the rotation of the signing keys, the
-//! health checks of the apps, the end of the streams of ended sessions and
-//! the retention of the events. The event delivery itself runs apart from
-//! these (`events::start`).
+//! health checks of the apps, the end of the streams of ended sessions, the
+//! retention of the events and the renewal of the TLS certificate. The event
+//! delivery itself runs apart from these (`events::start`).
 
 pub mod audit_retention;
+pub mod certificate_renewal;
 pub mod event_retention;
 pub mod gateway_streams;
 pub mod health_poll;
@@ -29,6 +30,7 @@ pub fn start(state: &AppState) -> Scheduler {
             key_rotation::job(),
             health_poll::job(),
             gateway_streams::job(),
+            certificate_renewal::job(),
         ],
     )
 }

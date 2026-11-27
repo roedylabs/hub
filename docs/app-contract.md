@@ -111,7 +111,7 @@ The app's response passes through unchanged except:
 | `Set-Cookie` | Drops every cookie whose name is not in the app's namespace (logged as a warning). |
 | `Clear-Site-Data` | Removed: it would clear every app on the origin. |
 | `Service-Worker-Allowed` | Removed: an app's service worker scope stays inside its prefix. |
-| `Strict-Transport-Security` | Replaced by the hub's own (sent when the hub runs behind a TLS proxy). |
+| `Strict-Transport-Security` | Replaced by the hub's own (sent when the hub terminates TLS itself or runs behind a TLS proxy). |
 | Hop-by-hop headers | Removed. |
 | `X-Content-Type-Options` | Set to `nosniff` if the app sent none. |
 
@@ -129,9 +129,9 @@ stricter.
 | Response and request bodies | Streamed in both directions without buffering; no total time limit, no size limit at the hub |
 | Request headers | 64 KiB in total, then 431 `headers_too_large` |
 | Protocol to the app | HTTP/1.1 (the hub does not speak h2c to apps) |
-| Compression | None by the hub; the TLS proxy in front compresses |
+| Compression | None by the hub; `Accept-Encoding` and `Content-Encoding` pass through, so an app compresses its responses itself if it wants (a TLS proxy in front, if any, may compress as well) |
 
-The TLS proxy in front of the hub may close idle connections. Apps SHOULD send
+The hub, or a TLS proxy in front of it, may close idle connections. Apps SHOULD send
 a keep-alive at least every 30 s on long-lived streams (SSE comment line,
 WebSocket ping).
 

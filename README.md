@@ -23,12 +23,13 @@ Apps keep working on their own without the hub. How an app connects to the hub i
 ## How it works
 
 ```text
-Browser ──HTTPS──► TLS proxy ──► roedy-hub ─┬─ /, /login, /account, /admin, /api/v1   (the hub itself)
-                                            ├─ /mail/…      ──► roedy-mail      (+ signed identity)
-                                            └─ /contacts/…  ──► roedy-contacts
+Browser ──HTTPS──► roedy-hub ─┬─ /, /login, /account, /admin, /api/v1   (the hub itself)
+                              ├─ /mail/…      ──► roedy-mail      (+ signed identity)
+                              └─ /contacts/…  ──► roedy-contacts
 ```
 
-All apps share one origin. Install only apps you trust as much as the hub itself
+All apps share one origin. The hub terminates TLS itself and gets its certificate from Let's Encrypt (or another ACME
+CA) on its own ([TLS](docs/ops.md#tls)). Install only apps you trust as much as the hub itself
 ([trust model](docs/app-contract.md#2-trust-model)).
 
 ## Development

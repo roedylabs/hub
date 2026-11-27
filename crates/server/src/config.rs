@@ -12,10 +12,17 @@
 //! and meaning, without `ROEDY_GEOIP_DB`, plus `ROEDY_INTERNAL_LISTEN`.
 //! `ROEDY_PUBLIC_URL` must not have a path, because the hub owns the root of
 //! its origin.
+//!
+//! Built-in TLS (`ROEDY_TLS`, `tls`) is the hub's own: off by default (plain
+//! HTTP as before, for development and setups behind a proxy), `acme` for
+//! certificates from an ACME CA or `files` for a certificate from files.
+//! With TLS on, `ROEDY_LISTEN` is the HTTPS listener and defaults to
+//! `0.0.0.0:8443`, and `ROEDY_HTTP_LISTEN` serves the ACME HTTP-01
+//! challenges and redirects everything else to `ROEDY_PUBLIC_URL`.
 
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 
@@ -33,11 +40,17 @@ pub const ENV_PREFIX: &str = "ROEDY_";
 /// Field of `ROEDY_INTERNAL_LISTEN`, whose empty value means "off".
 const INTERNAL_LISTEN: &str = "internal_listen";
 
+/// `ROEDY_LISTEN` with TLS on, unless set.
+pub const TLS_LISTEN: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8443);
+
+/// Let's Encrypt's production directory, the default CA.
+pub const LETS_ENCRYPT: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Address of the public HTTP server (`ROEDY_LISTEN`): hub, API, health
-    /// and later the gateway.
+    /// Address of the public server (`ROEDY_LISTEN`): hub, API, health and
+    /// the gateway; HTTPS with TLS on ([`TLS_LISTEN`] then by default).
     pub listen: SocketAddr,
     /// Address of the internal HTTP server for the apps (`ROEDY_INTERNAL_LISTEN`,
     /// `/internal/v1/…`); `None` when set to empty. Must never be published.
@@ -67,6 +80,45 @@ pub struct Config {
     /// File with this key (`ROEDY_SECRET_KEY_FILE`, e.g. a Docker secret). If
     /// both are missing, `<ROEDY_DATA_DIR>/secret.key` applies.
     pub secret_key_file: Option<PathBuf>,
+    /// Built-in TLS (`ROEDY_TLS`).
+    pub tls: TlsMode,
+    /// Plain HTTP with TLS on (`ROEDY_HTTP_LISTEN`): ACME HTTP-01 challenges
+    /// and a redirect to `ROEDY_PUBLIC_URL`; unused with TLS off.
+    pub http_listen: SocketAddr,
+    /// The ACME CA's directory (`ROEDY_ACME_DIRECTORY`).
+    #[serde(deserialize_with = "acme_directory")]
+    pub acme_directory: Url,
+    /// Contact address for the ACME account (`ROEDY_ACME_EMAIL`).
+    pub acme_email: Option<String>,
+    /// The operator accepts the CA's terms of service
+    /// (`ROEDY_ACME_AGREE_TOS`); required for `acme`.
+    #[serde(deserialize_with = "flag")]
+    pub acme_agree_tos: bool,
+    /// Certificate chain in PEM for `files` (`ROEDY_TLS_CERT_FILE`).
+    pub tls_cert_file: Option<PathBuf>,
+    /// Its private key in PEM for `files` (`ROEDY_TLS_KEY_FILE`).
+    pub tls_key_file: Option<PathBuf>,
+}
+
+/// Built-in TLS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsMode {
+    /// Plain HTTP on `ROEDY_LISTEN` (default): development, or TLS in a
+    /// proxy in front.
+    #[default]
+    Off,
+    /// Certificates from an ACME CA (Let's Encrypt by default).
+    Acme,
+    /// A certificate from `ROEDY_TLS_CERT_FILE` and `ROEDY_TLS_KEY_FILE`,
+    /// reloaded when they change.
+    Files,
+}
+
+impl TlsMode {
+    pub fn enabled(self) -> bool {
+        self != Self::Off
+    }
 }
 
 /// Value that never appears in `Debug` output or logs.
@@ -132,6 +184,13 @@ impl Default for Config {
             trust_proxy: TrustProxy::default(),
             secret_key: None,
             secret_key_file: None,
+            tls: TlsMode::Off,
+            http_listen: SocketAddr::from(([0, 0, 0, 0], 8080)),
+            acme_directory: Url::parse(LETS_ENCRYPT).unwrap_or_else(|_| unreachable!()),
+            acme_email: None,
+            acme_agree_tos: false,
+            tls_cert_file: None,
+            tls_key_file: None,
         }
     }
 }
@@ -166,7 +225,7 @@ impl Config {
     }
 
     pub fn from_figment(figment: Figment) -> anyhow::Result<Self> {
-        let config: Self = figment.extract().map_err(|errors| {
+        let mut config: Self = figment.extract().map_err(|errors| {
             // Report each error with the full variable name, e.g. `ROEDY_LISTEN: …`.
             let details: Vec<String> = errors
                 .into_iter()
@@ -177,8 +236,93 @@ impl Config {
                 .collect();
             anyhow!("Invalid configuration – {}", details.join("; "))
         })?;
+        if config.tls.enabled() && !figment.contains("listen") {
+            config.listen = TLS_LISTEN;
+        }
+        config.check_tls()?;
         config.check_listeners()?;
         Ok(config)
+    }
+
+    /// The name the certificate is for: the host of `ROEDY_PUBLIC_URL`
+    /// (checked by [`Self::check_tls`] when TLS is on).
+    pub fn tls_host(&self) -> Option<String> {
+        let url = self.public_url.as_ref()?;
+        Some(match url.host()? {
+            url::Host::Domain(domain) => domain.to_ascii_lowercase(),
+            url::Host::Ipv4(ip) => ip.to_string(),
+            url::Host::Ipv6(ip) => ip.to_string(),
+        })
+    }
+
+    /// TLS needs an `https` public address; `acme` a DNS name and the
+    /// operator's consent to the CA's terms, `files` both files.
+    fn check_tls(&self) -> anyhow::Result<()> {
+        if !self.tls.enabled() {
+            return Ok(());
+        }
+        let invalid = |message: String| anyhow!("Invalid configuration – {message}");
+        let url = self.public_url.as_ref().ok_or_else(|| {
+            invalid(
+                "ROEDY_PUBLIC_URL: required with ROEDY_TLS, e.g. https://app.example.com"
+                    .to_owned(),
+            )
+        })?;
+        if url.scheme() != "https" {
+            return Err(invalid(format!(
+                "ROEDY_PUBLIC_URL: must start with https:// when ROEDY_TLS is on (is {url})"
+            )));
+        }
+        match self.tls {
+            TlsMode::Off => {}
+            TlsMode::Acme => {
+                match url.host() {
+                    Some(url::Host::Domain(domain)) => {
+                        crate::tls::x509::check_dns_name(domain).map_err(|e| {
+                            invalid(format!("ROEDY_PUBLIC_URL: {e} (ROEDY_TLS=acme)"))
+                        })?;
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "ROEDY_PUBLIC_URL: ROEDY_TLS=acme needs a DNS name, not an IP \
+                             address"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                if !self.acme_agree_tos {
+                    return Err(invalid(format!(
+                        "ROEDY_ACME_AGREE_TOS: ROEDY_TLS=acme gets certificates from {} – read \
+                         the CA's terms of service and set ROEDY_ACME_AGREE_TOS=true to accept \
+                         them",
+                        self.acme_directory
+                    )));
+                }
+                if let Some(email) = &self.acme_email {
+                    let plausible = email.split_once('@').is_some_and(|(local, domain)| {
+                        !local.is_empty() && domain.contains('.') && !domain.contains('@')
+                    }) && !email.chars().any(|c| {
+                        c.is_whitespace() || c.is_control() || matches!(c, ',' | '<' | '>' | '?')
+                    });
+                    if !plausible {
+                        return Err(invalid(format!(
+                            "ROEDY_ACME_EMAIL: {email} is not an email address"
+                        )));
+                    }
+                }
+            }
+            TlsMode::Files => {
+                for (name, value) in [
+                    ("ROEDY_TLS_CERT_FILE", &self.tls_cert_file),
+                    ("ROEDY_TLS_KEY_FILE", &self.tls_key_file),
+                ] {
+                    if value.is_none() {
+                        return Err(invalid(format!("{name}: required with ROEDY_TLS=files")));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The public address, which `serve` needs for links, the gateway's
@@ -195,15 +339,33 @@ impl Config {
     /// Both listeners on the same port would fail at startup with "address in
     /// use"; this message says which variables to change.
     fn check_listeners(&self) -> anyhow::Result<()> {
-        let Some(internal) = self.internal_listen else {
-            return Ok(());
+        let overlaps = |a: SocketAddr, b: SocketAddr| {
+            a.port() == b.port()
+                && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
         };
-        let overlap = |a: IpAddr, b: IpAddr| a == b || a.is_unspecified() || b.is_unspecified();
-        if internal.port() == self.listen.port() && overlap(internal.ip(), self.listen.ip()) {
+        if let Some(internal) = self.internal_listen {
+            if overlaps(internal, self.listen) {
+                bail!(
+                    "Invalid configuration – ROEDY_INTERNAL_LISTEN: {internal} overlaps with \
+                     ROEDY_LISTEN ({}); use another port, or set it to empty to turn the \
+                     internal listener off",
+                    self.listen
+                );
+            }
+            if self.tls.enabled() && overlaps(internal, self.http_listen) {
+                bail!(
+                    "Invalid configuration – ROEDY_INTERNAL_LISTEN: {internal} overlaps with \
+                     ROEDY_HTTP_LISTEN ({}); use another port, or set it to empty to turn the \
+                     internal listener off",
+                    self.http_listen
+                );
+            }
+        }
+        if self.tls.enabled() && overlaps(self.http_listen, self.listen) {
             bail!(
-                "Invalid configuration – ROEDY_INTERNAL_LISTEN: {internal} overlaps with \
-                 ROEDY_LISTEN ({}); use another port, or set it to empty to turn the internal \
-                 listener off",
+                "Invalid configuration – ROEDY_HTTP_LISTEN: {} overlaps with ROEDY_LISTEN ({}); \
+                 with ROEDY_TLS on, ROEDY_LISTEN is the HTTPS port (default 0.0.0.0:8443)",
+                self.http_listen,
                 self.listen
             );
         }
@@ -253,6 +415,44 @@ fn public_url<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Url>,
     Ok(Some(url))
 }
 
+fn acme_directory<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Url, D::Error> {
+    let raw = String::deserialize(deserializer)?;
+    let url =
+        Url::parse(raw.trim()).map_err(|e| D::Error::custom(format!("not a valid URL: {e}")))?;
+    // RFC 8555 § 6.1: HTTPS only; plain HTTP for a test server on loopback.
+    let loopback = match url.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match url.scheme() {
+        "https" if url.host().is_some() => Ok(url),
+        "http" if loopback => Ok(url),
+        _ => Err(D::Error::custom(
+            "expects the https:// address of an ACME directory",
+        )),
+    }
+}
+
+/// `true`/`false` (also `yes`/`no`, `on`/`off`, `1`/`0`).
+fn flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Bool(bool),
+        Text(String),
+    }
+    match Raw::deserialize(deserializer)? {
+        Raw::Bool(value) => Ok(value),
+        Raw::Text(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" | "1" => Ok(true),
+            "false" | "no" | "off" | "0" => Ok(false),
+            _ => Err(D::Error::custom("expects true or false")),
+        },
+    }
+}
+
 fn trust_proxy<'de, D: Deserializer<'de>>(deserializer: D) -> Result<TrustProxy, D::Error> {
     // The environment delivers text; other figment providers may deliver
     // `true`/`2` as bool or number.
@@ -296,7 +496,7 @@ mod tests {
     use figment::Jail;
 
     /// Every variable the hub reads.
-    const ALL: [&str; 10] = [
+    const ALL: [&str; 17] = [
         "ROEDY_LISTEN",
         "ROEDY_INTERNAL_LISTEN",
         "ROEDY_DATA_DIR",
@@ -307,6 +507,13 @@ mod tests {
         "ROEDY_TRUST_PROXY",
         "ROEDY_SECRET_KEY",
         "ROEDY_SECRET_KEY_FILE",
+        "ROEDY_TLS",
+        "ROEDY_HTTP_LISTEN",
+        "ROEDY_ACME_DIRECTORY",
+        "ROEDY_ACME_EMAIL",
+        "ROEDY_ACME_AGREE_TOS",
+        "ROEDY_TLS_CERT_FILE",
+        "ROEDY_TLS_KEY_FILE",
     ];
 
     #[test]
@@ -326,6 +533,210 @@ mod tests {
         assert_eq!(config.trust_proxy, TrustProxy(0));
         assert_eq!(config.secret_key, None);
         assert_eq!(config.secret_key_file, None);
+        assert_eq!(config.tls, TlsMode::Off);
+        assert_eq!(config.http_listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.acme_directory.as_str(), LETS_ENCRYPT);
+        assert_eq!(config.acme_email, None);
+        assert!(!config.acme_agree_tos);
+        assert_eq!(config.tls_cert_file, None);
+        assert_eq!(config.tls_key_file, None);
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> anyhow::Result<Config> {
+        Config::from_vars(
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
+        )
+    }
+
+    const ACME: [(&str, &str); 3] = [
+        ("tls", "acme"),
+        ("public_url", "https://hub.example.com"),
+        ("acme_agree_tos", "true"),
+    ];
+
+    #[test]
+    fn tls_moves_the_public_listener_to_8443() {
+        let config = vars(&ACME).unwrap();
+        assert_eq!(config.tls, TlsMode::Acme);
+        assert_eq!(config.listen, TLS_LISTEN);
+        assert_eq!(config.listen.to_string(), "0.0.0.0:8443");
+        assert_eq!(config.http_listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.tls_host().as_deref(), Some("hub.example.com"));
+
+        // An explicit ROEDY_LISTEN stays, also on the default port.
+        let mut explicit = ACME.to_vec();
+        explicit.push(("listen", "0.0.0.0:8080"));
+        explicit.push(("http_listen", "0.0.0.0:8000"));
+        let config = vars(&explicit).unwrap();
+        assert_eq!(config.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.http_listen.to_string(), "0.0.0.0:8000");
+
+        // Off: ROEDY_LISTEN keeps 8080, ROEDY_HTTP_LISTEN is not used (and
+        // not checked for overlaps).
+        let config = vars(&[("tls", "off"), ("http_listen", "0.0.0.0:8080")]).unwrap();
+        assert_eq!(config.listen.to_string(), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn acme_settings() {
+        let mut all = ACME.to_vec();
+        all.extend([
+            (
+                "acme_directory",
+                "https://acme-staging-v02.api.letsencrypt.org/directory",
+            ),
+            ("acme_email", "ops@example.com"),
+        ]);
+        let config = vars(&all).unwrap();
+        assert_eq!(
+            config.acme_directory.as_str(),
+            "https://acme-staging-v02.api.letsencrypt.org/directory"
+        );
+        assert_eq!(config.acme_email.as_deref(), Some("ops@example.com"));
+        assert!(config.acme_agree_tos);
+        for (value, agreed) in [("TRUE", true), ("yes", true), ("1", true), ("off", false)] {
+            let mut flag = vec![("tls", "off"), ("acme_agree_tos", value)];
+            flag.push(("public_url", "https://hub.example.com"));
+            assert_eq!(vars(&flag).unwrap().acme_agree_tos, agreed, "{value}");
+        }
+        // A test CA on loopback may speak plain HTTP.
+        for directory in [
+            "http://127.0.0.1:14000/dir",
+            "http://localhost:14000/dir",
+            "http://[::1]:1/d",
+        ] {
+            let mut test = ACME.to_vec();
+            test.push(("acme_directory", directory));
+            vars(&test).unwrap();
+        }
+    }
+
+    #[test]
+    fn files_settings() {
+        let config = vars(&[
+            ("tls", "files"),
+            ("public_url", "https://192.0.2.7"),
+            ("tls_cert_file", "/run/secrets/cert.pem"),
+            ("tls_key_file", "/run/secrets/key.pem"),
+        ])
+        .unwrap();
+        assert_eq!(config.tls, TlsMode::Files);
+        assert_eq!(config.tls_host().as_deref(), Some("192.0.2.7"));
+        assert_eq!(
+            config.tls_cert_file,
+            Some(PathBuf::from("/run/secrets/cert.pem"))
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_tls_settings() {
+        for (pairs, message) in [
+            (
+                vec![("tls", "acme"), ("acme_agree_tos", "true")],
+                "ROEDY_PUBLIC_URL: required with ROEDY_TLS",
+            ),
+            (
+                vec![
+                    ("tls", "acme"),
+                    ("acme_agree_tos", "true"),
+                    ("public_url", "http://hub.example.com"),
+                ],
+                "ROEDY_PUBLIC_URL: must start with https:// when ROEDY_TLS is on",
+            ),
+            (
+                vec![("tls", "acme"), ("public_url", "https://hub.example.com")],
+                "ROEDY_ACME_AGREE_TOS: ROEDY_TLS=acme gets certificates from \
+                 https://acme-v02.api.letsencrypt.org/directory – read the CA's terms of service \
+                 and set ROEDY_ACME_AGREE_TOS=true to accept them",
+            ),
+            (
+                vec![
+                    ("tls", "acme"),
+                    ("public_url", "https://hub.example.com"),
+                    ("acme_agree_tos", "false"),
+                ],
+                "ROEDY_ACME_AGREE_TOS: ROEDY_TLS=acme gets certificates",
+            ),
+            (
+                vec![
+                    ("tls", "acme"),
+                    ("acme_agree_tos", "true"),
+                    ("public_url", "https://192.0.2.7"),
+                ],
+                "ROEDY_PUBLIC_URL: ROEDY_TLS=acme needs a DNS name",
+            ),
+            (
+                vec![
+                    ("tls", "acme"),
+                    ("acme_agree_tos", "true"),
+                    ("public_url", "https://localhost"),
+                ],
+                "ROEDY_PUBLIC_URL: localhost is not a DNS name",
+            ),
+            (
+                vec![
+                    ("tls", "acme"),
+                    ("acme_agree_tos", "true"),
+                    ("public_url", "https://hub.example.com"),
+                    ("acme_email", "not an address"),
+                ],
+                "ROEDY_ACME_EMAIL: not an address is not an email address",
+            ),
+            (
+                vec![
+                    ("tls", "files"),
+                    ("public_url", "https://hub.example.com"),
+                    ("tls_key_file", "/k.pem"),
+                ],
+                "ROEDY_TLS_CERT_FILE: required with ROEDY_TLS=files",
+            ),
+            (
+                vec![
+                    ("tls", "files"),
+                    ("public_url", "https://hub.example.com"),
+                    ("tls_cert_file", "/c.pem"),
+                ],
+                "ROEDY_TLS_KEY_FILE: required with ROEDY_TLS=files",
+            ),
+            (vec![("tls", "on")], "ROEDY_TLS: unknown variant"),
+            (
+                vec![("acme_agree_tos", "maybe")],
+                "ROEDY_ACME_AGREE_TOS: expects true or false",
+            ),
+            (
+                vec![("acme_directory", "http://ca.example.com/dir")],
+                "ROEDY_ACME_DIRECTORY: expects the https:// address of an ACME directory",
+            ),
+        ] {
+            let err = vars(&pairs).unwrap_err().to_string();
+            assert!(
+                err.starts_with("Invalid configuration – "),
+                "{pairs:?}: {err}"
+            );
+            assert!(err.contains(message), "{pairs:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_overlapping_tls_listeners() {
+        let mut same = ACME.to_vec();
+        same.push(("http_listen", "0.0.0.0:8443"));
+        assert_eq!(
+            vars(&same).unwrap_err().to_string(),
+            "Invalid configuration – ROEDY_HTTP_LISTEN: 0.0.0.0:8443 overlaps with ROEDY_LISTEN \
+             (0.0.0.0:8443); with ROEDY_TLS on, ROEDY_LISTEN is the HTTPS port (default \
+             0.0.0.0:8443)"
+        );
+        let mut internal = ACME.to_vec();
+        internal.push(("internal_listen", "0.0.0.0:8080"));
+        assert_eq!(
+            vars(&internal).unwrap_err().to_string(),
+            "Invalid configuration – ROEDY_INTERNAL_LISTEN: 0.0.0.0:8080 overlaps with \
+             ROEDY_HTTP_LISTEN (0.0.0.0:8080); use another port, or set it to empty to turn the \
+             internal listener off"
+        );
     }
 
     #[test]

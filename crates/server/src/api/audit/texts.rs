@@ -338,6 +338,10 @@ fn known(row: &Row, lang: Language) -> Option<Line> {
         // System
         "auth.reset_admin" => with("ti-user-shield", "user", &p.text("user")?).warn(),
         "setup.complete" => plain("ti-rocket"),
+        "tls.issue" | "tls.renew" => with("ti-lock-check", "domain", &p.text("domain")?),
+        "tls.fail" => with("ti-lock-x", "domain", &p.text("domain")?)
+            .meta(p.text("error").map(str::to_owned))
+            .warn(),
         "audit.export" => plain("ti-download").meta(
             p.number("count")
                 .map(|n| plural(lang, "audit.entries", n, &[])),
@@ -400,7 +404,7 @@ mod tests {
 
     /// All action keys the hub writes, with their category. A new key
     /// belongs here and in both locale files.
-    const ACTIONS: [(&str, Category); 51] = {
+    const ACTIONS: [(&str, Category); 54] = {
         use Category::{Apps, Login, Settings, System, Users};
         [
             ("auth.login", Login),
@@ -452,6 +456,9 @@ mod tests {
             ("auth.reset_admin", System),
             ("setup.complete", System),
             ("audit.export", System),
+            ("tls.issue", System),
+            ("tls.renew", System),
+            ("tls.fail", System),
             // Keys with a variant per detail, once more for the other branch.
             ("auth.login", Login),
             ("auth.reauth", Login),
@@ -466,6 +473,7 @@ mod tests {
             "user": "Anna Example", "days": 365, "count": 2,
             "slug": "mail", "version": "1.2.0", "roles": ["owner", "viewer"],
             "access_default": "all", "app_role": "user",
+            "domain": "hub.example.com", "error": "the CA answered 429 (rateLimited)",
         })
     }
 
@@ -477,6 +485,7 @@ mod tests {
             "user": "Anna Example", "days": 30, "count": 1,
             "slug": "notes", "version": "0.1.0", "roles": ["editor"],
             "access_default": "selected", "app_role": "editor",
+            "domain": "app.example.com", "error": "connection refused",
         })
     }
 
@@ -583,6 +592,24 @@ mod tests {
                 System,
                 json!({ "user": "Anna Example" }),
                 " reset access for Anna Example",
+            ),
+            (
+                "tls.issue",
+                System,
+                json!({ "domain": "hub.example.com" }),
+                " got a TLS certificate for hub.example.com",
+            ),
+            (
+                "tls.renew",
+                System,
+                json!({ "domain": "hub.example.com" }),
+                " renewed the TLS certificate for hub.example.com",
+            ),
+            (
+                "tls.fail",
+                System,
+                json!({ "domain": "hub.example.com", "error": "timeout" }),
+                ": TLS certificate for hub.example.com not obtained",
             ),
             (
                 "apps.create",

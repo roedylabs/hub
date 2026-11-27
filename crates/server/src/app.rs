@@ -9,9 +9,13 @@
 //!   `/internal/…` for the apps (docs/app-contract.md › Internal API,
 //!   [`internal`]); everything else is 404 there.
 //!
+//! With built-in TLS (`ROEDY_TLS`, [`tls`]) the public listener speaks HTTPS
+//! and a third one (`ROEDY_HTTP_LISTEN`) answers ACME HTTP-01 challenges and
+//! redirects to HTTPS.
+//!
 //! Taken over from Roedy Mail (`crates/server/src/app.rs`) without the mail
 //! specific state and jobs (the hub's are in `jobs`); the graceful shutdown
-//! covers both listeners.
+//! covers all listeners.
 
 use std::{
     future::{Future, IntoFuture as _},
@@ -55,6 +59,7 @@ use crate::{
     rate_limit::RateLimiter,
     setup_token,
     signing::{self, KeyStore},
+    tls::{self, Tls},
     web::{
         app_icons,
         branding::{
@@ -109,6 +114,8 @@ pub struct AppState {
     /// Wake-up and timing of the event delivery (`events`); [`events::start`]
     /// runs it.
     pub events: Arc<Events>,
+    /// Built-in TLS (`tls`); `None` with `ROEDY_TLS=off`. Set by `serve`.
+    pub tls: Option<Arc<Tls>>,
     pub background: Background,
 }
 
@@ -191,8 +198,15 @@ impl AppState {
             apps: Arc::new(AppTable::default()),
             probe: apps::probe_client()?,
             events: Arc::new(Events::new()?),
+            tls: None,
             background: Background::default(),
         })
+    }
+
+    /// Whether responses carry HSTS: the hub terminates TLS itself, or a
+    /// trusted proxy in front does.
+    pub fn hsts(&self) -> bool {
+        self.tls.is_some() || self.trust_proxy.enabled()
     }
 }
 
@@ -317,7 +331,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     tracing::info!(source = %key_source, "secret key loaded");
     let db = Db::from(conn);
 
-    let state = AppState::new(db.clone(), web, &config, public_url, secrets)?;
+    let mut state = AppState::new(db.clone(), web, &config, public_url, secrets)?;
     let instance = state.instance.clone();
     db::call(&db, move |conn| instance.load(conn))
         .await
@@ -330,6 +344,9 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     signing::rotate_now(&db, state.secrets.clone(), &state.keys)
         .await
         .context("signing keys not loaded")?;
+    state.tls = tls::prepare(&config, &db, state.secrets.clone())
+        .await?
+        .map(Arc::new);
     let background = state.background.clone();
     let result = async {
         // Placeholder hash before the first request, so that even the first
@@ -342,9 +359,14 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             .await
             .context("placeholder password hash not created")?;
         let listeners = Listeners::bind(&config).await?;
+        // After binding: TLS-ALPN-01 and HTTP-01 need the listeners.
+        let certificates = state.tls.as_ref().and_then(|tls| tls.start());
         let delivery = events::start(&state).await?;
         let scheduler = jobs::start(&state);
         let served = run_http(listeners, state, shutdown).await;
+        if let Some(certificates) = certificates {
+            certificates.abort();
+        }
         scheduler.shutdown().await;
         delivery.shutdown().await;
         // Before closing the database: audit entries after the last responses.
@@ -360,10 +382,13 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The bound sockets of both listeners.
+/// The bound sockets of the listeners.
 pub struct Listeners {
+    /// HTTPS when `AppState::tls` is set, plain HTTP otherwise.
     pub public: TcpListener,
     pub internal: Option<TcpListener>,
+    /// With TLS on: HTTP-01 challenges and the redirect (`tls::redirect`).
+    pub http: Option<TcpListener>,
 }
 
 impl Listeners {
@@ -377,23 +402,51 @@ impl Listeners {
             })?),
             None => None,
         };
-        Ok(Self { public, internal })
+        let http = if config.tls.enabled() {
+            let addr = config.http_listen;
+            Some(
+                TcpListener::bind(addr)
+                    .await
+                    .with_context(|| format!("Address {addr} not available (ROEDY_HTTP_LISTEN)"))?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            public,
+            internal,
+            http,
+        })
     }
 }
 
-/// Serves both listeners until `shutdown`, then lets open requests finish for
+/// A server future of any listener type.
+type Server = std::pin::Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
+
+/// Serves the listeners until `shutdown`, then lets open requests finish for
 /// at most [`SHUTDOWN_GRACE`].
 pub async fn run_http(
     listeners: Listeners,
     state: AppState,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let Listeners { public, internal } = listeners;
+    let Listeners {
+        public,
+        internal,
+        http,
+    } = listeners;
     let internal_addr = internal.as_ref().map(TcpListener::local_addr).transpose()?;
+    let http_addr = http.as_ref().map(TcpListener::local_addr).transpose()?;
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         listen = %public.local_addr()?,
         internal_listen = internal_addr.map_or_else(|| "off".to_owned(), |a| a.to_string()),
+        tls = state.tls.as_ref().map_or("off", |tls| match tls.mode {
+            crate::config::TlsMode::Acme => "acme",
+            crate::config::TlsMode::Files => "files",
+            crate::config::TlsMode::Off => "off",
+        }),
+        http_listen = http_addr.map_or_else(|| "off".to_owned(), |a| a.to_string()),
         public_url = state.public_url.as_str(),
         web = state.web.describe(),
         trust_proxy = state.trust_proxy.0,
@@ -410,12 +463,36 @@ pub async fn run_http(
         let _ = stopped.wait_for(|stop| *stop).await;
     };
     // `client_ip::ClientIp` needs the address of the connection.
-    let public_server = axum::serve(
-        public,
-        router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(graceful(stopped.clone()))
-    .into_future();
+    let public_service = router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let public_server: Server = match &state.tls {
+        Some(tls) => {
+            use axum::serve::ListenerExt as _;
+            // `tap_io` gives the TLS listener axum's `ConnectInfo<SocketAddr>`.
+            let listener =
+                tls::listener::TlsListener::new(public, tls.server_config.clone())?.tap_io(|_| {});
+            Box::pin(
+                axum::serve(listener, public_service)
+                    .with_graceful_shutdown(graceful(stopped.clone()))
+                    .into_future(),
+            )
+        }
+        None => Box::pin(
+            axum::serve(public, public_service)
+                .with_graceful_shutdown(graceful(stopped.clone()))
+                .into_future(),
+        ),
+    };
+    let http_server: Server = match (http, &state.tls) {
+        (Some(listener), Some(tls)) => Box::pin(
+            axum::serve(
+                listener,
+                tls::redirect::router(&state.public_url, tls.challenges.clone()),
+            )
+            .with_graceful_shutdown(graceful(stopped.clone()))
+            .into_future(),
+        ),
+        _ => Box::pin(async { Ok(()) }),
+    };
     let gateway = state.gateway.clone();
     let internal_router = internal_router(state);
     let internal_stopped = stopped.clone();
@@ -440,6 +517,7 @@ pub async fn run_http(
                     .await
                     .context("internal HTTP server aborted")
             },
+            async { http_server.await.context("HTTP redirect server aborted") },
         )
         .map(|_| ())
     };
@@ -857,6 +935,7 @@ pub(crate) mod tests {
             Listeners {
                 public,
                 internal: Some(internal),
+                http: None,
             },
             state,
             async {
@@ -905,6 +984,7 @@ pub(crate) mod tests {
             Listeners {
                 public,
                 internal: None,
+                http: None,
             },
             state,
             async {

@@ -8,9 +8,10 @@
 //!   `X-Content-Type-Options: nosniff`, `Cross-Origin-Opener-Policy:
 //!   same-origin` (a foreign page that opens the hub keeps no handle on its
 //!   window).
-//! - **HSTS** only with `ROEDY_TRUST_PROXY`: then a reverse proxy terminates
-//!   TLS; without one the server cannot know whether it is reachable over
-//!   HTTPS.
+//! - **HSTS** (one year, without `includeSubDomains` and `preload`) when the
+//!   hub terminates TLS itself (`ROEDY_TLS`) or with `ROEDY_TRUST_PROXY`, when
+//!   a reverse proxy does; otherwise the server cannot know whether it is
+//!   reachable over HTTPS.
 //!
 //! If a handler sets a CSP itself, its own stays. The gateway's responses
 //! from the apps (marked [`Proxied`]) pass through unchanged: each app sends
@@ -216,7 +217,7 @@ pub async fn apply(State(state): State<AppState>, request: Request, next: Next) 
         OPENER_POLICY_HEADER.clone(),
         HeaderValue::from_static("same-origin"),
     );
-    if state.trust_proxy.enabled() {
+    if state.hsts() {
         headers.insert(
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static(HSTS),

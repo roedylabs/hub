@@ -1,19 +1,33 @@
 //! `roedy-hub healthcheck`: queries `/healthz` of the running server's public
 //! listener. The image contains no curl, so the command speaks HTTP/1.1
-//! directly over TCP.
+//! directly over TCP – with built-in TLS over TLS ([`check_tls`]), with the
+//! public host as SNI and without checking the certificate: it is the hub's
+//! own, reached over loopback. Before the first certificate exists the check
+//! fails, as the hub then serves nothing yet.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/healthcheck.rs`).
+//! Taken over from Roedy Mail (`crates/server/src/healthcheck.rs`), plus TLS.
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{Context as _, anyhow, bail};
+use rustls::{
+    ClientConfig, DigitallySignedStruct, SignatureScheme,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{CryptoProvider, ring::default_provider},
+    pki_types::{CertificateDer, ServerName, UnixTime},
+};
 use tokio::{
-    io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
+    io::{
+        AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _,
+        BufReader,
+    },
     net::TcpStream,
 };
+use tokio_rustls::TlsConnector;
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -33,10 +47,91 @@ pub async fn check(listen: SocketAddr, timeout: Duration) -> anyhow::Result<()> 
         let stream = TcpStream::connect(&addrs[..])
             .await
             .with_context(|| format!("no connection to {shown}"))?;
-        request(stream).await
+        let addr = stream.peer_addr()?;
+        request(stream, &addr.to_string()).await
     })
     .await
     .map_err(|_| anyhow!("{shown} does not respond within {timeout:?}"))?
+}
+
+/// As [`check`], over TLS with `host` as SNI and `Host`.
+pub async fn check_tls(listen: SocketAddr, host: &str, timeout: Duration) -> anyhow::Result<()> {
+    let addrs = probe_addrs(listen);
+    let shown = addrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" or ");
+    let provider = Arc::new(default_provider());
+    let config = ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(OwnServer(provider)))
+        .with_no_client_auth();
+    let name = ServerName::try_from(host.to_owned())
+        .map_err(|_| anyhow!("{host} is not a valid server name"))?;
+    tokio::time::timeout(timeout, async {
+        let stream = TcpStream::connect(&addrs[..])
+            .await
+            .with_context(|| format!("no connection to {shown}"))?;
+        let stream = TlsConnector::from(Arc::new(config))
+            .connect(name, stream)
+            .await
+            .with_context(|| format!("no TLS connection to {shown} (no certificate yet?)"))?;
+        request(stream, host).await
+    })
+    .await
+    .map_err(|_| anyhow!("{shown} does not respond within {timeout:?}"))?
+}
+
+/// Accepts the server's certificate unchecked – the healthcheck talks to
+/// its own process over loopback – but checks the handshake signatures.
+#[derive(Debug)]
+struct OwnServer(Arc<CryptoProvider>);
+
+impl ServerCertVerifier for OwnServer {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
 }
 
 /// If the server listens on all addresses, the check runs locally over
@@ -54,11 +149,14 @@ fn probe_addrs(listen: SocketAddr) -> Vec<SocketAddr> {
     }
 }
 
-async fn request(mut stream: TcpStream) -> anyhow::Result<()> {
-    let addr = stream.peer_addr()?;
+async fn request(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    host: &str,
+) -> anyhow::Result<()> {
+    let addr = host;
     stream
         .write_all(
-            format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+            format!("GET /healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
                 .as_bytes(),
         )
         .await?;
