@@ -1,16 +1,21 @@
 #!/bin/sh
 # Smoke test of deploy/compose.yml (ci.yml, locally `just smoke-compose`):
-# validates the compose files, starts Caddy, the hub and the example app with
-# deploy/compose.test.yml and checks the network layout – only Caddy published,
-# the hub reachable through Caddy, its internal listener reachable from the
-# apps' network but not from Caddy, the apps not reachable from Caddy. Needs no
-# setup of the hub.
+# validates the compose files and the production settings (only the hub
+# publishes ports, 443 → 8443 and 80 → 8080, ROEDY_TLS=acme, no trusted
+# proxy), starts the hub and the example app with deploy/compose.test.yml –
+# the hub with the built-in TLS from a self-signed certificate
+# (scripts/test-cert.sh) – and checks HTTPS with that certificate for the
+# public host only, HSTS, the redirect and the ACME path on plain HTTP, the
+# healthcheck over TLS and the network layout: the hub's internal listener
+# reachable from the apps' network only, never published, the apps reachable
+# from the apps' network only. Then a backup and restore round trip with
+# deploy/restore.sh. Needs no setup of the hub; needs curl, jq and openssl.
 #
 #   scripts/compose-smoke.sh
 #
 # Images: ROEDY_HUB_IMAGE (default roedy-hub:dev) and ROEDY_EXAMPLE_IMAGE
 # (default roedy-hub-example:dev), built with `just image` and
-# `just image-example`.
+# `just image-example`. Ports 127.0.0.1:8443 and 127.0.0.1:8080 must be free.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -22,7 +27,12 @@ alpine=$(sed -n 's/^FROM --platform=$BUILDPLATFORM \(alpine:[^ ]*\) AS rootfs$/\
   exit 1
 }
 
-export ROEDY_PUBLIC_URL=http://localhost:8080
+export ROEDY_PUBLIC_URL=https://localhost:8443
+# The test certificate for compose.test.yml, made below.
+certs=$(mktemp -d)
+export ROEDY_TEST_TLS_DIR="$certs"
+remove_certs() { rm -rf "$certs"; }
+trap remove_certs EXIT
 # A project of its own: its volumes and networks never touch a deployment's
 # (project roedy). The fixed container names would collide, so the test
 # refuses to run next to one (see below) instead of replacing it.
@@ -49,56 +59,88 @@ check() { # <description> <command …>
 }
 
 # The production file alone, also with Roedy Mail, and with the override.
+production() { env ROEDY_PUBLIC_URL=https://app.example.com docker compose -f deploy/compose.yml --profile mail "$@"; }
 check "compose.yml is valid" env ROEDY_PUBLIC_URL=https://app.example.com \
   docker compose -f deploy/compose.yml config -q
-check "compose.yml with the profile mail is valid" env ROEDY_PUBLIC_URL=https://app.example.com \
-  docker compose -f deploy/compose.yml --profile mail config -q
+check "compose.yml with the profile mail is valid" production config -q
 check "compose.test.yml is valid" compose config -q
-published=$(env ROEDY_PUBLIC_URL=https://app.example.com docker compose -f deploy/compose.yml --profile mail \
-  config --format json | jq -r '.services | to_entries[] | select(.value.ports) | .key')
-check "only Caddy publishes ports (actual: $published)" [ "$published" = caddy ]
+config=$(production config --format json)
+# Only the hub publishes, TCP 443 → 8443 and 80 → 8080; never 8081.
+# "<service> [<host_ip>:]<published>:<target>/<protocol>" per published port.
+ports_of='.services | to_entries[] | {name: .key, port: (.value.ports // [])[]} |
+  "\(.name) \(if .port.host_ip then .port.host_ip + ":" else "" end)\(.port.published):\(.port.target)/\(.port.protocol // "tcp")"'
+published=$(printf '%s' "$config" | jq -r "$ports_of" | sort | tr '\n' ' ')
+check "only the hub publishes 443:8443 and 80:8080 (actual: $published)" \
+  [ "$published" = "roedy-hub 443:8443/tcp roedy-hub 80:8080/tcp " ]
+setting() { printf '%s' "$config" | jq -r ".services[\"$1\"].environment.$2 // \"\""; }
+check "the hub gets its certificate by ACME (actual: $(setting roedy-hub ROEDY_TLS))" [ "$(setting roedy-hub ROEDY_TLS)" = acme ]
+check "the hub trusts no proxy (actual: $(setting roedy-hub ROEDY_TRUST_PROXY))" [ -z "$(setting roedy-hub ROEDY_TRUST_PROXY)" ]
+check "Mail trusts the hub only (actual: $(setting roedy-mail ROEDY_TRUST_PROXY))" [ "$(setting roedy-mail ROEDY_TRUST_PROXY)" = 1 ]
+check "the hub needs no capability" [ "$(printf '%s' "$config" | jq -c '.services["roedy-hub"].cap_add // []')" = "[]" ]
+test_published=$(compose config --format json | jq -r "$ports_of" | sort | tr '\n' ' ')
+check "the test setup publishes the hub on loopback only (actual: $test_published)" \
+  [ "$test_published" = "roedy-hub 127.0.0.1:8080:8080/tcp roedy-hub 127.0.0.1:8443:8443/tcp " ]
 
-for container in roedy-caddy roedy-hub roedy-hub-example roedy-mail; do
+for container in roedy-hub roedy-hub-example roedy-mail; do
   if docker container inspect "$container" >/dev/null 2>&1 &&
     [ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" != "$project" ]; then
     echo "Smoke test not run: container $container exists outside this test; remove it or run the test elsewhere" >&2
     exit 1
   fi
 done
-trap cleanup EXIT
+trap 'cleanup; remove_certs' EXIT
 cleanup
+scripts/test-cert.sh "$certs" localhost || fail "no test certificate (openssl missing?)"
 compose up -d --wait --wait-timeout 60 || fail "the services did not start"
 
-# Through Caddy at 127.0.0.1:8080.
-url=http://127.0.0.1:8080
+# The healthcheck speaks TLS with the public host as server name.
+check "roedy-hub healthy with TLS" [ "$(docker inspect -f '{{.State.Health.Status}}' roedy-hub)" = healthy ]
+
+# HTTPS at 127.0.0.1:8443 as https://localhost:8443, trusting only the test
+# certificate.
+url=$ROEDY_PUBLIC_URL
+https() { curl --cacert "$certs/cert.pem" "$@"; }
+has() { printf '%s' "$1" | grep -qi -- "$2"; }
 i=0
-until curl -fsS -o /dev/null "$url/readyz" 2>/dev/null; do
+until https -fsS -o /dev/null "$url/readyz" 2>/dev/null; do
   i=$((i + 1))
-  [ "$i" -le 30 ] || fail "no /readyz through Caddy after 30 s"
+  [ "$i" -le 30 ] || fail "no /readyz over HTTPS after 30 s"
   sleep 1
 done
-check "/readyz through Caddy" sh -c "curl -fsS '$url/readyz' | grep -q '\"ok\"'"
-check "the web app through Caddy" sh -c "curl -fsS '$url/login' | grep -q '<html'"
-check "the hub's CSP passes Caddy" sh -c "curl -fsS -D - -o /dev/null '$url/' | grep -qi '^content-security-policy: '"
-check "compressed by Caddy" sh -c "curl -fsS -H 'Accept-Encoding: gzip' -D - -o /dev/null '$url/' | grep -qi '^content-encoding: gzip'"
-check "no internal API through Caddy" sh -c "! curl -s '$url/internal/v1/jwks' | grep -q '\"keys\"'"
+check "/readyz over HTTPS" has "$(https -fsS "$url/readyz" || true)" '"ok"'
+check "the web app over HTTPS" has "$(https -fsS "$url/login" || true)" '<html'
+check "the hub's CSP over HTTPS" has "$(https -fsS -D - -o /dev/null "$url/" || true)" '^content-security-policy: '
+check "HSTS over HTTPS" has "$(https -fsS -D - -o /dev/null "$url/" || true)" '^strict-transport-security: max-age=31536000'
+check "no certificate for another server name" sh -c "! curl -sk -o /dev/null --connect-to other.example.test:443:127.0.0.1:8443 https://other.example.test/healthz"
+check "no internal API over HTTPS" sh -c "! curl -sk '$url/internal/v1/jwks' | grep -q '\"keys\"'"
 
-# Only Caddy is published.
-for container in roedy-hub roedy-hub-example; do
-  check "$container publishes no port" [ -z "$(docker port "$container")" ]
+# Plain HTTP at 127.0.0.1:8080: only the redirect and ACME HTTP-01.
+for target in "/" "/login?next=%2Fadmin" "/api/v1/session" "/readyz" "/example/healthz"; do
+  actual=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://127.0.0.1:8080$target" || true)
+  check "HTTP $target → 308 $url$target (actual: $actual)" [ "$actual" = "308 $url$target" ]
 done
+check "HTTP: the ACME challenge path is answered, not redirected" \
+  [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/.well-known/acme-challenge/smoke-test-token)" = 404 ]
 
-# Caddy (network edge) reaches the hub's public port, but neither its internal
-# listener nor the apps.
-check "Caddy reaches the hub's public port" docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub:8080/healthz
-check "Caddy does not reach the internal listener" sh -c "! docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub:8081/internal/v1/jwks"
+# Published: the hub's 8443 and 8080, nothing else – never its internal 8081.
+ports=$(docker port roedy-hub | sort | tr '\n' ' ')
+check "the hub publishes 8080 and 8443 only (actual: $ports)" \
+  [ "$ports" = "8080/tcp -> 127.0.0.1:8080 8443/tcp -> 127.0.0.1:8443 " ]
+check "roedy-hub-example publishes no port" [ -z "$(docker port roedy-hub-example)" ]
+
+# The apps' network reaches the example app and the hub's internal listener; a
+# container outside it reaches neither, not even at the hub's address there.
+hub_ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"${project}_apps\").IPAddress}}" roedy-hub)
+check "the hub has its fixed address on the apps' network (actual: $hub_ip)" [ "$hub_ip" = 172.30.240.2 ]
 check "the apps' network reaches the example app" \
   docker run --rm --network "${project}_apps" "$alpine" wget -q -T 5 -O /dev/null http://roedy-hub-example:8080/example/healthz
-check "Caddy does not reach the example app" sh -c "! docker exec roedy-caddy wget -q -T 5 -O /dev/null http://roedy-hub-example:8080/example/healthz"
-
-# An app on the network apps reaches the internal listener.
 check "the apps' network reaches the internal listener" sh -c \
   "docker run --rm --network '${project}_apps' '$alpine' wget -q -T 5 -O - http://roedy-hub:8081/internal/v1/jwks | grep -q '\"keys\"'"
+check "outside the apps' network the internal listener is unreachable" sh -c \
+  "! docker run --rm '$alpine' wget -q -T 5 -O /dev/null http://$hub_ip:8081/internal/v1/jwks"
+example_ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"${project}_apps\").IPAddress}}" roedy-hub-example)
+check "outside the apps' network the example app is unreachable" sh -c \
+  "! docker run --rm '$alpine' wget -q -T 5 -O /dev/null http://$example_ip:8080/example/healthz"
 check "the example app is running" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub-example)" = true ]
 
 # Backup and restore as in docs/ops.md, with deploy/restore.sh: the setup token

@@ -1,16 +1,19 @@
-# Roedy Hub with Caddy (and Roedy Mail) under one origin – a production setup
+# Roedy Hub (and Roedy Mail) under one origin – a production setup
 # (docs/ops.md › Installation; taken over from Roedy Mail's deploy/compose.yml,
-# ../mail). Only Caddy is published. The containers talk over two private
-# networks:
+# ../mail). No proxy in front: the hub terminates TLS itself and gets its
+# certificate from Let's Encrypt with its built-in ACME client (ROEDY_TLS=acme,
+# docs/ops.md › TLS). Only the hub publishes ports:
 #
-#   edge  Caddy ⇄ hub's public port 8080
-#   apps  hub ⇄ apps (their port 8080, the hub's internal listener 8081)
+#   443 → 8443  HTTPS: web app, API, apps under /<slug>/, TLS-ALPN-01
+#   80  → 8080  HTTP: ACME HTTP-01 and a 308 to HTTPS, nothing else
 #
-# The hub's internal listener binds to the hub's fixed address on `apps` only:
-# the apps reach it, Caddy (only on `edge`) does not, and nothing publishes it.
-# The apps are not on `edge`, so only the hub reaches them.
+# The hub and the apps share the private network `apps`: the hub reaches the
+# apps at their port 8080, the apps reach the hub's internal listener (8081),
+# which binds to the hub's fixed address on `apps` and is never published. The
+# apps publish nothing, so only the hub reaches them.
 #
-#   cp .env.example .env && chmod 600 .env     # then set ROEDY_PUBLIC_URL
+#   cp .env.example .env && chmod 600 .env     # then set ROEDY_PUBLIC_URL and
+#                                              # ROEDY_ACME_AGREE_TOS=true
 #   docker compose up -d
 #   docker compose logs roedy-hub | grep Setup-Token
 #
@@ -22,36 +25,6 @@
 name: roedy
 
 services:
-  caddy:
-    # Caddy 2 follows its patches and minor versions; pin e.g. CADDY_IMAGE_TAG=2.10
-    # for predictable updates.
-    image: caddy:${CADDY_IMAGE_TAG:-2}
-    container_name: roedy-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp" # HTTP/3
-    environment:
-      # Site address in deploy/Caddyfile: the hub's public address.
-      CADDY_SITE: ${CADDY_SITE:-${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL in .env, e.g. https://app.example.com}}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data # certificates: keep them, or Let's Encrypt's limits apply
-      - caddy-config:/config
-    networks:
-      - edge
-    # Caddy runs as root in its image; it only needs to bind ports 80 and 443.
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    security_opt:
-      - no-new-privileges:true
-    depends_on:
-      roedy-hub:
-        condition: service_healthy
-
   roedy-hub:
     # For predictable updates pin a version, e.g. ROEDY_IMAGE_TAG=0.1 in .env
     # (docs/ops.md › Updates).
@@ -68,23 +41,39 @@ services:
       ROEDY_PUBLIC_URL: ${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL in .env, e.g. https://app.example.com}
       # The internal listener for the apps, only on the `apps` network.
       ROEDY_INTERNAL_LISTEN: ${ROEDY_HUB_APPS_IP:-172.30.240.2}:8081
-      # Caddy appends X-Forwarded-For; only when the variable is missing does
-      # true apply, set to empty means off. The apps behind the hub use this
-      # value plus one.
-      ROEDY_TRUST_PROXY: ${ROEDY_TRUST_PROXY-true}
+      # Built-in TLS (docs/ops.md › TLS): acme by default; files with a
+      # certificate of your own (mount it read-only and set the two paths);
+      # off only behind a proxy of your own (then adjust `ports`).
+      ROEDY_TLS: ${ROEDY_TLS:-acme}
+      # Required with acme: true accepts the CA's terms of service. Without
+      # it the hub refuses to start and says so.
+      ROEDY_ACME_AGREE_TOS: ${ROEDY_ACME_AGREE_TOS:-}
+      ROEDY_ACME_EMAIL: ${ROEDY_ACME_EMAIL:-}
+      # Empty: Let's Encrypt production. Its staging directory for a first try.
+      ROEDY_ACME_DIRECTORY: ${ROEDY_ACME_DIRECTORY:-}
+      ROEDY_TLS_CERT_FILE: ${ROEDY_TLS_CERT_FILE:-}
+      ROEDY_TLS_KEY_FILE: ${ROEDY_TLS_KEY_FILE:-}
+      # Off: the hub is exposed directly and takes the client IP from the
+      # connection. Only behind a proxy of your own (docs/ops.md › Behind your
+      # own proxy); the apps behind the hub use this value plus one.
+      ROEDY_TRUST_PROXY: ${ROEDY_TRUST_PROXY:-}
       ROEDY_LOG: ${ROEDY_LOG:-}
       ROEDY_LOG_FORMAT: ${ROEDY_LOG_FORMAT:-}
       # If unset, the first start creates /data/secret.key (docs/ops.md ›
       # Instance key); ROEDY_SECRET_KEY_FILE e.g. for a Docker secret.
       ROEDY_SECRET_KEY: ${ROEDY_SECRET_KEY:-}
       ROEDY_SECRET_KEY_FILE: ${ROEDY_SECRET_KEY_FILE:-}
+    # HTTPS and HTTP, TCP only (the hub speaks no HTTP/3). Unprivileged ports
+    # in the container, so no capability is needed; never publish 8081.
+    ports:
+      - "443:8443"
+      - "80:8080"
     volumes:
       # Named volume: Docker takes owner 65532 from the image, so it only fits
       # the default ROEDY_UID/ROEDY_GID. With a bind mount the directory must
       # belong to ROEDY_UID:ROEDY_GID (default 65532:65532).
       - roedy-hub-data:/data
     networks:
-      edge: {}
       apps:
         ipv4_address: ${ROEDY_HUB_APPS_IP:-172.30.240.2}
     # The image needs no privileges: only /data and /tmp are writable.
@@ -99,13 +88,15 @@ services:
     stop_grace_period: 10s
     # Same check and timings as the image's HEALTHCHECK: `roedy-hub
     # healthcheck` sends GET /healthz to the port of ROEDY_LISTEN over
-    # loopback and exits 0 on 200 (docs/ops.md › Health). Exec form: the image
-    # has no shell and no curl.
+    # loopback, with TLS on over TLS, and exits 0 on 200 (docs/ops.md ›
+    # Health). It fails until the first certificate exists, usually within a
+    # minute: hence the start period. Exec form: the image has no shell and no
+    # curl. The image's start interval (1 s) applies within the start period.
     healthcheck:
       test: ["CMD", "roedy-hub", "healthcheck"]
       interval: 30s
       timeout: 5s
-      start_period: 10s
+      start_period: 3m
       retries: 3
 
   # Roedy Mail behind the hub at <ROEDY_PUBLIC_URL>/mail, with the profile
@@ -124,8 +115,8 @@ services:
     environment:
       # The app's public address is the hub's plus its slug (contract § 1).
       ROEDY_PUBLIC_URL: ${ROEDY_PUBLIC_URL:?set ROEDY_PUBLIC_URL in .env, e.g. https://app.example.com}/mail
-      # Caddy and the hub in front: the hub's ROEDY_TRUST_PROXY plus one.
-      ROEDY_TRUST_PROXY: ${ROEDY_MAIL_TRUST_PROXY:-2}
+      # The hub in front: the hub's ROEDY_TRUST_PROXY plus one.
+      ROEDY_TRUST_PROXY: ${ROEDY_MAIL_TRUST_PROXY:-1}
       ROEDY_HUB_INTERNAL_URL: http://roedy-hub:8081
       # Code from Administration › Apps, valid for 15 minutes; only needed
       # until the app is paired.
@@ -158,8 +149,8 @@ services:
         condition: service_healthy
 
 networks:
-  edge: {}
-  # Not `internal`: apps such as Mail need outgoing connections (Stalwart).
+  # Not `internal`: the hub publishes its ports on it and apps such as Mail
+  # need outgoing connections (Stalwart).
   # Fixed subnet for the hub's fixed address; change both in .env if it
   # collides with a network of the host.
   apps:
@@ -168,7 +159,5 @@ networks:
         - subnet: ${ROEDY_APPS_SUBNET:-172.30.240.0/24}
 
 volumes:
-  caddy-data:
-  caddy-config:
   roedy-hub-data:
   roedy-mail-data:

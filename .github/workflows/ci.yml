@@ -146,10 +146,10 @@ jobs:
         run: pnpm licenses:server
 
   # Container image and its budgets (docs/plan.md): the amd64 image from
-  # `just dist`, ≤ 25 MB, and the smoke test with idle memory ≤ 40 MB
-  # (scripts/image-smoke.sh), then deploy/compose.yml with Caddy and the
-  # example app (scripts/compose-smoke.sh). The release (release.yml) builds
-  # the same image for both platforms.
+  # `just dist`, ≤ 25 MB, and the smoke test with idle memory ≤ 40 MB with TLS
+  # off and on (scripts/image-smoke.sh), then deploy/compose.yml with the
+  # built-in TLS and the example app (scripts/compose-smoke.sh). The release
+  # (release.yml) builds the same image for both platforms.
   image:
     name: Image
     runs-on: ubuntu-24.04

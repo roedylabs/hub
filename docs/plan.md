@@ -71,7 +71,7 @@ Each can follow later; v1 stays small.
 | `apps/web` | `@roedy/hub-web`: SvelteKit SPA (home page, sign-in, setup, account, administration) |
 | `packages/tokens` | Copy of Roedy Mail's design tokens |
 | `docs/` | `app-contract.md`, `ops.md`, `plan.md`, setup guides |
-| `deploy/` | `compose.yml`, `.env.example`, `Caddyfile` (until 6.3, then without: the hub terminates TLS itself) |
+| `deploy/` | `compose.yml` (the hub publishes 443 and 80 itself, no proxy), `.env.example`, `restore.sh`, the test override `compose.test.yml` |
 | `scripts/` | Hooks, E2E runner, image smoke test, pin tests |
 
 Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
@@ -631,9 +631,32 @@ checks pass in every PR; every PR has tests for what it adds.
       rustls client trusting the fake CA. Open: an admin view of the
       certificate's state (the audit log and the log have it for now); a CI
       job against Pebble.
-   3. [ ] **Deploy without Caddy** – compose publishes the hub's 443 and 80
+   3. [x] **Deploy without Caddy** – compose publishes the hub's 443 and 80
       (`443:8443`, `80:8080`) and drops Caddy and `deploy/Caddyfile`,
       `ROEDY_TLS=acme` in `.env.example`, ops docs, smoke tests with TLS.
+      Done: `deploy/compose.yml` has no Caddy, no `Caddyfile` and no network
+      `edge`; the hub publishes `443:8443` and `80:8080` (TCP) with
+      `ROEDY_TLS=acme` (`ROEDY_ACME_AGREE_TOS`, `ROEDY_ACME_EMAIL`,
+      `ROEDY_ACME_DIRECTORY` and the `files` settings from `.env`),
+      `ROEDY_TRUST_PROXY` off, Mail's `1`, no capability, the internal
+      listener on its fixed address in `apps` and never published; health
+      check start period 3 minutes (image and Compose) for the first
+      certificate. The `Dockerfile` exposes `8080 8443`.
+      `deploy/compose.test.yml` runs the hub with `ROEDY_TLS=files` and a
+      self-signed certificate for `localhost` from `scripts/test-cert.sh` on
+      `127.0.0.1:8443`/`8080` (`ROEDY_PUBLIC_URL=https://localhost:8443`,
+      `ROEDY_TEST_TLS_DIR`): no CA needed, offline, and still HTTPS, SNI,
+      redirect, HSTS and the healthcheck over TLS end to end.
+      `scripts/image-smoke.sh` runs a second container with TLS from files
+      (certificate and SNI, HSTS, `308` for every path on 8080, the ACME path,
+      no web app or API on plain HTTP, healthcheck, privileges, idle RSS with
+      TLS); `scripts/compose-smoke.sh` checks the production settings
+      (only the hub publishes 443/80, `acme`, no trusted proxy), HTTPS and the
+      redirect through the test setup and that only the apps' network reaches
+      the internal listener and the apps. `docs/ops.md`: installation without
+      Caddy, DNS, firewall, the TOS opt-in, staging, migrating from Caddy,
+      behind your own proxy. Open: the hub does not compress responses
+      (Caddy did); a CI job against Pebble.
    4. [ ] **End-to-end** – Playwright suite with axe against hub + example
       app on the Compose test setup (setup, sign-in, pairing, opening the app,
       SSE and WebSocket through the browser, sign-out, no access, light and
