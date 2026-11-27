@@ -341,6 +341,9 @@ export class AppPage {
   readonly #save = serial();
   /** Counts `setDefault` calls: only the latest one's response or failure shows. */
   #defaultGen = 0;
+  /** Default saves not settled yet; a reload waits for them (`#reload`). */
+  #saving = 0;
+  #reloadAfterSaves = false;
 
   constructor(slug: string, ctx: AppPageContext) {
     this.#slug = slug;
@@ -408,7 +411,13 @@ export class AppPage {
     }
     ui.toasts.error(failText(error, text));
     if (this.#disposed || lostAccess(error)) return;
-    void this.load();
+    this.#reload();
+  }
+
+  /** Loads the app again, once the queued default saves have settled: it then reads the default the server ended with. */
+  #reload(): void {
+    if (this.#saving > 0) this.#reloadAfterSaves = true;
+    else void this.load();
   }
 
   async newCode(): Promise<void> {
@@ -444,17 +453,24 @@ export class AppPage {
     this.#seq++;
     this.app = { ...app, access_default: value };
     const current = () => !this.#disposed && gen === this.#defaultGen && !!this.app;
-    void this.#save(() => api<{ app: AdminApp }>('PATCH', `admin/apps/${this.#slug}`, { access_default: value })).then(
-      (res) => {
-        if (current()) this.app = res.app;
-        ui.toasts.show(m.apps_default_saved());
-      },
-      (error: unknown) => {
-        if (current() && this.app) this.app = { ...this.app, access_default: before };
-        // Every failure loads the app again: the server's default then shows.
-        this.#failed(error, m.apps_default_failed());
-      },
-    );
+    this.#saving++;
+    void this.#save(() => api<{ app: AdminApp }>('PATCH', `admin/apps/${this.#slug}`, { access_default: value }))
+      .then(
+        (res) => {
+          if (current()) this.app = res.app;
+          ui.toasts.show(m.apps_default_saved());
+        },
+        (error: unknown) => {
+          if (current() && this.app) this.app = { ...this.app, access_default: before };
+          // Every failure loads the app again (after the queued saves): the server's default then shows.
+          this.#failed(error, m.apps_default_failed());
+        },
+      )
+      .finally(() => {
+        if (--this.#saving > 0 || !this.#reloadAfterSaves) return;
+        this.#reloadAfterSaves = false;
+        if (!this.#disposed) void this.load();
+      });
   }
 
   /** "Remove app" after confirmation; then back to the list. */

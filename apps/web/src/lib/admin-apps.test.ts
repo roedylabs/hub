@@ -296,6 +296,35 @@ describe('Administration › Apps › an app', () => {
     expect(p.app?.access_default).toBe('selected');
   });
 
+  it('reloads after a failed default save only once the queued saves settled', async () => {
+    let first: (a: { status: number; body: unknown }) => void = () => {};
+    let last: (a: { body: unknown }) => void = () => {};
+    const { p, calls } = await app({
+      'GET admin/apps/mail': [
+        { body: { app: pairedApp() } },
+        { body: { app: pairedApp({ access_default: 'selected' }) } },
+      ],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [
+        () => new Promise((r) => (first = r)),
+        { body: { app: pairedApp({ access_default: 'all' }) } },
+        () => new Promise((r) => (last = r)),
+      ],
+    });
+    const gets = () => calls.filter((c) => c.method === 'GET' && c.path === 'admin/apps/mail').length;
+    p.setDefault('selected');
+    p.setDefault('all');
+    p.setDefault('selected');
+    first({ status: 500, body: { error: 'internal' } });
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(3));
+    // The last save is still on its way: no reload yet.
+    expect(gets()).toBe(1);
+    last({ body: { app: pairedApp({ access_default: 'selected' }) } });
+    await vi.waitFor(() => expect(gets()).toBe(2));
+    await tick();
+    expect(p.app?.access_default).toBe('selected');
+  });
+
   it('drops a load that started before a default change', async () => {
     let late: (a: { body: unknown }) => void = () => {};
     const { p } = await app({
