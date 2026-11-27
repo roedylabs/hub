@@ -55,9 +55,10 @@ updates:
         update-types: ["minor", "patch"]
 
   - package-ecosystem: docker
-    # Dockerfile: base image of the image's file system; .github/buildkit/:
-    # BuildKit image of ci.yml and release.yml.
-    directories: ["/", "/.github/buildkit"]
+    # Dockerfile: base image of the image's file system; deploy/: the example
+    # app's image for the Compose tests; .github/buildkit/: BuildKit image of
+    # ci.yml and release.yml.
+    directories: ["/", "/deploy", "/.github/buildkit"]
     schedule:
       interval: weekly
     # Room for separate major-update PRs next to the grouped minor/patch PR.
