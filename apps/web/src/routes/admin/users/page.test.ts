@@ -4,6 +4,7 @@ import { createEvent, fireEvent, render, within } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { ui } from '#lib/state/ui.svelte.ts';
+import { pairedApp, pendingApp } from '#lib/test/apps.ts';
 import { renderSignedIn, resetSignedIn, setPhone, TEST_USER, type ApiRoutes } from '#lib/test/signed-in.ts';
 import type { ListedUser } from '#lib/users.svelte.ts';
 import Page from './+page.svelte';
@@ -364,5 +365,87 @@ describe('Users page', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(ui.pick).toBeNull();
     expect(ui.toast).toBeNull();
+  });
+});
+
+describe('Users page › app access', () => {
+  const APPS = { body: { apps: [pairedApp(), pendingApp()] } };
+  const withMail = USERS.map((u) => (u.id === 'u1' ? { ...u, apps: { mail: 'admin' } } : u));
+
+  it('changes access per app in the expanded row with the radio group', async () => {
+    const view = renderSignedIn(Page, {
+      path: '/admin/users',
+      api: {
+        'GET users': many(withMail),
+        'GET admin/system-mail': [{ body: { status: 'ok' } }],
+        'GET admin/apps': [APPS, APPS],
+        'GET users/u1': [{ body: { user: { ...withMail[1], sessions: [], recovery_codes: null } } }],
+        'DELETE users/u1/apps/mail': [{ body: { user: { ...withMail[1], apps: {} } } }],
+      },
+    });
+    await fireEvent.click(await view.findByRole('button', { name: /^Alice Brown/, expanded: false }));
+    const group = await view.findByRole('radiogroup', { name: 'Access to Mail' });
+    expect(
+      within(group)
+        .getAllByRole('radio')
+        .map((r) => [r.textContent?.trim(), r.getAttribute('aria-checked')]),
+    ).toEqual([
+      ['No access', 'false'],
+      ['User(default)', 'false'],
+      ['Administrator', 'true'],
+    ]);
+    // The pending app offers no access.
+    expect(view.queryByRole('radiogroup', { name: 'Access to wiki' })).toBeNull();
+    expect(within(group).getByRole('radio', { name: /^User/ })).toHaveAccessibleDescription('Reads and sends email');
+    await fireEvent.click(within(group).getByRole('radio', { name: 'No access' }));
+    expect(within(group).getByRole('radio', { name: 'No access' })).toHaveAttribute('aria-checked', 'true');
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Access to Mail removed'));
+  });
+
+  it('shows the access per app in the invitation form, with errors at the app', async () => {
+    const view = renderSignedIn(Page, {
+      path: '/admin/users',
+      api: {
+        'GET users': many(USERS),
+        'GET admin/system-mail': [{ body: { status: 'ok' } }],
+        'GET admin/apps': [APPS, APPS],
+        'POST invites': [{ status: 422, body: { error: 'invalid', fields: { 'apps.mail': { code: 'app_pending' } } } }],
+      },
+    });
+    await fireEvent.click(await view.findByRole('button', { name: 'Invite' }));
+    const group = await view.findByRole('radiogroup', { name: 'Access to Mail' });
+    expect(within(group).getByRole('radio', { name: /^User/ })).toHaveAttribute('aria-checked', 'true');
+    await fireEvent.click(within(group).getByRole('radio', { name: 'Administrator' }));
+    await fireEvent.input(view.getByLabelText('Email addresses'), { target: { value: 'tim@example.com' } });
+    await fireEvent.click(view.getByRole('button', { name: 'Send invitation' }));
+    const err = await view.findByText('This app isn’t paired yet.');
+    expect(err).toHaveAttribute('role', 'alert');
+    expect(view.getByRole('radiogroup', { name: 'Access to Mail' })).toHaveAccessibleDescription(
+      'This app isn’t paired yet.',
+    );
+  });
+
+  it('opens "App access" for the selection and applies it', async () => {
+    const view = renderSignedIn(Page, {
+      path: '/admin/users',
+      api: {
+        'GET users': many(USERS),
+        'GET admin/system-mail': [{ body: { status: 'ok' } }],
+        'GET admin/apps': [APPS],
+        'POST users/bulk': [{ body: { changed: ['u3'] } }],
+      },
+    });
+    await fireEvent.click(await view.findByRole('checkbox', { name: 'Select Sophie Taylor' }));
+    const toggle = await view.findByRole('button', { name: 'App access' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await fireEvent.click(toggle);
+    const panel = view.getByRole('group', { name: 'App access for 1 person' });
+    const group = within(panel).getByRole('radiogroup', { name: 'Access to Mail' });
+    expect(within(group).getByRole('radio', { name: 'Unchanged' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(panel).getByRole('button', { name: 'Apply' })).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(within(group).getByRole('radio', { name: /^User/ }));
+    await fireEvent.click(within(panel).getByRole('button', { name: 'Apply' }));
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('App access changed for Sophie Taylor'));
+    expect(view.queryByRole('group', { name: 'App access for 1 person' })).toBeNull();
   });
 });

@@ -22,6 +22,7 @@ export type PanelRoute =
   | '/account/appearance'
   | '/account/language'
   | '/admin/users'
+  | '/admin/apps'
   | '/admin/organization'
   | '/admin/branding'
   | '/admin/email'
@@ -72,13 +73,14 @@ function accountGroups(): PanelGroup[] {
   ];
 }
 
-/** Administration: people and the organization first, then "System". */
+/** Administration: people, apps and the organization first, then "System". */
 function adminGroups(): PanelGroup[] {
   return [
     {
       label: null,
       pages: [
         page('users', '/admin/users', m.nav_users(), 'ti-users', m.nav_users_desc()),
+        page('apps', '/admin/apps', m.nav_apps(), 'ti-apps', m.nav_apps_desc()),
         page('organization', '/admin/organization', m.nav_organisation(), 'ti-building', m.nav_organisation_desc()),
         page('branding', '/admin/branding', m.nav_branding(), 'ti-brush', m.nav_branding_desc()),
       ],

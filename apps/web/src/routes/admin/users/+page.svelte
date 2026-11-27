@@ -17,6 +17,8 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { tooltip } from '#lib/actions/tooltip.ts';
+  import AccessPicker from '#lib/components/AccessPicker.svelte';
+  import AppIcon from '#lib/components/AppIcon.svelte';
   import FirstLoad from '#lib/components/FirstLoad.svelte';
   import Icon from '#lib/components/Icon.svelte';
   import { m } from '#lib/paraglide/messages.js';
@@ -27,6 +29,8 @@
     rowsValues,
     UsersPage,
     usersValues,
+    type AccessRow,
+    type BulkAccessRow,
     type DetailValues,
     type KeyInput,
     type RoleCard,
@@ -97,6 +101,31 @@
           <span class="role-desc">{r.desc}</span>
         </span>
       </button>
+    {/each}
+  </div>
+{/snippet}
+
+<!-- Access per app: icon and name, then "No access" and the roles; in the bulk action "Unchanged" first. -->
+{#snippet accessList(rows: (AccessRow | BulkAccessRow)[], key: string)}
+  <div class="access-list" class:mobile={isMobile}>
+    {#each rows as a (a.slug)}
+      <div class="access-row">
+        <span class="access-app"><AppIcon src={a.icon} size={30} /><span class="ell">{a.name}</span></span>
+        <AccessPicker
+          label={a.label}
+          options={a.options}
+          onPick={a.pick}
+          unchanged={'unchanged' in a ? a.unchanged : null}
+          invalid={!!a.err}
+          describedby={a.err ? `${uid}-${key}-${a.slug}-err` : undefined}
+          {isMobile}
+        />
+        {#if a.err}
+          <div role="alert" class="access-err" id="{uid}-{key}-{a.slug}-err">
+            <Icon name="ti-alert-circle" />{a.err}
+          </div>
+        {/if}
+      </div>
     {/each}
   </div>
 {/snippet}
@@ -234,6 +263,11 @@
         />
         {#if !isMobile}<div class="field-label">{m.users_invite_role()}</div>{/if}
         {@render roleCards(v.invRoles, 'form-roles')}
+        {#if v.invApps.length}
+          <div class="field-label">{m.users_invite_access()}</div>
+          <div class="access-hint">{m.users_invite_access_hint()}</div>
+          {@render accessList(v.invApps, 'inv')}
+        {/if}
         {#if isMobile}
           {#if v.hasInvErr}<div role="alert" class="inv-err">{v.invErr}</div>{/if}
           <div class="inv-actions">
@@ -310,6 +344,16 @@
           >
             <Icon name="ti-user-cog" />
           </button>
+          {#if v.uCanBulkAccess}
+            <button
+              class="sel-icon"
+              onclick={v.uBulkAccessToggle}
+              aria-label={m.users_access_bulk()}
+              aria-expanded={v.uBulkAccessOpen}
+            >
+              <Icon name="ti-apps" />
+            </button>
+          {/if}
           {#if v.uBulkCanLock}
             <button class="sel-icon" onclick={v.uBulkLock} aria-label={m.users_lock()}><Icon name="ti-lock" /></button>
           {/if}
@@ -375,6 +419,11 @@
               </div>
             {/if}
           </div>
+          {#if v.uCanBulkAccess}
+            <button class="sel-btn" onclick={v.uBulkAccessToggle} aria-expanded={v.uBulkAccessOpen}>
+              <Icon name="ti-apps" />{m.users_access_bulk()}
+            </button>
+          {/if}
           {#if v.uBulkCanLock}
             <button class="sel-btn" onclick={v.uBulkLock}><Icon name="ti-lock" />{m.users_lock()}</button>
           {/if}
@@ -384,6 +433,20 @@
           <button class="sel-btn" onclick={v.uBulkRemove}><Icon name="ti-user-minus" />{m.users_remove()}</button>
         {/if}
       </div>
+      {#if v.uBulkAccess}
+        {@const b = v.uBulkAccess}
+        <div class="invite bulk-access" class:mobile={isMobile} role="group" aria-labelledby="{uid}-bulk-access">
+          <div class="invite-title" id="{uid}-bulk-access">{b.title}</div>
+          <div class="invite-hint">{m.users_access_bulk_hint()}</div>
+          {@render accessList(b.rows, 'bulk')}
+          <div class="inv-actions end">
+            <button class="inv-cancel" onclick={b.cancel}>{m.users_invite_cancel()}</button>
+            <button class="inv-send" class:ok={b.canApply} aria-disabled={!b.canApply} onclick={b.apply}>
+              {#if b.busy}<Icon name="ti-loader-2" />{:else}<Icon name="ti-check" />{/if}{m.users_access_apply()}
+            </button>
+          </div>
+        </div>
+      {/if}
     {/if}
 
     <div class="list" class:mobile={isMobile}>
@@ -513,6 +576,10 @@
                 {#if isMobile}
                   <button class="act wide" onclick={u.editMe}><Icon name="ti-user-edit" />{m.users_edit_me()}</button>
                 {/if}
+              {/if}
+              {#if u.access.length}
+                <div class="detail-label access-label">{m.users_access()}</div>
+                {@render accessList(u.access, u.id)}
               {/if}
               {#if u.details}{@render facts(u.details)}{/if}
               {#if u.hasValid}
@@ -1218,6 +1285,68 @@
 
   .mobile .role-desc {
     font-size: 13px;
+  }
+
+  /* App access: per app its icon and name, then the choices */
+  .access-hint {
+    margin-top: 4px;
+    font-size: 13.5px;
+    color: var(--fg);
+  }
+
+  .access-list {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .access-row {
+    display: flex;
+    align-items: center;
+    gap: 10px 16px;
+    flex-wrap: wrap;
+  }
+
+  .access-list.mobile .access-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .access-app {
+    flex: 0 0 180px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14.5px;
+    font-weight: 700;
+  }
+
+  .access-list.mobile .access-app {
+    flex: none;
+  }
+
+  .access-err {
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--danger);
+  }
+
+  .access-label {
+    margin-top: 18px;
+  }
+
+  .bulk-access .access-list {
+    margin-top: 14px;
+  }
+
+  .inv-actions.end {
+    justify-content: flex-end;
   }
 
   .inv-actions {

@@ -2,7 +2,8 @@
  * Error pages and the text of the error toast when an action fails.
  *
  * The error pages cover the router's own (404 for an unknown address, 500)
- * and the gateway's (docs/app-contract.md › Errors): 403 `no_app_access`,
+ * and the gateway's (docs/app-contract.md › Errors): 403 `no_app_access`
+ * (its own text: no access to the app), 403 `origin_mismatch`,
  * 502 `app_unreachable`, 503 `app_not_ready`, 504 `app_timeout`, and
  * "offline" when the hub itself does not answer.
  *
@@ -37,6 +38,14 @@ export const ERRS = {
     kicker: m.error_403_kicker,
     title: m.error_403_title,
     text: m.error_403_text,
+    retry: false,
+  },
+  /** 403 `no_app_access` of the gateway: signed in, but without access to the app. */
+  app: {
+    icon: 'ti-lock',
+    kicker: m.error_403_kicker,
+    title: m.error_app_title,
+    text: m.error_app_text,
     retry: false,
   },
   '500': { icon: 'ti-bug', kicker: m.error_500_kicker, title: m.error_500_title, text: m.error_500_text, retry: true },
@@ -74,7 +83,7 @@ export type ErrorCode = keyof typeof ERRS;
 
 /** The gateway's error codes (docs/app-contract.md › Errors) and their pages. */
 const GATEWAY: Readonly<Record<string, ErrorCode>> = {
-  no_app_access: '403',
+  no_app_access: 'app',
   origin_mismatch: '403',
   not_found: '404',
   app_unreachable: '502',

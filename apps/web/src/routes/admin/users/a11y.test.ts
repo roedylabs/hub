@@ -2,12 +2,14 @@
  * axe-core over Administration › Users in every state (list, invitation form
  * with marked addresses, result notice, selection with the role list,
  * expanded user with details, expired invitation, no system mail, empty
- * search, skeleton, failure card), desktop and mobile, light and dark. The
+ * search, skeleton, failure card, app access in the row, the invitation form
+ * and the bulk action), desktop and mobile, light and dark. The
  * colour contrast is left to the browser audit (`scripts/a11y/scenarios/users.mjs`).
  */
 import { fireEvent, type RenderResult } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
+import { offlineApp, pairedApp, pendingApp } from '#lib/test/apps.ts';
 import { violations } from '#lib/test/axe.ts';
 import { renderSignedIn, resetSignedIn, setPhone, TEST_USER, type ApiRoutes } from '#lib/test/signed-in.ts';
 import type { ListedUser } from '#lib/users.svelte.ts';
@@ -85,7 +87,51 @@ const expand = (name: RegExp) => async (view: View) => {
 
 type Case = [name: string, show: () => Promise<View>];
 
+const APPS = () => ({
+  'GET admin/apps': [{ body: { apps: [pairedApp(), pendingApp(), offlineApp()] } }],
+});
+const accessCase = (phone: boolean) => () =>
+  users({
+    phone,
+    routes: APPS(),
+    then: async (view) => {
+      await expand(/Alice Brown/)(view);
+      await view.findByRole('radiogroup', { name: 'Access to Mail' });
+    },
+  });
+const bulkCase = (phone: boolean) => () =>
+  users({
+    phone,
+    routes: APPS(),
+    then: async (view) => {
+      await fireEvent.click(view.getByRole('checkbox', { name: 'Select Sophie Taylor' }));
+      await fireEvent.click(await view.findByRole('button', { name: 'App access' }));
+      await view.findByRole('group', { name: 'App access for 1 person' });
+    },
+  });
+
 const CASES: Case[] = [
+  ['expanded user with app access (desktop)', accessCase(false)],
+  ['expanded user with app access (mobile)', accessCase(true)],
+  ['bulk app access (desktop)', bulkCase(false)],
+  ['bulk app access (mobile)', bulkCase(true)],
+  [
+    'invitation form with app access error (desktop)',
+    () =>
+      users({
+        routes: {
+          ...APPS(),
+          'POST invites': [{ status: 422, body: { error: 'invalid', fields: { 'apps.mail': { code: 'invalid' } } } }],
+        },
+        then: async (view) => {
+          await fireEvent.click(view.getByRole('button', { name: 'Invite' }));
+          await view.findByRole('radiogroup', { name: 'Access to Mail' });
+          await fireEvent.input(view.getByLabelText('Email addresses'), { target: { value: 'tim@example.com' } });
+          await fireEvent.click(view.getByRole('button', { name: 'Send invitation' }));
+          await view.findByText('This role no longer exists in the app. Choose another one.');
+        },
+      }),
+  ],
   ['list (desktop)', () => users()],
   ['list (mobile)', () => users({ phone: true })],
   [

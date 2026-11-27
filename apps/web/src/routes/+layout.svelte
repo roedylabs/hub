@@ -9,7 +9,9 @@
   Settings (`/account/…`) and administration (`/admin/…`) get the shell: on
   the desktop the header, the area's navigation and the content card; on
   mobile a "Back" header and a panel with the area's list (on `/account` and
-  `/admin`) or the page. On the desktop `/account` and `/admin` lead on to
+  `/admin`) or the page. The home page gets the shell's header (brand,
+  administration, settings, account menu; on mobile brand and avatar) above
+  the page, without navigation and card. On the desktop `/account` and `/admin` lead on to
   their first page. A user who is no administrator sees "Access denied" in
   place of an administration page. Exactly one `main` per route: the shell's,
   otherwise the page's own (`#lib/landmark.ts`).
@@ -50,7 +52,7 @@
   import { leaveTo } from '#lib/navigate.ts';
   import { isReauth, loginHref, nextOf } from '#lib/next.ts';
   import { m } from '#lib/paraglide/messages.js';
-  import { pageTitle, redirectFor } from '#lib/routes.ts';
+  import { HOME_PATH, pageTitle, redirectFor } from '#lib/routes.ts';
   import {
     FIRST_PAGE,
     SECTION_HOME,
@@ -186,8 +188,10 @@
   const forbidden = $derived(shell && section === 'admin' && !session.isAdmin);
   /** Mobile: the area's list on its start (`/account`, `/admin`) instead of a page. */
   const panelList = $derived(shell && !forbidden && ui.isMobile && isSectionHome(path));
+  /** The home page of a signed-in account: the shell's header above the page. */
+  const home = $derived(!gatewayError && !page.error && ready && !target && session.authed && path === HOME_PATH);
   // Exactly one `main` per route: the shell's around the page (`#lib/landmark.ts`).
-  setInMain(() => shell);
+  setInMain(() => shell || home);
 
   // On the desktop the start of an area leads on to its first page, in place of its address.
   $effect(() => {
@@ -277,7 +281,7 @@
   /** Open dialog of the page (`ui.pageDialog`). */
   const pageDialog = $derived(ui.pageDialog?.() ?? null);
   /** Mobile sheet of the shell: the account menu or a page's select list. */
-  const sheet = $derived(ui.isMobile && shell ? ui.menu : null);
+  const sheet = $derived(ui.isMobile && (shell || home) ? ui.menu : null);
 
   /** A click outside a popover closes it (`[data-pop]` marks the popovers and their toggles). */
   function onDocDown(event: MouseEvent) {
@@ -418,11 +422,35 @@
     {/if}
     {@render overlays()}
   </div>
+{:else if home}
+  <div class="app" class:mobile={ui.isMobile}>
+    {#if !ui.isMobile}
+      <Header
+        {...header}
+        {accountPop}
+        goHome={() => go(HOME)}
+        openAdmin={() => go(resolve(FIRST_PAGE.admin))}
+        openSettingsBtn={() => go(resolve(FIRST_PAGE.account))}
+        toggleAccount={() => ui.toggleMenu('account')}
+      />
+    {:else}
+      <Header {...header} goHome={() => go(HOME)} openAccountSheet={() => ui.toggleMenu('account')} />
+    {/if}
+    <main class="home no-scrollbar" bind:this={scroller} {@attach !ui.isMobile && scrollbar}>
+      {@render children()}
+    </main>
+    {#if sheet === 'account'}
+      <Sheet label={session.userName} onclose={() => ui.closeMenu()}>
+        <AccountMenu {...account} />
+      </Sheet>
+    {/if}
+    {@render overlays()}
+  </div>
 {:else if showPage}
   <div class="page">{@render children()}</div>
 {/if}
 
-{#if !shell}<div class="layer">{@render overlays()}</div>{/if}
+{#if !shell && !home}<div class="layer">{@render overlays()}</div>{/if}
 
 {#if ui.tip}
   <Tooltip tip={ui.tip} onplace={(tip: TipState) => (ui.tip = tip)} />
@@ -496,6 +524,15 @@
     max-width: 780px;
     margin: 0 auto;
     padding: 44px 40px 96px;
+  }
+
+  /* Home page: below the header, scrolling on its own */
+  .home {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   .m-page {

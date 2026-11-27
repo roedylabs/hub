@@ -20,6 +20,18 @@
  * writes state after the page is left (`dispose`), only failed actions still
  * show their error toast. The search filters the loaded list locally.
  *
+ * App access (`apps` of every row: slug → role): the expanded row and the
+ * invitation form offer "No access" or a role per paired app
+ * (`GET admin/apps`); a change in the row goes out at once (`PUT|DELETE
+ * users/:id/apps/:slug`, for invitations `PATCH invites/:id` with `apps`)
+ * and stays shown over lists loaded meanwhile until its response (`#access`);
+ * the invitation form sends only the apps the administrator changed – the
+ * others get their default when the invitation is accepted. The bulk action
+ * "App access" sends `users/bulk` with `access` once per changed app. A
+ * pending app (409 `app_pending`), a role the app no longer has (422) or an
+ * app removed meanwhile reload the apps and the list; in the invitation form
+ * they show at the app (`fields["apps.<slug>"]`).
+ *
  * Domain errors: `invalid` with `fields` (`emails.<i>`, `name`, `emails`
  * `too_many`), `rate_limited` with `retry_after` (inviting: the form locks with
  * the wait time), `mail_failed` on "Resend" (note in the row with "Copy
@@ -40,6 +52,15 @@ import { SvelteSet } from 'svelte/reactivity';
 import { lostAccess } from '#lib/access.ts';
 import { ago } from '#lib/ago.ts';
 import { api, fieldsOf, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  accessOptions,
+  appName,
+  defaultAccess,
+  isPaired,
+  type AccessChoice,
+  type AccessOption,
+  type AdminApp,
+} from '#lib/apps.ts';
 import { copyPending } from '#lib/clipboard.svelte.ts';
 import { Countdown } from '#lib/countdown.svelte.ts';
 import { isEmail } from '#lib/email.ts';
@@ -83,6 +104,8 @@ export interface ListedUser {
   expired?: boolean;
   /** The invitee asked for a new invitation (expired invitations, `invites/:token/request`). */
   requested_at?: string | null;
+  /** Paired apps with access, slug → role; for invitations what accepting gives now. */
+  apps?: Record<string, string>;
 }
 
 /** Signed-in device of `GET users/:id` (without IP addresses). */
@@ -124,6 +147,27 @@ interface InviteForm {
   busy: boolean;
   /** Name error of the server (`fields.name`) until the name changes. */
   nameErr: 'too_long' | 'invalid' | null;
+  /** Access the administrator chose per app; apps not named get their default on acceptance. */
+  apps: Record<string, AccessChoice>;
+  /** Errors of the server per app (`fields["apps.<slug>"]`) until its choice changes. */
+  appErr: Record<string, AppError>;
+}
+
+/** Reasons of `fields["apps.<slug>"]` of `POST invites`. */
+export type AppError = 'not_found' | 'app_pending' | 'invalid';
+
+/** Bulk action "App access": the choice per app; `undefined` keeps it. */
+interface BulkAccess {
+  choices: Record<string, AccessChoice | undefined>;
+  busy: boolean;
+}
+
+/** `apps` of a row with `slug` set to `value` (`null`: no access). */
+function withApp(apps: Record<string, string> | undefined, slug: string, value: AccessChoice): Record<string, string> {
+  const next = { ...apps };
+  if (value === null) delete next[slug];
+  else next[slug] = value;
+  return next;
 }
 
 /** Result after "Send invitation" if not all mails went out. */
@@ -259,6 +303,11 @@ export class UsersPage {
   readonly busy = new SvelteSet<string>();
   /** Lock of "Send invitation" after 429 (`invites.mail`); the wait time runs along. */
   readonly inviteLock = new Countdown<'invite'>();
+  /** Apps of the administration (`GET admin/apps`); access is given in the paired ones. */
+  apps = $state<AdminApp[]>([]);
+  paired = $derived(this.apps.filter(isPaired));
+  /** Bulk action "App access" while open. */
+  bulkAccess = $state<BulkAccess | null>(null);
 
   /** Addresses reported by the server as taken or invalid (lower case), per form. */
   readonly #taken = new SvelteSet<string>();
@@ -282,6 +331,11 @@ export class UsersPage {
   #openRev = 0;
   /** Counts changes of the selection by the admin (`#restorer`). */
   #selRev = 0;
+  #appsSeq = 0;
+  /** Access changes on their way per row and app (`<id> <slug>`), shown over loaded lists until their response. */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping, nothing renders it (like `#overlays`)
+  readonly #access = new Map<string, { id: string; slug: string; value: AccessChoice; token: number }>();
+  #accessToken = 0;
 
   me = $derived(session.user?.id ?? null);
 
@@ -342,6 +396,7 @@ export class UsersPage {
     if (this.inviteLock.active('invite')) return m.error_limit({ wait: waitText(this.inviteLock.left('invite')) });
     const name = this.inviteCount <= 1 ? form.nameErr || nameError(form.name) : '';
     if (name) return nameErrorText(name);
+    if (this.paired.some((a) => form.appErr[a.slug])) return m.users_invite_err_apps();
     return this.chipError;
   });
 
@@ -355,6 +410,18 @@ export class UsersPage {
   start(): void {
     void this.load();
     void this.#loadMail();
+    void this.loadApps();
+  }
+
+  /** Apps for the access choices; on an error none are offered (the rows keep their `apps`). */
+  async loadApps(): Promise<void> {
+    const seq = ++this.#appsSeq;
+    try {
+      const { apps } = await api<{ apps: AdminApp[] }>('GET', 'admin/apps');
+      if (seq === this.#appsSeq && !this.#disposed) this.apps = apps;
+    } catch {
+      // Without the apps the page offers no access choices.
+    }
   }
 
   /** Whether invitations go out by mail: `GET admin/system-mail` (`status` `none` = no server). */
@@ -402,7 +469,7 @@ export class UsersPage {
       const known = this.#confirmed.get(u.id);
       if (known) for (const key of patchKeys(known)) this.#confirm(u.id, key, u[key], at);
     }
-    let rows = users;
+    let rows = users.map((u) => this.#withAccess(u));
     for (const o of this.#overlays) {
       o.rebase?.(users);
       const { patch } = o;
@@ -411,6 +478,13 @@ export class UsersPage {
         : rows.filter((u) => !o.ids.includes(u.id));
     }
     return rows;
+  }
+
+  /** A loaded row with the access changes still on their way. */
+  #withAccess(u: ListedUser): ListedUser {
+    let apps: Record<string, string> | null = null;
+    for (const a of this.#access.values()) if (a.id === u.id) apps = withApp(apps ?? u.apps, a.slug, a.value);
+    return apps ? { ...u, apps } : u;
   }
 
   /** The server has `value` since `at`: it becomes the field's baseline unless something later confirmed one. */
@@ -549,6 +623,7 @@ export class UsersPage {
     if (id === this.me) return;
     this.#selRev++;
     this.selected = this.selected.includes(id) ? this.selected.filter((x) => x !== id) : [...this.selected, id];
+    if (!this.selected.length) this.bulkAccess = null;
   }
 
   /** Select all visible ones or, if all are already selected, none. */
@@ -556,11 +631,13 @@ export class UsersPage {
     const all = this.chosen.length > 0 && this.chosen.length === this.pickable.length;
     this.#selRev++;
     this.selected = all ? [] : this.pickable.map((u) => u.id);
+    if (all) this.bulkAccess = null;
   }
 
   clearSelection(): void {
     this.#selRev++;
     this.selected = [];
+    this.bulkAccess = null;
     ui.closeMenu();
   }
 
@@ -568,7 +645,18 @@ export class UsersPage {
 
   openInvite(): void {
     const id = ++this.#formId;
-    this.invite = { id, email: '', name: '', list: [], role: 'user', focus: false, busy: false, nameErr: null };
+    this.invite = {
+      id,
+      email: '',
+      name: '',
+      list: [],
+      role: 'user',
+      focus: false,
+      busy: false,
+      nameErr: null,
+      apps: {},
+      appErr: {},
+    };
     // What the server reported as taken may have changed since (e.g. a discarded email change).
     this.#taken.clear();
     this.#invalid.clear();
@@ -576,6 +664,7 @@ export class UsersPage {
     this.#close();
     this.#selRev++;
     this.selected = [];
+    this.bulkAccess = null;
     this.result = null;
   }
 
@@ -639,6 +728,14 @@ export class UsersPage {
     this.#setForm({ role });
   }
 
+  /** Access to an app for the invitation; its error goes. */
+  inviteAccess(slug: string, value: AccessChoice): void {
+    const form = this.invite;
+    if (!form) return;
+    const appErr = Object.fromEntries(Object.entries(form.appErr).filter(([s]) => s !== slug));
+    this.#setForm({ apps: { ...form.apps, [slug]: value }, appErr });
+  }
+
   removeChip(email: string): void {
     const form = this.invite;
     if (form) this.#setForm({ list: form.list.filter((e) => e !== email) });
@@ -652,6 +749,10 @@ export class UsersPage {
     this.#setForm({ list, email: '' });
     if (!list.length || this.inviteError) return;
     const name = list.length === 1 ? normalizeName(form.name) : '';
+    // Only the apps still offered: one removed meanwhile is not sent.
+    const apps = Object.fromEntries(
+      Object.entries(form.apps).filter(([slug]) => this.paired.some((a) => a.slug === slug)),
+    );
     this.#setForm({ busy: true });
     // If the form was closed (and reopened) in the meantime, the response does not apply to the new one.
     const current = () => this.invite?.id === form.id;
@@ -660,6 +761,7 @@ export class UsersPage {
         emails: list,
         role: form.role,
         ...(name ? { name } : {}),
+        ...(Object.keys(apps).length ? { apps } : {}),
       });
       if (this.#disposed) return;
       // `recorded: false`: sent, but the list still shows "Not sent" – no result notice for it.
@@ -698,6 +800,18 @@ export class UsersPage {
       if (name === 'too_long' || name === 'invalid') {
         known = true;
         this.#setForm({ nameErr: name });
+      }
+      const appErr: Record<string, AppError> = {};
+      for (const [path, detail] of Object.entries(fields)) {
+        const slug = /^apps\.(.+)$/.exec(path)?.[1];
+        const code = detail.code;
+        if (slug && (code === 'not_found' || code === 'app_pending' || code === 'invalid')) appErr[slug] = code;
+      }
+      if (Object.keys(appErr).length) {
+        known = true;
+        this.#setForm({ appErr });
+        // The apps changed meanwhile: offer them as they are now.
+        void this.loadApps();
       }
       // The form already checks more than 50 addresses; if the server counts differently, the same text.
       if (fields.emails?.code === 'too_many') ui.toasts.error(m.users_invite_err_max({ n: MAX_INVITES }));
@@ -1004,6 +1118,113 @@ export class UsersPage {
     }
   }
 
+  // App access
+
+  /** Shows `value` as the row's access to `slug`. */
+  #setApp(id: string, slug: string, value: AccessChoice): void {
+    this.rows = this.rows.map((u) => (u.id === id ? { ...u, apps: withApp(u.apps, slug, value) } : u));
+  }
+
+  /**
+   * Access of one row to one app, at once: users via `users/:id/apps/:slug`, invitations via `PATCH invites/:id`.
+   * The row shows the choice until the response; a later change of the same app wins over an earlier response,
+   * which then reports nothing.
+   */
+  setAccess(u: ListedUser, slug: string, value: AccessChoice): void {
+    const app = this.paired.find((a) => a.slug === slug);
+    const shown = this.rows.find((r) => r.id === u.id);
+    const before = shown?.apps?.[slug] ?? null;
+    if (!app || !shown || before === value) return;
+    const key = `${u.id} ${slug}`;
+    const token = ++this.#accessToken;
+    this.#access.set(key, { id: u.id, slug, value, token });
+    this.#setApp(u.id, slug, value);
+    const call: Promise<ListedUser | null> =
+      u.status === 'invited'
+        ? api<{ invite: ListedUser | null }>('PATCH', `invites/${u.id}`, { apps: { [slug]: value } }).then(
+            (r) => r.invite,
+          )
+        : value === null
+          ? api<{ user: ListedUser }>('DELETE', `users/${u.id}/apps/${slug}`).then((r) => r.user)
+          : api<{ user: ListedUser }>('PUT', `users/${u.id}/apps/${slug}`, { app_role: value }).then((r) => r.user);
+    const name = appName(app);
+    void call.then(
+      (row) => {
+        if (this.#access.get(key)?.token !== token) return;
+        this.#access.delete(key);
+        if (!this.#disposed) this.#setApp(u.id, slug, row?.apps?.[slug] ?? value);
+        ui.toasts.show(value === null ? m.users_access_removed({ app: name }) : m.users_access_changed({ app: name }));
+      },
+      (error: unknown) => {
+        // A later change of the same app decides; it reports its own result.
+        if (this.#access.get(key)?.token !== token) return;
+        this.#access.delete(key);
+        if (!this.#disposed) this.#setApp(u.id, slug, before);
+        this.#accessFailed(error);
+      },
+    );
+  }
+
+  /** A change of access failed: the app is pending, the role or the app is gone – reload apps and list. */
+  #accessFailed(error: unknown): void {
+    if (isApiError(error, 409, 'app_pending') || isApiError(error, 422) || isApiError(error, 404)) {
+      ui.toasts.error(
+        isApiError(error, 409)
+          ? m.users_access_pending()
+          : isApiError(error, 422)
+            ? m.users_access_role_gone()
+            : m.users_access_gone(),
+      );
+      if (this.#disposed) return;
+      void this.loadApps();
+      void this.load();
+      return;
+    }
+    this.#failed(error, m.users_access_failed());
+  }
+
+  openBulkAccess(): void {
+    ui.closeMenu();
+    this.bulkAccess = this.bulkAccess ? null : { choices: {}, busy: false };
+  }
+
+  closeBulkAccess(): void {
+    this.bulkAccess = null;
+  }
+
+  bulkChoose(slug: string, value: AccessChoice | undefined): void {
+    const b = this.bulkAccess;
+    if (b && !b.busy) this.bulkAccess = { ...b, choices: { ...b.choices, [slug]: value } };
+  }
+
+  /** "Apply": `users/bulk` with `access` per changed app, one after another; then the list loads again. */
+  async applyBulkAccess(): Promise<void> {
+    const b = this.bulkAccess;
+    const ids = this.chosen.map((u) => u.id);
+    const changes = Object.entries(b?.choices ?? {}).filter(
+      (e): e is [string, AccessChoice] => e[1] !== undefined && this.paired.some((a) => a.slug === e[0]),
+    );
+    if (!b || b.busy || !ids.length || !changes.length) return;
+    this.bulkAccess = { ...b, busy: true };
+    const changed: string[] = [];
+    try {
+      for (const [slug, value] of changes) {
+        const body = { action: 'access', ids, slug, access: value !== null, ...(value ? { app_role: value } : {}) };
+        const res = await api<{ changed: string[] }>('POST', 'users/bulk', body);
+        for (const id of res.changed) if (!changed.includes(id)) changed.push(id);
+      }
+    } catch (error) {
+      if (!this.#disposed && this.bulkAccess) this.bulkAccess = { ...this.bulkAccess, busy: false };
+      this.#accessFailed(error);
+      return;
+    }
+    if (changed.length) ui.toasts.show(m.users_access_changed_for({ who: whoOf(this.chosen, changed) }));
+    else ui.toasts.error(m.users_bulk_none());
+    if (this.#disposed) return;
+    this.bulkAccess = null;
+    void this.load();
+  }
+
   // Bulk actions of the selection
 
   /**
@@ -1158,6 +1379,34 @@ export interface DetailValues {
   retry: () => void;
 }
 
+/** Access to one app: the choices with the current one checked. */
+export interface AccessRow {
+  slug: string;
+  name: string;
+  icon: string | null;
+  /** Name of the group: "Access to Mail". */
+  label: string;
+  options: AccessOption[];
+  pick: (value: AccessChoice) => void;
+  /** Error at the app (invitation form), otherwise `''`. */
+  err: string;
+}
+
+/** Access to one app in the bulk action, with "Unchanged". */
+export interface BulkAccessRow extends AccessRow {
+  unchanged: { on: boolean; pick: () => void };
+}
+
+export interface BulkAccessValues {
+  title: string;
+  rows: BulkAccessRow[];
+  busy: boolean;
+  /** Something to apply. */
+  canApply: boolean;
+  apply: () => void;
+  cancel: () => void;
+}
+
 export interface UserRow {
   id: string;
   name: string;
@@ -1207,6 +1456,8 @@ export interface UserRow {
   canMfaReset: boolean;
   /** Details of the expanded user; `null` for invitations and closed rows. */
   details: DetailValues | null;
+  /** Access per paired app of the expanded row; empty for closed rows or without paired apps. */
+  access: AccessRow[];
   /** Request running (resend, extend). */
   busy: boolean;
   togSel: () => void;
@@ -1253,6 +1504,8 @@ export interface UsersValues {
   invChips: Chip[];
   invFocus: boolean;
   invRoles: RoleCard[];
+  /** Access per paired app, preset from each app's default. */
+  invApps: AccessRow[];
   invErr: string;
   hasInvErr: boolean;
   invBtn: { dis: boolean };
@@ -1279,6 +1532,11 @@ export interface UsersValues {
   uBulkLock: () => void;
   uBulkUnlock: () => void;
   uBulkRemove: () => void;
+  /** Paired apps exist: offer "App access". */
+  uCanBulkAccess: boolean;
+  uBulkAccessOpen: boolean;
+  uBulkAccessToggle: () => void;
+  uBulkAccess: BulkAccessValues | null;
   uHasRows: boolean;
   uAllCk: { on: boolean | 'mixed'; label: string; icon: IconName; vis: number; onClick: () => void };
   uHdName: SortHead;
@@ -1307,6 +1565,27 @@ function roleCards(current: Role, disabled: boolean, choose: (role: Role) => voi
     dis: disabled,
     onClick: () => choose(r),
   }));
+}
+
+function appErrorText(code: AppError): string {
+  return code === 'not_found'
+    ? m.users_app_err_not_found()
+    : code === 'app_pending'
+      ? m.users_app_err_pending()
+      : m.users_app_err_invalid();
+}
+
+function accessRow(app: AdminApp, current: AccessChoice, pick: (value: AccessChoice) => void, err = ''): AccessRow {
+  const name = appName(app);
+  return {
+    slug: app.slug,
+    name,
+    icon: app.icon,
+    label: m.users_access_to({ name }),
+    options: accessOptions(app, current),
+    pick,
+    err,
+  };
 }
 
 /** Day and month in words ("2 November") in the browser's time zone. */
@@ -1432,6 +1711,7 @@ function rowValues(p: UsersPage, u: ListedUser, ctx: UsersContext, now: number):
     removeLabel: invited ? m.users_revoke() : m.users_remove(),
     canMfaReset: mfa && !isMe && !invited,
     details: open ? detailValues(p, u, now) : null,
+    access: open ? p.paired.map((a) => accessRow(a, u.apps?.[a.slug] ?? null, (v) => p.setAccess(u, a.slug, v))) : [],
     busy: p.busy.has(u.id),
     togSel: () => p.toggleSelect(u.id),
     toggle: () => p.toggleOpen(u.id),
@@ -1481,6 +1761,26 @@ function inviteResult(p: UsersPage): InviteResultValues {
     text,
     rows: open.map((i) => ({ id: i.id, email: i.email, copy: () => void p.copyLink(i) })),
     close: () => p.closeResult(),
+  };
+}
+
+function bulkAccessValues(p: UsersPage): BulkAccessValues | null {
+  const b = p.bulkAccess;
+  if (!b) return null;
+  const rows = p.paired.map((a): BulkAccessRow => {
+    const choice = b.choices[a.slug];
+    return {
+      ...accessRow(a, choice ?? null, (v) => p.bulkChoose(a.slug, v)),
+      unchanged: { on: choice === undefined, pick: () => p.bulkChoose(a.slug, undefined) },
+    };
+  });
+  return {
+    title: m.users_access_bulk_title({ who: people(p.chosen.length) }),
+    rows,
+    busy: b.busy,
+    canApply: !b.busy && rows.some((r) => !r.unchanged.on),
+    apply: () => void p.applyBulkAccess(),
+    cancel: () => p.closeBulkAccess(),
   };
 }
 
@@ -1579,6 +1879,13 @@ export function usersValues(
     }),
     invFocus: !!form?.focus,
     invRoles: roleCards(form?.role ?? 'user', false, (r) => p.inviteRole(r)),
+    invApps: form
+      ? p.paired.map((a) => {
+          const chosen = Object.hasOwn(form.apps, a.slug) ? (form.apps[a.slug] ?? null) : defaultAccess(a);
+          const err = form.appErr[a.slug];
+          return accessRow(a, chosen, (v) => p.inviteAccess(a.slug, v), err ? appErrorText(err) : '');
+        })
+      : [],
     invErr: err,
     hasInvErr: !!err,
     invBtn: { dis: n === 0 || !!err || !!form?.busy },
@@ -1627,6 +1934,10 @@ export function usersValues(
     uBulkLock: () => p.bulkLock(),
     uBulkUnlock: () => p.bulkUnlock(),
     uBulkRemove: () => p.bulkRemove(),
+    uCanBulkAccess: p.paired.length > 0,
+    uBulkAccessOpen: !!p.bulkAccess,
+    uBulkAccessToggle: () => p.openBulkAccess(),
+    uBulkAccess: nSel > 0 ? bulkAccessValues(p) : null,
     uHasRows: p.list.length > 0,
     uAllCk: {
       on: all,
