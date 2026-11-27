@@ -32,6 +32,8 @@ struct Inner {
     /// When each value first showed up at a name.
     published: HashMap<(String, String), Instant>,
     truncate_udp: bool,
+    /// Every answer waits this long.
+    delay: std::time::Duration,
     not_authoritative: bool,
     rcode: Option<u8>,
     queries: Vec<(String, Transport)>,
@@ -70,6 +72,8 @@ impl FakeDns {
                     return;
                 };
                 if let Some(answer) = server.answer(&buffer[..length], Transport::Udp) {
+                    let delay = server.lock().delay;
+                    tokio::time::sleep(delay).await;
                     let _ = udp.send_to(&answer, peer).await;
                 }
             }
@@ -90,6 +94,8 @@ impl FakeDns {
                         return;
                     }
                     if let Some(answer) = server.answer(&query, Transport::Tcp) {
+                        let delay = server.lock().delay;
+                        tokio::time::sleep(delay).await;
                         let mut framed =
                             u16::try_from(answer.len()).unwrap().to_be_bytes().to_vec();
                         framed.extend_from_slice(&answer);
@@ -147,6 +153,10 @@ impl FakeDns {
 
     pub fn truncate_udp(&self, on: bool) {
         self.lock().truncate_udp = on;
+    }
+
+    pub fn delay(&self, delay: std::time::Duration) {
+        self.lock().delay = delay;
     }
 
     /// Answers without `AA`, as a server that is not authoritative.

@@ -218,13 +218,18 @@ impl Dns01 {
                     missing.push(format!("{} ({reason})", ns.name));
                 }
             }
-            if missing.is_empty() {
+            // Queries end by the deadline; a round that still finished after
+            // it (scheduling) does not count.
+            if missing.is_empty() && tokio::time::Instant::now() <= deadline {
                 tracing::info!(
                     name = target.name,
                     waited = ?started.elapsed(),
                     "DNS-01: TXT record on all name servers"
                 );
                 return Ok(());
+            }
+            if missing.is_empty() {
+                missing.push("the last answers came after the deadline".to_owned());
             }
             if tokio::time::Instant::now() + self.settings.poll > deadline {
                 bail!(

@@ -247,21 +247,22 @@ impl<'a> Reader<'a> {
 }
 
 /// Asks `server` for the TXT records of `name`: over UDP, again over TCP if
-/// the answer is truncated. Each exchange must finish within `timeout`.
+/// the answer is truncated. Both together must finish within `timeout`.
 pub async fn lookup_txt(
     server: SocketAddr,
     name: &str,
     timeout: Duration,
 ) -> anyhow::Result<Response> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let id = u16::from_be_bytes(crate::random::bytes::<2>()?);
     let query = query(id, name)?;
-    let response = tokio::time::timeout(timeout, udp(server, &query, id, name))
+    let response = tokio::time::timeout_at(deadline, udp(server, &query, id, name))
         .await
         .map_err(|_| anyhow!("no DNS answer from {server} within {timeout:?}"))??;
     if !response.truncated {
         return Ok(response);
     }
-    tokio::time::timeout(timeout, tcp(server, &query, id, name))
+    tokio::time::timeout_at(deadline, tcp(server, &query, id, name))
         .await
         .map_err(|_| anyhow!("no DNS answer from {server} over TCP within {timeout:?}"))?
 }

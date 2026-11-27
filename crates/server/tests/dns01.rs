@@ -613,4 +613,19 @@ async fn dns_client_reads_strings_and_falls_back_to_tcp() {
         .unwrap();
     assert_eq!(response.rcode, dns::RCODE_NXDOMAIN);
     assert!(response.txt.is_empty());
+
+    // UDP and the TCP fallback share one timeout: each answer in time on
+    // its own, both together not.
+    server.delay(Duration::from_millis(300));
+    let error = dns::lookup_txt(server.addr, NAME, Duration::from_millis(500))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("over TCP within 500ms"),
+        "{error}"
+    );
+    server.truncate_udp(false);
+    dns::lookup_txt(server.addr, NAME, Duration::from_millis(500))
+        .await
+        .unwrap();
 }
