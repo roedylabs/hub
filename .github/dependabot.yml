@@ -53,3 +53,21 @@ updates:
       actions:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    # Dockerfile: base image of the image's file system; deploy/: the example
+    # app's image for the Compose tests; .github/buildkit/: BuildKit image of
+    # ci.yml and release.yml.
+    directories: ["/", "/deploy", "/.github/buildkit"]
+    schedule:
+      interval: weekly
+    # Room for separate major-update PRs next to the grouped minor/patch PR.
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build(deps)
+    groups:
+      docker:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

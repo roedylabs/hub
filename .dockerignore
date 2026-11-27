@@ -1,0 +1,8 @@
+# The images only need the prebuilt binaries and the license (Dockerfile,
+# deploy/example-app.Dockerfile).
+*
+!dist/amd64/roedy-hub
+!dist/arm64/roedy-hub
+!dist/amd64/roedy-hub-example
+!dist/arm64/roedy-hub-example
+!LICENSE

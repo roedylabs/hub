@@ -556,6 +556,32 @@ checks pass in every PR; every PR has tests for what it adds.
    (setup, sign-in, pairing, opening the app, SSE and WebSocket through the
    browser, sign-out, no access, light and dark, desktop and mobile).
    *Budgets checked in CI:* image ≤ 25 MB, idle ≤ 40 MB.
+   Split into two PRs (decided on 2026-11-27):
+   1. [x] **Delivery** – Dockerfile, release workflow, budgets and smoke test
+      in CI, Compose setup, `.env.example`, `docs/ops.md`, README. Done: as
+      in Roedy Mail, the `Dockerfile` only packages the static musl binaries
+      from `just dist` (`cargo auditable zigbuild`, embedded web app) on
+      `scratch` with CA certificates, user 65532, `/data`, the healthcheck
+      and mimalloc's settings; it exposes 8080 only. `release.yml` (tags
+      `v*` on the release commit, manual dry run) builds both platforms,
+      checks size, smoke test and Trivy, pushes to `ghcr.io/roedylabs/hub`
+      with SBOM and provenance, signs with cosign, attests image and
+      binaries and creates the GitHub release with git-cliff's notes;
+      `just release`/`release-tag` (`scripts/release.sh`) prepare it. The CI
+      job "Image" (part of "CI passed") builds the amd64 image on every pull
+      request: size ≤ 25 MB, `scripts/image-smoke.sh` (user and privileges,
+      health, SPA, CSP, internal listener listening but neither exposed nor
+      on the public port, setup token, idle RSS ≤ 40 MB, clean stop) and
+      `scripts/compose-smoke.sh`. `deploy/compose.yml`: Caddy (only published
+      service, `deploy/Caddyfile`), the hub on the networks `edge` and `apps`
+      with its internal listener bound to its fixed address in `apps`, Roedy
+      Mail with the profile `mail` (until Mail has hub mode);
+      `deploy/compose.test.yml` adds the example app
+      (`deploy/example-app.Dockerfile`, `just dist-example`) and Caddy on
+      plain HTTP at 127.0.0.1:8080. Dependabot keeps the Docker images up to
+      date, `scripts/docker-pins.test.mjs` checks their digests.
+   2. [ ] **End-to-end** – Playwright suite with axe against hub + example app
+      on the Compose test setup.
 
 ## 7. Open points (not in this assignment)
 
@@ -577,6 +603,12 @@ checks pass in every PR; every PR has tests for what it adds.
   hub, so that each app does not build its own.
 - **Notifications, web push, backups in the app, update check, maintenance
   mode, GeoIP** for the hub.
+- **Restoring an older backup** leaves the apps' event position ahead of the
+  hub's numbering (`docs/ops.md` › Backup and restore); the hub could
+  announce a new stream (e.g. an epoch in the events) so that apps reset it.
+- **Roedy Mail in hub mode:** `deploy/compose.yml` passes the hub's address
+  and the pairing code as `ROEDY_HUB_INTERNAL_URL` and `ROEDY_PAIRING_CODE`,
+  as the example app takes them; Mail's hub mode should use these names.
 - **OIDC/SAML, groups** – not in v1.
 
 ## 8. Additions to the brief (agreed on 2026-11-25)
