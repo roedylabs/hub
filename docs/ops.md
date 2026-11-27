@@ -75,7 +75,7 @@ Every `502` and `504` is logged as a warning with the slug and the request's `X-
 receives as well. A session is checked at most every 10 seconds per cookie; signing out, revoking a device, locking or
 removing a user and changing the password take effect at once and close the session's open streams and WebSockets.
 Sessions that end otherwise (expired, signed out by `roedy-hub reset-admin`) lose them within 5 seconds, as long as
-the database answers within 1.5 seconds; a busier database delays it to the next check two seconds later.
+the database answers within a second; a busier database delays it until a check gets through.
 
 ## Health
 

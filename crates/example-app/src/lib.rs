@@ -17,7 +17,7 @@
 //! | `/<slug>/whoami` | The verified identity, otherwise `401` |
 //! | `/<slug>/echo[/…]` | Any method: method, path, query, headers, identity and body size as JSON |
 //! | `/<slug>/sse?count=&interval_ms=` | Server-Sent Events: the first at once, then one per interval; `count=0` runs until the client leaves |
-//! | `/<slug>/ws` | WebSocket echo (text and binary); `403` for a foreign `Origin` |
+//! | `/<slug>/ws?delay_ms=` | WebSocket echo (text and binary) after an optional delay before the `101`; `403` for a foreign `Origin` |
 //! | `/<slug>/upload` | `POST`: reads the body as a stream, answers its size and SHA-256 |
 //! | `/<slug>/download?bytes=&chunk=` | Streams `bytes` bytes (byte `i` is `i % 251`) |
 //! | `/<slug>/slow?ms=&body_ms=` | Waits `ms` before the headers and `body_ms` before the body |
@@ -626,11 +626,19 @@ async fn sse(
     Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
+#[derive(Deserialize)]
+struct WsQuery {
+    #[serde(default)]
+    delay_ms: u64,
+}
+
 async fn ws(
     State(example): State<Example>,
+    Query(query): Query<WsQuery>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    tokio::time::sleep(Duration::from_millis(query.delay_ms.min(60_000))).await;
     // Contract § 3.5: the app checks `Origin` as well.
     if let Some(origin) = headers.get(header::ORIGIN)
         && origin.as_bytes() != example.0.origin.as_bytes()

@@ -148,7 +148,12 @@ WebSocket ping).
   `Origin` as well.
 - **End of a session:** when a hub session ends (sign-out, revoked, user
   locked or deleted), the hub closes the session's open streams and WebSocket
-  connections to all apps within 5 seconds.
+  connections to all apps within 5 seconds. Sessions that end without the
+  hub's own action (they expire, or another process such as the hub's
+  command line ends them) are found by a periodic check; while the hub's
+  database is too busy to answer that check, their streams stay open until
+  it does. Apps learn about every ended session from `session.revoked`
+  ([§ 10](#10-events)) as well.
 
 ### 3.6 Namespaces in the browser
 

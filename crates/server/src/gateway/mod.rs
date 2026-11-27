@@ -606,12 +606,15 @@ async fn tunnel(
     };
     let (mut client, mut app) = (TokioIo::new(client), TokioIo::new(app));
     tokio::select! {
+        // The end of the session first: a session that ended before the
+        // tunnel started relays nothing.
+        biased;
+        () = watch.ended() => tracing::debug!(slug, "WebSocket closed: session ended"),
         relayed = tokio::io::copy_bidirectional(&mut client, &mut app) => {
             if let Err(error) = relayed {
                 tracing::debug!(slug, "WebSocket ended: {error}");
             }
         }
-        () = watch.ended() => tracing::debug!(slug, "WebSocket closed: session ended"),
     }
 }
 

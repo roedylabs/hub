@@ -388,8 +388,8 @@ checks pass in every PR; every PR has tests for what it adds.
       Response bodies and WebSockets are registered per session
       (`gateway::sessions::Streams`) and close when it ends – also when it
       ended while the request waited for the app (checked again after the
-      registration); the job `gateway_streams` (every 2 s, a query of at
-      most 1.5 s, only while streams are open) closes those of sessions
+      registration); the job `gateway_streams` (every second, a query of at
+      most 1 s, only while streams are open) closes those of sessions
       that ended otherwise (expired, trimmed, `reset-admin`), the shutdown
       all of them. The connect deadline covers lookup, TCP and TLS
       (`gateway::client::Deadline`); the 300 s count from the end of the

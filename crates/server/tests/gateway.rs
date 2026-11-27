@@ -1146,6 +1146,41 @@ async fn ending_a_session_closes_its_streams() {
         );
     }
 
+    // The same for a WebSocket whose upgrade the app delays: nothing is
+    // relayed after the sign-out.
+    let late = hub.env.session_for("max").await;
+    let mut request = format!("ws://{}/example/ws?delay_ms=800", hub.public)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert(header::COOKIE, cookie(&late).parse().unwrap());
+    let stream = TcpStream::connect(hub.public).await.unwrap();
+    let (socket, reply) = tokio::join!(tokio_tungstenite::client_async(request, stream), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        hub.env
+            .as_user(&late, Method::POST, "/auth/logout", None)
+            .await
+    });
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    if let Ok((mut socket, _)) = socket {
+        // Sending may already fail; an echo must never come back.
+        let _ = socket.send(Message::text("after sign-out")).await;
+        let echoed = tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(message) = socket.next().await {
+                match message {
+                    Ok(Message::Text(_) | Message::Binary(_)) => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            }
+            false
+        })
+        .await
+        .expect("WebSocket still open");
+        assert!(!echoed, "relayed after the sign-out");
+    }
+
     // Locked by an administrator: every session of the user.
     let max = hub.env.session_for("max").await;
     let mut stream = open_stream(&hub, &max).await;
