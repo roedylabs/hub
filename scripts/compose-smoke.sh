@@ -128,7 +128,11 @@ check "a new database after removing it" [ "$other" != "$original" ]
 mkdir "$backup/bad"
 head -c 4096 /dev/urandom >"$backup/bad/roedy.sqlite3"
 tar -czf "$backup/bad.tar.gz" -C "$backup/bad" .
-check "restore.sh refuses a damaged archive" sh -c "! (cd deploy && COMPOSE_PROJECT_NAME='$project' ROEDY_HUB_VOLUME='$volume' ./restore.sh '$backup/bad.tar.gz')"
+if out=$(restore "$backup/bad.tar.gz" 2>&1); then
+  fail "restore.sh accepted a damaged archive"
+fi
+printf '%s\n' "$out"
+check "restore.sh refuses a damaged archive" sh -c "printf '%s' \"\$1\" | grep -q 'missing or damaged'" sh "$out"
 check "the hub stays stopped after a failed restore" [ "$(docker inspect -f '{{.State.Running}}' roedy-hub)" = false ]
 compose start roedy-hub >/dev/null
 healthy
