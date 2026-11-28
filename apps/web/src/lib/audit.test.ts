@@ -13,10 +13,9 @@ import {
   type AuditEntry,
 } from '#lib/audit.svelte.ts';
 import { downloadBlob } from '#lib/download.ts';
-import { icons } from '#lib/icons.ts';
+import { icons, ui } from '@roedy/ui';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 
 vi.mock('#lib/download.ts', () => ({ downloadBlob: vi.fn(() => true) }));
 

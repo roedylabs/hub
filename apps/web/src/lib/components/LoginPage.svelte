@@ -28,17 +28,15 @@
   import SignInSent from '#lib/components/signin/SignInSent.svelte';
   import { SignInTargets } from '#lib/components/signin/targets.ts';
   import { page } from '$app/state';
-  import { NetworkError, api } from '#lib/api.ts';
+  import { api, NetworkError, Reconnect, ui } from '@roedy/ui';
   import { isMobileWidth } from '#lib/auth-layout.ts';
   import { LoginFlow, type Field, type LoginPageValues, type LoginRoute } from '#lib/login.svelte.ts';
   import { leaveTo } from '#lib/navigate.ts';
   import { isReauth, nextOf } from '#lib/next.ts';
-  import { Reconnect } from '#lib/no-connection.svelte.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { shake } from '#lib/shake.ts';
   import { forgetAccount, loadSignedIn, signOut } from '#lib/state/account.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   interface Props {
     route: LoginRoute;

@@ -14,13 +14,11 @@
   out; the cards follow the page head.
 -->
 <script lang="ts">
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, radiogroup, ui } from '@roedy/ui';
   import { languageValues } from '#lib/language.ts';
   import { pageOf } from '#lib/settings-nav.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const v = $derived(
     languageValues({ lang: prefs.values.lang, browserLang: prefs.browserLang, appName: session.appName }, (patch) =>

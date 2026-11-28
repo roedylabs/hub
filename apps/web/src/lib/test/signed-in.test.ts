@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import ErrorView from '#lib/components/ErrorView.svelte';
+import { ErrorView, ui } from '@roedy/ui';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 import { page } from '#lib/test/page.svelte.ts';
 import { renderSignedIn, resetSignedIn, setPhone, signIn } from '#lib/test/signed-in.ts';
 

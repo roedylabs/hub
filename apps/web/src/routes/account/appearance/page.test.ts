@@ -3,8 +3,7 @@
 import { fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0 } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import { renderSignedIn, resetSignedIn, setPhone } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 import DialogHost from './DialogHost.svelte';
@@ -247,10 +246,10 @@ describe('Appearance page', () => {
 
   it('scrolls to the section via the tabs, instantly without animations', async () => {
     const view = renderSignedIn(Page);
-    prefs.animations = true;
+    ui.animations = true;
     await fireEvent.click(view.getByRole('button', { name: 'Accent color' }));
     expect(scrollToSection).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'accent', true);
-    prefs.animations = false;
+    ui.animations = false;
     await fireEvent.click(view.getByRole('button', { name: 'Color scheme' }));
     expect(scrollToSection).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'mode', false);
   });

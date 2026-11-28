@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi, type Call } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { offlineApp, pairedApp, pendingApp } from '#lib/test/apps.ts';
 import { signIn, TEST_USER } from '#lib/test/signed-in.ts';
 import { UsersPage, rowsValues, usersValues, type ListedUser } from './users.svelte.ts';

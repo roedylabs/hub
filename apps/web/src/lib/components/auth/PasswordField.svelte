@@ -20,10 +20,8 @@
 <script lang="ts">
   import { CAPS_OFF, capsAfter } from '#lib/caps-lock.ts';
   import { caps, capsLockAt } from '#lib/components/auth/caps.svelte.ts';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, type IconName, isApple } from '@roedy/ui';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
-  import type { IconName } from '#lib/icons.ts';
-  import { isApple } from '#lib/keys.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { tick } from 'svelte';
 

@@ -10,21 +10,17 @@
   Taken over from Roedy Mail (`apps/web/src/routes/confirm-email/[token]/+page.svelte`).
 -->
 <script lang="ts">
-  import { scrollbar } from '#lib/actions/scrollbar.ts';
+  import { Icon, type IconName, Logo, scrollbar, ui } from '@roedy/ui';
   import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { parallax } from '#lib/actions/parallax.ts';
-  import Icon from '#lib/components/Icon.svelte';
   import EmailConfirmArt from '#lib/components/EmailConfirmArt.svelte';
-  import Logo from '#lib/components/Logo.svelte';
   import { EmailConfirmFlow, checkFailValues, emailConfirmValues } from '#lib/email-confirm.svelte.ts';
-  import type { IconName } from '#lib/icons.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const token = $derived(page.params.token ?? '');
   const flow = new EmailConfirmFlow();

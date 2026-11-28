@@ -18,16 +18,23 @@
   import { ACCENTS, MODE_PREV } from '@roedy/tokens';
   import { tick, untrack } from 'svelte';
   import type { Attachment } from 'svelte/attachments';
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
-  import { accentInk, type HexColor } from '#lib/color.ts';
-  import { ColorDraft, customName, editorStart } from '#lib/color-editor.svelte.ts';
-  import Icon from '#lib/components/Icon.svelte';
+  import {
+    accentInk,
+    browserLang,
+    ColorDraft,
+    customName,
+    editorStart,
+    type HexColor,
+    Icon,
+    type IconName,
+    type ModeName,
+    radiogroup,
+    ui,
+  } from '@roedy/ui';
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import { setupFrame } from '#lib/components/setup/frame.ts';
   import type { SetupTargets } from '#lib/components/setup/targets.ts';
   import { fold, FOLD_MS, unfold } from '#lib/fold.ts';
-  import type { IconName } from '#lib/icons.ts';
-  import { browserLang } from '#lib/locale.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { DESK_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';
   import {
@@ -46,7 +53,7 @@
     type SetupChoices,
     type SetupFlow,
   } from '#lib/setup.svelte.ts';
-  import { prefs, type ModeName } from '#lib/state/prefs.svelte.ts';
+  import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
 
   let { flow, targets, hidden = false }: { flow: SetupFlow; targets: SetupTargets; hidden?: boolean } = $props();
@@ -270,7 +277,7 @@
   let before = { top: 0, grid: 0 };
   let shiftTimer: ReturnType<typeof setTimeout> | undefined;
   /** Duration of the switch; 0 with motion off (every change at once). */
-  const ms = () => (prefs.motion ? FOLD_MS : 0);
+  const ms = () => (ui.motion ? FOLD_MS : 0);
 
   /** The tiles shown: the closed row, or all colours while open (in the order from opening). */
   const tiles = $derived(draft ? openList : closed);
@@ -484,8 +491,8 @@
       bind:this={prefsEl}
       class="prefs"
       class:mobile={look.mobile}
-      class:still={!prefs.motion}
-      style:--d="{prefs.motion ? FOLD_MS : 0}ms"
+      class:still={!ui.motion}
+      style:--d="{ui.motion ? FOLD_MS : 0}ms"
       style:--sec={x.sec}
       style:--pv-h={pv.h}
       style:--pv-r={pv.r}

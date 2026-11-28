@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '#lib/api.ts';
+import { ApiError, BRAND0, ui } from '@roedy/ui';
 import { mockApi } from '#lib/state/fetch-mock.ts';
-import { BRAND0, session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session } from '#lib/state/session.svelte.ts';
 import { sessionOf } from '#lib/test/session.ts';
 import { TEST_USER, resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 import {

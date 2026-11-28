@@ -11,9 +11,7 @@
 <script lang="ts">
   import { ACCENTS } from '@roedy/tokens';
   import type { Snippet } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import type { IconName } from '#lib/icons.ts';
-  import { clockText } from '#lib/wait.ts';
+  import { clockText, Icon, type IconName } from '@roedy/ui';
 
   interface Props {
     id?: string | undefined;

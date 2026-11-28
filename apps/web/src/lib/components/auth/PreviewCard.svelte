@@ -11,8 +11,7 @@
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import type { IconName } from '#lib/icons.ts';
+  import { Icon, type IconName } from '@roedy/ui';
 
   interface Line {
     text: string;

@@ -8,8 +8,7 @@
  * the hub's pages: no mail accounts, no app settings, no "Advanced settings"
  * and no filter.
  */
-import type { IconName } from '#lib/icons.ts';
-import type { LogoValues } from '#lib/logo.ts';
+import type { IconName, LogoValues } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
 
 /** Area of the navigation: the account's own settings, or the administration. */

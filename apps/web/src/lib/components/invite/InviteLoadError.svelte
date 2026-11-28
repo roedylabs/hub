@@ -11,16 +11,14 @@
 -->
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { ERRS, Icon, ui } from '@roedy/ui';
   import AuthFrame from '#lib/components/auth/AuthFrame.svelte';
   import { INVITE_DESK, INVITE_FIT, INVITE_MOB } from '#lib/components/invite/frame.ts';
   import type { InviteTargets } from '#lib/components/invite/targets.ts';
   import { isMobileWidth, sharedLevel, stepLook, type Look } from '#lib/auth-layout.ts';
-  import { ERRS } from '#lib/errors.ts';
   import type { InviteFlow } from '#lib/invite.svelte.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   let { flow, targets, hidden = false }: { flow: InviteFlow; targets: InviteTargets; hidden?: boolean } = $props();
 

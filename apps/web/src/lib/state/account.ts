@@ -6,10 +6,10 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/state/account.ts`) without
  * the state of mail accounts, push and notifications.
  */
-import { ApiError, api } from '#lib/api.ts';
+import { api, ApiError, ui } from '@roedy/ui';
 import { prefs } from '#lib/state/prefs.svelte.ts';
+import { guest } from '#lib/state/guest.svelte.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 
 /**
  * After a new session (sign-in, invitation accepted, setup): first the settings (the account's theme), then the
@@ -43,6 +43,7 @@ session.onEnd((next) => {
 /** Discards the account's state: toasts, settings and the account. */
 export function forgetAccount(): void {
   ui.reset();
+  guest.reset();
   prefs.reset();
   session.forget();
   // Other tabs of the same account ask the server and discard their state as well.

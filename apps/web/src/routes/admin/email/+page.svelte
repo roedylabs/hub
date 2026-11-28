@@ -14,15 +14,10 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { tooltip } from '#lib/actions/tooltip.ts';
-  import DirtyBar from '#lib/components/DirtyBar.svelte';
-  import FirstLoad from '#lib/components/FirstLoad.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { DirtyBar, FirstLoad, Icon, tooltip, ui } from '@roedy/ui';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
   import { pageOf } from '#lib/settings-nav.ts';
-  import { prefs } from '#lib/state/prefs.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
   import {
     SystemMailPage,
     systemMailValues,
@@ -32,7 +27,7 @@
 
   let root: HTMLElement | undefined = $state();
   const ctx: SystemMailContext = {
-    scrollTo: (section) => scrollToSection(root, section, prefs.motion),
+    scrollTo: (section) => scrollToSection(root, section, ui.motion),
   };
   const p = new SystemMailPage(ctx.scrollTo);
   const uid = $props.id();

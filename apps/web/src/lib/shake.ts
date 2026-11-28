@@ -6,10 +6,10 @@
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/shake.ts`).
  */
-import { prefs } from '#lib/state/prefs.svelte.ts';
+import { ui } from '@roedy/ui';
 
 export function shake(card: HTMLElement | undefined, tile: HTMLElement | undefined): void {
-  if (!prefs.motion) return;
+  if (!ui.motion) return;
   card?.animate?.(
     [
       { transform: 'translateX(0)' },

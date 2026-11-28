@@ -4,7 +4,7 @@
   while the app waits for pairing (no icon yet) a plug.
 -->
 <script lang="ts">
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
 
   interface Props {
     src: string | null;

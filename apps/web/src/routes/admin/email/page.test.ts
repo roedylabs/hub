@@ -1,6 +1,6 @@
 import { fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import { NO_MAIL, type SystemMail } from '#lib/system-mail.svelte.ts';
 import Page from './+page.svelte';

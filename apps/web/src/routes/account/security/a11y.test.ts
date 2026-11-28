@@ -10,7 +10,7 @@ import { fireEvent, type RenderResult } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MfaOverview } from '#lib/security.svelte.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { violations } from '#lib/test/axe.ts';
+import { violations } from '@roedy/ui/testing';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 

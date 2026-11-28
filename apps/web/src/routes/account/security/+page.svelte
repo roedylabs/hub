@@ -11,18 +11,13 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { goto } from '$app/navigation';
-  import { tooltip } from '#lib/actions/tooltip.ts';
-  import Icon from '#lib/components/Icon.svelte';
-  import LoadCard from '#lib/components/LoadCard.svelte';
-  import Skeleton from '#lib/components/Skeleton.svelte';
+  import { Icon, LoadCard, Skeleton, tooltip, ui } from '@roedy/ui';
   import { loginHref } from '#lib/next.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
   import { MAX_APP_NAME, SecurityPage, securityValues, type PwFieldValues } from '#lib/security.svelte.ts';
   import { pageOf } from '#lib/settings-nav.ts';
-  import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const HERE = '/account/security';
 
@@ -47,7 +42,7 @@
     });
   });
   let root: HTMLElement | undefined = $state();
-  const ctx = { scrollTo: (section: string) => scrollToSection(root, section, prefs.motion) };
+  const ctx = { scrollTo: (section: string) => scrollToSection(root, section, ui.motion) };
   /** Clock for "Last active … ago" and "Last changed …" while the page is open. */
   let now = $state(Date.now());
   const v = $derived(securityValues(p, ctx, now));

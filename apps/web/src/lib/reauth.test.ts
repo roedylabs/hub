@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError, NetworkError } from '#lib/api.ts';
+import { ApiError, NetworkError } from '@roedy/ui';
 import { needsReauth, reauthError } from './reauth.ts';
 
 const err = (status: number, body: Record<string, unknown>) => new ApiError(status, body);

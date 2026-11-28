@@ -5,7 +5,7 @@ import type { AuditCounts, AuditEntry } from '#lib/audit.svelte.ts';
 import { downloadBlob } from '#lib/download.ts';
 import type { Call } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 

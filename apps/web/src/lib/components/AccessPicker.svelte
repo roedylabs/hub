@@ -7,8 +7,7 @@
   stands for `undefined`.
 -->
 <script lang="ts">
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
-  import { tooltip } from '#lib/actions/tooltip.ts';
+  import { radiogroup, tooltip } from '@roedy/ui';
   import type { AccessChoice, AccessOption } from '#lib/apps.ts';
   import { m } from '#lib/paraglide/messages.js';
 

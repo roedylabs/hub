@@ -28,12 +28,10 @@
  * Settings › About, which the hub does not have.
  */
 import { lostAccess } from '#lib/access.ts';
-import { api, fieldsOf, isApiError } from '#lib/api.ts';
-import { failText } from '#lib/errors.ts';
+import { api, failText, fieldsOf, isApiError, ui } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
 import { serial } from '#lib/serial.ts';
 import { session, type Org } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 import { trimWs } from '#lib/trim.ts';
 
 export type OrgKey = keyof Org;

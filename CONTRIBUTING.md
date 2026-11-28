@@ -51,7 +51,7 @@ pnpm test             # Vitest and script tests
 
 CI also runs Clippy and the tests with `--all-features`, which embeds `apps/web/build` (`embed-web`); run `pnpm build` first to do the same locally.
 
-While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vitest run <file>` or `cargo test -p roedy-hub-server <filter>`.
+While iterating, run single test files: `pnpm --filter @roedy/hub-web exec vitest run <file>` (the packages: `@roedy/ui`, `@roedy/jmap`, `@roedy/tokens`) or `cargo test -p roedy-hub-server <filter>`.
 
 ### End-to-end suite
 
@@ -113,7 +113,9 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 | `crates/example-app` | The example app (`roedy-hub-example`): a test app that implements the contract, for the hub's tests; not part of the image |
 | `apps/web` | Web app of the hub (Svelte 5, SvelteKit as an SPA) |
 | `apps/e2e` | End-to-end suite (Playwright with axe) against the hub and the example app |
-| `packages/tokens` | Design tokens as CSS and TypeScript constants, a copy from Roedy Mail ([origin](packages/tokens/README.md)) |
+| `packages/tokens` | `@roedy/tokens`: design tokens as CSS and TypeScript constants, the source for all Roedy apps ([README](packages/tokens/README.md)) |
+| `packages/ui` | `@roedy/ui`: Svelte 5 components, actions and helpers that every Roedy app shares, with their own English and German texts ([README](packages/ui/README.md)) |
+| `packages/jmap` | `@roedy/jmap`: JMAP for the browser (client, session, tokens, sync, EventSource stream, push, contact cards) ([README](packages/jmap/README.md)) |
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
 | `deploy/` | Docker Compose setup (`compose.yml`, `.env.example`; the hub with built-in TLS, no proxy), `restore.sh` for backups, the test override with the example app and TLS from a test certificate |
 | `Dockerfile` | The image: packages `dist/<arch>/roedy-hub` on `scratch` |
@@ -121,8 +123,8 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 
 ## Conventions
 
-- **Language:** code, comments, commits and docs are in English. UI texts live in `apps/web/messages/{en,de}.json`. English is the source language; every key needs both languages.
-- **Web app:** imports via `#lib/…` with file extension, colours through the design tokens.
+- **Language:** code, comments, commits and docs are in English. UI texts live in `apps/web/messages/{en,de}.json`, the texts of `@roedy/ui` in `texts()` tables next to their code (no message keys for the apps). English is the source language; every key needs both languages.
+- **Web app:** imports via `#lib/…` with file extension, colours through the design tokens. What several Roedy apps need goes into `packages/ui` (relative imports with file extension inside the package), and the web app imports it from `@roedy/ui`.
 - **Accessibility:** every interactive element must be usable with the keyboard and a screen reader, in the light and the dark theme.
 - **Database:** until the first release the schema is one migration, `crates/server/src/db/migrations/0001_init.sql`; change it in place and delete your development database (`ROEDY_DATA_DIR`) afterwards. From the first release on, released migrations are never edited; every change is a new migration. Nothing before the first release needs a migration path or compatibility code.
 - **Dependencies:** keep the hub lightweight (image ≤ 25 MB, idle memory ≤ 40 MB). Justify new dependencies in the PR. Libraries that end up in the browser bundle belong in `dependencies`, build and test tools in `devDependencies`.
@@ -132,7 +134,7 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 ## Commits and pull requests
 
 - Branch from `main` with a short-lived branch, e.g. `feat/pairing` or `fix/cookie-filter`.
-- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/en/): `<type>(<scope>): <description>` with the types `feat fix perf refactor docs test build ci chore style revert` and the scopes `server gateway contract example web tokens ci deploy docs deps repo`. The description starts lowercase and has no trailing period.
+- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/en/): `<type>(<scope>): <description>` with the types `feat fix perf refactor docs test build ci chore style revert` and the scopes `server gateway contract example web tokens ui jmap ci deploy docs deps repo release`. The description starts lowercase and has no trailing period.
 - Pull requests are squash-merged; the PR title becomes the commit and the changelog entry.
 - Keep pull requests focused. Add tests, update the docs and include screenshots for UI changes (light and dark, desktop and mobile).
 - CI, CodeQL and an automated review by CodeRabbit run on every pull request; a maintainer reviews and merges.

@@ -8,14 +8,21 @@
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/email-confirm.svelte.ts`).
  */
-import { api, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  api,
+  clockText,
+  ERRS,
+  failText,
+  type IconName,
+  isApiError,
+  isOffline,
+  retryAfter,
+  ui,
+  waitText,
+} from '@roedy/ui';
 import { Countdown } from '#lib/countdown.svelte.ts';
-import { ERRS, failText, isOffline } from '#lib/errors.ts';
-import type { IconName } from '#lib/icons.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
-import { clockText, waitText } from '#lib/wait.ts';
 
 /** `state` of the responses; `confirmed` only from `confirm`. */
 export type LinkState = 'valid' | 'confirmed' | 'already_confirmed' | 'invalid';

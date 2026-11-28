@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ApiError, ui } from '@roedy/ui';
 import { resetSignedIn, signIn, TEST_USER } from '#lib/test/signed-in.ts';
 import { sessionOf } from '#lib/test/session.ts';
 import {
@@ -19,7 +19,6 @@ import {
   systemMailValues,
   type SystemMail,
 } from './system-mail.svelte.ts';
-import { ApiError } from '#lib/api.ts';
 import { hostOf, mailUrlOf, normUrl } from './system-mail-url.ts';
 
 const IDS = [{ id: 'i1', name: 'Example Org', email: 'noreply@example.com' }];

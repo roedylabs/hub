@@ -1,5 +1,5 @@
 /**
- * Roedy Mail design tokens: colours, accents, fonts, sizes and motion as
+ * Roedy design tokens: colours, accents, fonts, sizes and motion as
  * TypeScript constants and CSS custom properties. `tokens.css` is generated
  * from them (`pnpm --filter @roedy/tokens build`).
  */

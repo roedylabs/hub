@@ -26,13 +26,22 @@
  * the language).
  */
 import { SvelteSet } from 'svelte/reactivity';
-import { ago } from '#lib/ago.ts';
-import { api, fieldsOf, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  ago,
+  api,
+  failText,
+  fieldsOf,
+  type IconName,
+  isApiError,
+  type KeyInput,
+  loadFailText,
+  Loading,
+  retryAfter,
+  ui,
+  waitText,
+} from '@roedy/ui';
 import { copyText } from '#lib/clipboard.svelte.ts';
 import { downloadCodes } from '#lib/download.ts';
-import { failText, loadFailText } from '#lib/errors.ts';
-import type { IconName } from '#lib/icons.ts';
-import type { KeyInput } from '#lib/keys.ts';
 import { intlLocale } from '#lib/locale.ts';
 import { formatOtp } from '#lib/login.svelte.ts';
 import { m } from '#lib/paraglide/messages.js';
@@ -40,8 +49,6 @@ import { PW_RULES, tooLong, type PasswordRuleId } from '#lib/password.ts';
 import { qrSymbol, type QrSymbol } from '#lib/qr.ts';
 import { CODE_LENGTH, needsReauth, reauthError, type ReauthError } from '#lib/reauth.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { Loading, ui } from '#lib/state/ui.svelte.ts';
-import { waitText } from '#lib/wait.ts';
 
 export type ListStatus = 'loading' | 'ready' | 'failed';
 /** Sections of the page. */

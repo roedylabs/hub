@@ -50,6 +50,8 @@ jobs:
             example
             web
             tokens
+            ui
+            jmap
             ci
             deploy
             docs

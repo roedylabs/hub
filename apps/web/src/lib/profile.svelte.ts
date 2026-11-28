@@ -26,11 +26,21 @@
  */
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import { hideTooltip } from '#lib/actions/tooltip.ts';
-import { api, fieldsOf, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  api,
+  failText,
+  fieldsOf,
+  hideTooltip,
+  isApiError,
+  isOffline,
+  type KeyInput,
+  loadFailText,
+  Loading,
+  retryAfter,
+  ui,
+  waitText,
+} from '@roedy/ui';
 import { isEmail } from '#lib/email.ts';
-import { failText, isOffline, loadFailText } from '#lib/errors.ts';
-import type { KeyInput } from '#lib/keys.ts';
 import { formatOtp } from '#lib/login.svelte.ts';
 import { nameError, nameErrorText, normalizeName } from '#lib/name.ts';
 import { loginHref } from '#lib/next.ts';
@@ -38,8 +48,6 @@ import { m } from '#lib/paraglide/messages.js';
 import { CODE_LENGTH, needsReauth, reauthError } from '#lib/reauth.ts';
 import { forgetAccount } from '#lib/state/account.ts';
 import { initialsOf, session } from '#lib/state/session.svelte.ts';
-import { Loading, ui } from '#lib/state/ui.svelte.ts';
-import { waitText } from '#lib/wait.ts';
 
 /** Address of the page (`next` of a fresh sign-in). */
 export const PROFILE_PATH = '/account/profile';

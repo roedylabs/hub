@@ -5,10 +5,10 @@
 -->
 <script lang="ts">
   import { page } from '$app/state';
-  import ErrorView from '#lib/components/ErrorView.svelte';
-  import { errorCodeOf, gatewayErrorIn } from '#lib/errors.ts';
+  import { errorCodeOf, ErrorView, gatewayErrorIn } from '@roedy/ui';
+  import { session } from '#lib/state/session.svelte.ts';
 
   const code = $derived(gatewayErrorIn() ?? errorCodeOf(page.status));
 </script>
 
-<ErrorView {code} />
+<ErrorView {code} appName={session.appName} support={session.config?.org.email ?? null} />

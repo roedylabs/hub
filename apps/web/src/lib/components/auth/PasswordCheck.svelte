@@ -10,7 +10,7 @@
 <script lang="ts">
   import { ACCENTS } from '@roedy/tokens';
   import { untrack } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import { m } from '#lib/paraglide/messages.js';
   import { PW_RULES, strength, type PasswordRuleId } from '#lib/password.ts';
 

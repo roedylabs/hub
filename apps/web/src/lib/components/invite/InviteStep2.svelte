@@ -14,7 +14,7 @@
   Taken over from Roedy Mail (`apps/web/src/lib/components/invite/InviteStep2.svelte`).
 -->
 <script lang="ts">
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
   import PasswordCheck from '#lib/components/auth/PasswordCheck.svelte';

@@ -6,8 +6,7 @@
  * language, the access choices per app ("No access" or a role) and the
  * app's status.
  */
-import { ago } from '#lib/ago.ts';
-import type { IconName } from '#lib/icons.ts';
+import { ago, type IconName } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
 import { getLocale } from '#lib/paraglide/runtime.js';
 

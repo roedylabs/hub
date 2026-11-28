@@ -11,18 +11,15 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import DirtyBar from '#lib/components/DirtyBar.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { DirtyBar, Icon, ui } from '@roedy/ui';
   import { OrgPage, orgValues, type OrgContext, type OrgField, type OrgSection } from '#lib/org.svelte.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
   import { pageOf } from '#lib/settings-nav.ts';
-  import { prefs } from '#lib/state/prefs.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   let root: HTMLElement | undefined = $state();
   const ctx: OrgContext = {
-    scrollTo: (section: OrgSection) => scrollToSection(root, section, prefs.motion),
+    scrollTo: (section: OrgSection) => scrollToSection(root, section, ui.motion),
   };
   const p = new OrgPage(ctx);
   const uid = $props.id();

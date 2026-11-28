@@ -1,13 +1,13 @@
 # @roedy/tokens
 
-Design tokens (colours, accents, fonts, sizes, motion) as TypeScript constants
-and CSS custom properties.
-
-**Origin:** a copy of `packages/tokens` from
-[roedylabs/mail](https://github.com/roedylabs/mail) at commit `d5bdf14`
-(v0.5.0). The only change: `src/tokens.test.ts` no longer requires the web
-app to use a shadow token, since the hub's pages do not use one yet. Change the tokens in Roedy Mail first and copy them over,
-so that both apps keep the same look. Moving them into a package that both
-repositories share is an open point (`docs/plan.md` › Open points).
+Design tokens of the Roedy apps (colours, accents, fonts, sizes, motion) as
+TypeScript constants and CSS custom properties. This package is their source:
+the hub's web app and `@roedy/ui` use it from the workspace, the apps (Mail,
+Calendar, Contacts …) as a published package (`docs/plan.md` § 9.4). Change the
+tokens here, never in an app.
 
 `tokens.css` is generated from `src/tokens.ts`: `pnpm --filter @roedy/tokens build`.
+
+**Origin:** taken over from `packages/tokens` of Roedy Mail standalone
+(`roedylabs/mail`, archived as `mail-standalone`) at commit `d5bdf14` (v0.5.0),
+same project and licence; that copy is archived with it.

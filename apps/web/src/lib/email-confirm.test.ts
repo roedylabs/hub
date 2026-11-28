@@ -2,9 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session, type Me, type PublicConfig } from '#lib/state/session.svelte.ts';
+import { session, type Me, type PublicConfig } from '#lib/state/session.svelte.ts';
 import { sessionOf } from '#lib/test/session.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import {
   EmailConfirmFlow,
   checkFailValues,

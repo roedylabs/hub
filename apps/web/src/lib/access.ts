@@ -5,10 +5,8 @@
  * only know 401. If the account cannot be reloaded (no connection), an error
  * toast says so: the page stays as it was and the action did not happen.
  */
-import { isApiError } from '#lib/api.ts';
-import { failText } from '#lib/errors.ts';
+import { failText, isApiError, ui } from '@roedy/ui';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 
 /** Reloads the account after 401/403 and says so; other errors stay with the caller. */
 export function lostAccess(error: unknown): boolean {

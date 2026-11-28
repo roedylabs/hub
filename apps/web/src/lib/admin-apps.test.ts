@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppPage, AppsPage, internalUrlError, slugError, slugErrorText } from '#lib/admin-apps.svelte.ts';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 

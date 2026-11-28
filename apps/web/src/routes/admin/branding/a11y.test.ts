@@ -8,10 +8,10 @@ import { fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { brandingOf, type AdminBranding } from '#lib/branding.svelte.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0 } from '#lib/state/session.svelte.ts';
-import { violations } from '#lib/test/axe.ts';
+import { violations } from '@roedy/ui/testing';
 import { renderSignedIn, resetSignedIn, setPhone } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
+import { BRAND0 } from '@roedy/ui';
 
 vi.mock('$app/navigation', () => ({ goto: vi.fn(() => Promise.resolve()) }));
 

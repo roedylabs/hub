@@ -7,10 +7,11 @@
 import { fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs, type Settings } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, type PublicConfig } from '#lib/state/session.svelte.ts';
-import { violations } from '#lib/test/axe.ts';
+import type { PublicConfig } from '#lib/state/session.svelte.ts';
+import { violations } from '@roedy/ui/testing';
 import { renderSignedIn, resetSignedIn, setPhone } from '#lib/test/signed-in.ts';
 import DialogHost from './DialogHost.svelte';
+import { BRAND0 } from '@roedy/ui';
 
 vi.mock('$app/navigation', () => ({ goto: vi.fn(() => Promise.resolve()) }));
 

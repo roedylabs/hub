@@ -12,8 +12,8 @@ import { render } from '@testing-library/svelte';
 import { vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session, type Me, type PublicConfig } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session, type Me, type PublicConfig } from '#lib/state/session.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import { page } from '#lib/test/page.svelte.ts';
 import { sessionOf } from '#lib/test/session.ts';
 
@@ -73,7 +73,7 @@ export interface SignedInOptions {
  * the view and the recorded API calls (`calls`).
  */
 export function renderSignedIn(component: Renderable, options: SignedInOptions = {}) {
-  prefs.animations = false;
+  ui.animations = false;
   const me = signIn(options.role, options.config);
   if (options.path) page.url = new URL(`http://localhost${options.path}`);
   const api = mockApi(options.api ?? {});

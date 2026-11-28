@@ -10,15 +10,13 @@
 import { fireEvent, render, type RenderResult } from '@testing-library/svelte';
 import { createRawSnippet } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import ErrorView from '#lib/components/ErrorView.svelte';
-import Header from '#lib/components/Header.svelte';
+import { BRAND0, ErrorView, Header, ui } from '@roedy/ui';
 import LoginPage from '#lib/components/LoginPage.svelte';
 import type { LoginRoute } from '#lib/login.svelte.ts';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
-import { violations } from '#lib/test/axe.ts';
+import { session, type PublicConfig } from '#lib/state/session.svelte.ts';
+import { violations } from '@roedy/ui/testing';
 import { page } from '#lib/test/page.svelte.ts';
 import { sessionOf } from '#lib/test/session.ts';
 import { setPhone } from '#lib/test/signed-in.ts';
@@ -227,7 +225,7 @@ const CASES: Case[] = [
     `error ${code}`,
     () => {
       ready();
-      return Promise.resolve(render(ErrorView, { code }) as RenderResult<never>);
+      return Promise.resolve(render(ErrorView, { code, appName: session.appName }) as RenderResult<never>);
     },
   ]),
   [
@@ -244,7 +242,7 @@ const CASES: Case[] = [
 describe('accessibility (axe)', () => {
   for (const mode of ['light', 'dark'] as const) {
     it.each(CASES)(`has no violations: %s (${mode})`, async (_name, show) => {
-      prefs.animations = false;
+      ui.animations = false;
       prefs.set({ mode });
       document.documentElement.dataset.mode = mode;
       const view = await show();

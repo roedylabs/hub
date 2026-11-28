@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi, type Call } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 import { ProfilePage, profileValues, type ProfileMe, type ProfileValues } from './profile.svelte.ts';
 

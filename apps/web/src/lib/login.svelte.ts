@@ -10,13 +10,11 @@
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/login.svelte.ts`).
  */
-import { NetworkError, api, fieldsOf, isApiError, retryAfter } from '#lib/api.ts';
+import { api, clockText, failText, fieldsOf, isApiError, NetworkError, retryAfter, waitText } from '@roedy/ui';
 import { Countdown } from '#lib/countdown.svelte.ts';
 import { isEmail } from '#lib/email.ts';
-import { failText } from '#lib/errors.ts';
 import { PW_RULES, meetsPolicy, tooLong, type PasswordRuleId } from '#lib/password.ts';
 import { m } from '#lib/paraglide/messages.js';
-import { clockText, waitText } from '#lib/wait.ts';
 
 /** Duration from "Hello, ‹name›" to the home page (progress bar of 2.6 s). */
 export const DONE_MS = 2700;

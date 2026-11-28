@@ -13,7 +13,7 @@
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
   import PreviewCard from '#lib/components/auth/PreviewCard.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import { setupFrame } from '#lib/components/setup/frame.ts';
   import type { SetupTargets } from '#lib/components/setup/targets.ts';
   import { MAX_NAME, NAME_WARN, initials, limitNameEdit, nameError, nameLength, normalizeName } from '#lib/name.ts';

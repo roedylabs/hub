@@ -10,21 +10,16 @@
   with the details of the expanded row and "Requested a new invitation".
 -->
 <script lang="ts">
-  import { scrollbar } from '#lib/actions/scrollbar.ts';
+  import { FirstLoad, Icon, radiogroup, scrollbar, tooltip, ui } from '@roedy/ui';
   import { focusback } from '#lib/actions/focusback.ts';
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
-  import { tooltip } from '#lib/actions/tooltip.ts';
   import AccessPicker from '#lib/components/AccessPicker.svelte';
   import AppIcon from '#lib/components/AppIcon.svelte';
-  import FirstLoad from '#lib/components/FirstLoad.svelte';
-  import Icon from '#lib/components/Icon.svelte';
   import { m } from '#lib/paraglide/messages.js';
   import { pickPop, selIds, selKey } from '#lib/select.ts';
   import { pageOf } from '#lib/settings-nav.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
   import {
     rowsValues,
     UsersPage,

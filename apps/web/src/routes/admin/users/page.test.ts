@@ -3,7 +3,7 @@
 import { createEvent, fireEvent, render, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { pairedApp, pendingApp } from '#lib/test/apps.ts';
 import { renderSignedIn, resetSignedIn, setPhone, TEST_USER, type ApiRoutes } from '#lib/test/signed-in.ts';
 import type { ListedUser } from '#lib/users.svelte.ts';

@@ -10,12 +10,11 @@
 -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, ui } from '@roedy/ui';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
   import { Copied } from '#lib/clipboard.svelte.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { qrSymbol } from '#lib/qr.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   interface Props {
     /** `otpauth://` URI and its key (Base32), once there. */

@@ -942,8 +942,7 @@ per person and server. The hub owns what is the same for all of them:
   refresh per account at a time. Access tokens are short-lived; a refresh
   token never leaves the hub.
 
-What the apps get (details with milestone 8, as compatible additions to
-contract version 1):
+What the apps get (details with milestone 8):
 
 - **In the browser:** the hub's browser API lists the user's accounts (with
   the JMAP session URL, state and the capabilities the server offers) and
@@ -1018,10 +1017,21 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
    1. [x] **App switcher** – the first web component of the hub's frame.
       Done: `<roedy-app-switcher>` in `GET /api/v1/frame.js` (contract
       § 5.5), source in `apps/web/src/frame`, used by the example app.
-   2. [ ] **Packages** – `packages/ui` from the hub's web app and Mail's
+   2. [x] **Packages** – `packages/ui` from the hub's web app and Mail's
       shared components, actions and helpers (§ 9.2); `packages/jmap` from
       Mail's shared JMAP layer; `packages/tokens` as the source. The hub's web
       app uses them from the workspace.
+      Done: `@roedy/ui` with the hub's shell components, actions and helpers
+      moved out of `apps/web` plus Mail's command palette, shortcuts,
+      licences and debug dialogs, time picker, undo toasts, network state,
+      developer log, app worker and date; own English and German texts
+      (`texts()`), the app's language and colour scheme via
+      `connectSettings()`, `base.css`, test helpers (`@roedy/ui/testing`).
+      `@roedy/jmap` without mail and Sieve, extensible by declaration merging
+      and `registerCapabilities()`, with room for calendars.
+      `@roedy/tokens` is the source. Left for later: Mail's time field
+      around the picker, the palette as an ARIA combobox, building
+      `licenses.json` in the hub.
    3. [ ] **Publishing** – packing (`@sveltejs/package`), versions with the
       hub's release, npm with provenance and crates.io in the release
       workflow, a dry run in CI.

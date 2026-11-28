@@ -36,17 +36,6 @@ export function deviceLang(): Lang {
 }
 
 /**
- * Language of the browser for the setting `system`: German if its preferred
- * language starts with `de`, otherwise English (the server decides the same
- * from `Accept-Language` for mails).
- */
-export function browserLang(): Lang {
-  if (!('navigator' in globalThis)) return baseLocale;
-  const tag = navigator.languages?.[0] ?? navigator.language ?? '';
-  return tag.toLowerCase().startsWith('de') ? 'de' : 'en';
-}
-
-/**
  * Remembers the language of the account for the pages without sign-in on this
  * device; `system` forgets it, so that they follow the browser as well.
  */

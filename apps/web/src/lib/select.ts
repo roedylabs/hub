@@ -8,8 +8,7 @@
 import { tick } from 'svelte';
 import type { Action } from 'svelte/action';
 import type { SegOption } from '#lib/appearance.ts';
-import type { KeyInput } from '#lib/keys.ts';
-import { pickKeys, type PickOption } from '#lib/shell.ts';
+import { type KeyInput, pickKeys, type PickOption } from '@roedy/ui';
 
 /** Select list; on mobile in the sheet (`ui.pick`). */
 export interface SelectValues {
