@@ -1,5 +1,10 @@
 //! Schema migrations. Each migration runs exactly once and is recorded in
-//! `schema_migrations`; applied migrations are never changed.
+//! `schema_migrations`.
+//!
+//! Until the first release there is one migration, the initial schema
+//! `0001_init.sql`, and schema changes edit it in place (a development
+//! database is then created anew). From the first release on, released
+//! migrations are never changed and every change is a new migration.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/db/migrations.rs`).
 
@@ -13,53 +18,11 @@ pub struct Migration {
 }
 
 /// All migrations, ascending and without gaps from 1.
-pub const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        name: "init",
-        sql: include_str!("migrations/0001_init.sql"),
-    },
-    Migration {
-        version: 2,
-        name: "auth",
-        sql: include_str!("migrations/0002_auth.sql"),
-    },
-    Migration {
-        version: 3,
-        name: "mail",
-        sql: include_str!("migrations/0003_mail.sql"),
-    },
-    Migration {
-        version: 4,
-        name: "branding",
-        sql: include_str!("migrations/0004_branding.sql"),
-    },
-    Migration {
-        version: 5,
-        name: "signing_keys",
-        sql: include_str!("migrations/0005_signing_keys.sql"),
-    },
-    Migration {
-        version: 6,
-        name: "apps",
-        sql: include_str!("migrations/0006_apps.sql"),
-    },
-    Migration {
-        version: 7,
-        name: "events",
-        sql: include_str!("migrations/0007_events.sql"),
-    },
-    Migration {
-        version: 8,
-        name: "access",
-        sql: include_str!("migrations/0008_access.sql"),
-    },
-    Migration {
-        version: 9,
-        name: "tls",
-        sql: include_str!("migrations/0009_tls.sql"),
-    },
-];
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "init",
+    sql: include_str!("migrations/0001_init.sql"),
+}];
 
 /// Applies all pending migrations and returns the schema version.
 pub fn run(conn: &mut Connection) -> anyhow::Result<i64> {

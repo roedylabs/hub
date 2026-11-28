@@ -151,32 +151,6 @@ one), then `just image` or `docker buildx build --platform linux/amd64,linux/arm
 the binaries from `dist/`. `just smoke` runs the image's smoke test, `just smoke-compose` the one of the Compose setup
 (with `just dist-example` and `just image-example` for the example app).
 
-### Migrating from a setup with Caddy
-
-Setups made from an earlier `deploy/compose.yml` ran Caddy in front of the hub. To switch to the built-in TLS:
-
-1. [Back up](#backup-and-restore) the hub's volume and replace `compose.yml` with the current one (keep your changes,
-   such as a bind mount). Remove `Caddyfile`.
-2. In `.env`: add `ROEDY_ACME_AGREE_TOS=true` (and `ROEDY_ACME_EMAIL` if you like), remove `CADDY_IMAGE_TAG`,
-   `CADDY_SITE` and `ROEDY_TRUST_PROXY` (the hub is exposed directly now), and `ROEDY_MAIL_TRUST_PROXY` unless it is
-   `1`. Compare with the current `.env.example`.
-3. Remove the Caddy container, which frees ports 80 and 443 for the hub, and recreate the containers (the site is
-   down for a moment):
-
-   ```sh
-   docker rm -f roedy-caddy
-   docker compose up -d --remove-orphans
-   docker compose logs -f roedy-hub                 # … TLS certificate issued
-   ```
-
-The hub gets a new certificate for the same name; Caddy's certificates are not taken over. Afterwards, remove Caddy's
-volumes and network, which are no longer used:
-
-```sh
-docker volume rm roedy_caddy-data roedy_caddy-config
-docker network rm roedy_edge
-```
-
 ### Behind your own proxy
 
 If a reverse proxy of your own (or a load balancer) must terminate TLS, set `ROEDY_TLS=off`: the hub then serves plain
@@ -482,8 +456,8 @@ Versions follow 0.x: a new minor version (0.1 → 0.2) may contain migrations an
    ```
 
 The hub applies pending migrations by itself on start (`roedy-hub migrate` does the same without starting) and gives
-open requests 8 seconds when stopping; the apps keep running and catch up on missed events. Contract version 1 stays
-backwards compatible, so apps keep working across hub updates
+open requests 8 seconds when stopping; the apps keep running and catch up on missed events. From the first release on,
+contract version 1 stays backwards compatible, so apps keep working across hub updates
 ([app contract › Versioning](app-contract.md#14-versioning-and-extensions)).
 
 **Back to an older version:** an older version does not start once the database schema is newer than itself. Then set

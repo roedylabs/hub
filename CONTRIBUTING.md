@@ -124,7 +124,7 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 - **Language:** code, comments, commits and docs are in English. UI texts live in `apps/web/messages/{en,de}.json`. English is the source language; every key needs both languages.
 - **Web app:** imports via `#lib/…` with file extension, colours through the design tokens.
 - **Accessibility:** every interactive element must be usable with the keyboard and a screen reader, in the light and the dark theme.
-- **Database:** never edit an existing migration; add a new one.
+- **Database:** until the first release the schema is one migration, `crates/server/src/db/migrations/0001_init.sql`; change it in place and delete your development database (`ROEDY_DATA_DIR`) afterwards. From the first release on, released migrations are never edited; every change is a new migration. Nothing before the first release needs a migration path or compatibility code.
 - **Dependencies:** keep the hub lightweight (image ≤ 25 MB, idle memory ≤ 40 MB). Justify new dependencies in the PR. Libraries that end up in the browser bundle belong in `dependencies`, build and test tools in `devDependencies`.
 - **Pinning:** GitHub Actions by full commit SHA, Docker images in Dockerfiles by tag and digest; Dependabot keeps them current. `scripts/action-pins.test.mjs` and `scripts/docker-pins.test.mjs` check it in `pnpm test`.
 - **Origin of code:** code from [Roedy Mail](https://github.com/roedylabs/mail) (same project, same licence) may be taken over and adapted; say so in the module comment. Do not copy code from other projects.

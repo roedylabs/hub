@@ -19,7 +19,6 @@ apps/web/src/lib/paraglide/
 secret.key
 # deSEC's API token for deploy/compose.dns01.yml
 desec_token
-vapid.json
 .env
 .env.*
 !.env.example

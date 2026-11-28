@@ -1,8 +1,10 @@
 # Roedy Hub app contract – version 1
 
-> **Status: version 1, agreed on 2026-11-25.** The hub implements it in the
-> milestones of [`plan.md`](plan.md); until the first release, details may
-> still be corrected here, and every correction is noted in the PR that makes it.
+> **Status: version 1, agreed on 2026-11-25.** Until the hub's first release
+> the contract may still change in any way, compatible or not, and stays
+> version 1: there are no apps built against an earlier state to keep working.
+> Every change is noted in the PR that makes it. The rules of
+> [§ 14](#14-versioning-and-extensions) apply from the first release on.
 
 This document is everything an app needs to run behind Roedy Hub. It is written
 so that an app can implement it without reading the hub's code. The key words
@@ -900,6 +902,9 @@ It SHOULD:
 
 - This is **version 1**. The manifest names it in `contract`, the internal API
   in its path (`/internal/v1`), the JWTs in `typ`.
+- **Before the first release** the contract changes freely within version 1
+  (see the status at the top); the following rules start with the first
+  release.
 - **Compatible additions** within version 1: new claims, new event types, new
   optional manifest fields, new internal endpoints, new fields in responses.
   Apps ignore what they do not know.

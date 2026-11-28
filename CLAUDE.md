@@ -10,7 +10,8 @@ the apps). Toolchain: Node 26, pnpm 12, Rust stable.
 ## Key documents
 
 - `docs/app-contract.md`: the contract apps implement without reading the hub's code. Keep it and the code in sync;
-  changes stay backwards compatible within version 1.
+  until the first release it may change freely (still version 1), afterwards changes stay backwards compatible within
+  version 1.
 - `docs/plan.md`: architecture, milestones (one PR each) and open points.
 
 ## Commands
@@ -29,7 +30,8 @@ the apps). Toolchain: Node 26, pnpm 12, Rust stable.
   templates); every message key exists in en and de.
 - Web: `#lib/…` imports with file extension, colours via design tokens; keyboard and screen-reader accessible,
   light and dark theme.
-- Never edit an existing migration; add a new one.
+- Database: until the first release there is one migration, the initial schema `0001_init.sql`; edit it in place. After
+  the first release, never edit a released migration; add a new one.
 - Stay lightweight (image ≤ 25 MB, idle ≤ 40 MB); justify new dependencies.
 - Code may be taken from Roedy Mail (same project and licence) with a note of origin; never from other projects.
 - Design: sign-in, setup and invitation follow the new "Roedy Mail" design, account and administration the current
