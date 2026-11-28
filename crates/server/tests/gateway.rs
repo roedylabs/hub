@@ -791,7 +791,7 @@ async fn error_pages_for_page_loads() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         all(response.headers(), "content-security-policy"),
-        ["default-src 'none'; connect-src 'self'; frame-ancestors 'self'"]
+        [roedy_hub_example::CSP]
     );
 }
 

@@ -66,7 +66,7 @@ use crate::{
             self, APP_ICON_PATH, MANIFEST_PATH, MASKABLE_ICON_PATH, SMALL_ICON_PATH,
             TOUCH_ICON_PATH,
         },
-        security_headers,
+        frame, security_headers,
         static_files::WebAssets,
     },
 };
@@ -267,6 +267,9 @@ pub fn router(state: AppState) -> Router {
         // The apps' icons: public and cacheable images under the API's
         // path, without its middleware (`web::app_icons`).
         .route(app_icons::ICON_PATH, get(app_icons::icon))
+        // The frame for the apps' pages, a script loaded with `<script>`
+        // like the icons (`web::frame`).
+        .route(frame::SCRIPT_PATH, get(frame::script))
         .nest(api::PREFIX, api.clone())
         // `nest` does not cover `/api/v1/` (axum 0.8); the API answers there too.
         .route_service(&format!("{}/", api::PREFIX), api.with_state(state.clone()))

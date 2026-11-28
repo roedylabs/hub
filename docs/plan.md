@@ -870,7 +870,7 @@ its milestone. **Mail:** stays in the app.
 | Language, colour scheme, accent | `settings` (these three fields) | Hub |
 | Server base: config, database, scheduler, rate limits, client IP, security headers, embedded web app, healthcheck, locks, server texts | `config`, `db`, `jobs/scheduler`, `rate_limit`, `client_ip`, `web/*`, `healthcheck`, `locks`, `i18n` | Hub |
 | Guest pages, account and administration shell | `routes/(auth)`, `setup`, `invite`, `account`, `admin`, `components/{auth,setup,signin,invite}` | Hub |
-| App switcher | `components/AppsMenu.svelte` | Shared, 7 (in progress) |
+| App switcher | `components/AppsMenu.svelte` | Shared, 7 (done) |
 | Interface building blocks: Sheet, Toast, Tooltip, ConfirmDialog, DirtyBar, Skeleton, PickerList, ErrorView, FirstLoad, Header, AccountMenu, SettingsNav, ColorEditor, TimePicker, CommandPalette, ShortcutsDialog, LicensesDialog, DebugBar | `lib/components/*` | Shared, 7 (`@roedy/ui`) |
 | Actions and helpers: focus trap, tooltip, radio group, tab list, scroll bar; `api`, `ago`, `date`, `theme`, `swipe`, `keys`, `wait`, `undo`, network state and "No connection", new-build detection, developer log | `lib/actions/*`, `lib/*.ts`, `lib/state/{network,devlog}`, `lib/app-worker.ts` | Shared, 7 (`@roedy/ui`) |
 | Design tokens | `packages/tokens` | Shared, 7 (`@roedy/tokens`, the hub's copy becomes the source) |
@@ -970,7 +970,7 @@ reachable from the browsers for webmail anyway.
 
 - **Frame served by the hub (run time):** web components under a versioned
   path of the hub, which every app loads with one script: the app switcher
-  (milestone 7, in progress in its own PR), the notification bell (10) and the
+  (milestone 7, done), the notification bell (10) and the
   notice bar for the banner and maintenance mode (11). They always match the
   running hub, and apps need no new build when the hub changes them. They read
   the design tokens' custom properties, which reach into the shadow DOM.
@@ -1015,8 +1015,9 @@ Ordered by what the new Mail needs first: it can start once 7 and 8.1 are
 merged. Each item is one PR; "API" and "pages" are separate PRs where named.
 
 7. [ ] **Shared interface and packages**
-   1. [ ] **App switcher** – the first web component of the hub's frame (in
-      progress in its own PR).
+   1. [x] **App switcher** – the first web component of the hub's frame.
+      Done: `<roedy-app-switcher>` in `GET /api/v1/frame.js` (contract
+      § 5.5), source in `apps/web/src/frame`, used by the example app.
    2. [ ] **Packages** – `packages/ui` from the hub's web app and Mail's
       shared components, actions and helpers (§ 9.2); `packages/jmap` from
       Mail's shared JMAP layer; `packages/tokens` as the source. The hub's web

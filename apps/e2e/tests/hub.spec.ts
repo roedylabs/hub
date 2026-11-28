@@ -202,6 +202,66 @@ test('the tile on the home page opens the app with the identity', async ({ brows
   await state(page, 'Hello, Alex', 'home page after the app');
 });
 
+test('the app switcher in the example app, under its strict CSP', async ({ browser, request }) => {
+  const script = await request.get(`${env.url}/api/v1/frame.js`);
+  expect(script.status()).toBe(200);
+  expect(script.headers()['content-type']).toBe('text/javascript; charset=utf-8');
+  expect(script.headers()['cache-control']).toBe('no-cache');
+
+  const page = await newPage(
+    await newContext(browser, { view: 'desktop', theme: 'dark' }, need(admin.state, 'session')),
+  );
+  const blocked: string[] = [];
+  page.on('console', (message) => {
+    if (/content security policy/i.test(message.text())) blocked.push(message.text());
+  });
+  await page.goto('/example/');
+  await state(page, 'Example', 'example app with the switcher');
+
+  // The menu button opens with the keyboard, on the first item: the example, marked as the current app.
+  const button = page.getByRole('button', { name: 'Apps' });
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
+  await button.focus();
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'Apps' });
+  await expect(menu).toBeVisible();
+  await expect(button).toHaveAttribute('aria-expanded', 'true');
+  const items = menu.getByRole('menuitem');
+  await expect(items).toHaveText(['Example', 'Home', 'Manage account', 'Administration']);
+  const example = menu.getByRole('menuitem', { name: 'Example' });
+  await expect(example).toBeFocused();
+  await expect(example).toHaveAttribute('aria-current', 'page');
+  await expect(example).toHaveAttribute('href', '/example/');
+  // Its icon from the hub, allowed by `img-src 'self'`.
+  await expect
+    .poll(() => example.locator('img').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0))
+    .toBe(true);
+
+  // Styled by its constructed style sheet (no `style-src` on the page), in the system's dark mode.
+  const pop = page.locator('roedy-app-switcher .pop');
+  await expect(pop).toHaveCSS('border-radius', '28px');
+  await expect(pop).toHaveCSS('background-color', 'rgb(50, 43, 37)');
+  await expectAccessible(page, 'app switcher open');
+
+  await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Administration' })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(example).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(button).toBeFocused();
+
+  // A click outside closes it; "Home" leads to the hub.
+  await button.click();
+  await expect(menu).toBeVisible();
+  await page.getByRole('heading', { name: 'Example' }).click();
+  await expect(menu).toBeHidden();
+  await button.click();
+  await menu.getByRole('menuitem', { name: 'Home' }).click();
+  await state(page, 'Hello, Alex', 'home page after the switcher');
+  expect(blocked).toEqual([]);
+});
+
 test('SSE and WebSocket through the browser', async ({ browser }) => {
   const page = await newPage(
     await newContext(browser, { view: 'mobile', theme: 'light' }, need(admin.state, 'session')),

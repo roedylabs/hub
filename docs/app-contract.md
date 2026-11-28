@@ -343,8 +343,9 @@ client-side storage being cleared at sign-out.
 ### 5.4 Links to the hub
 
 The app MUST show a visible link to the hub's home page `/` in its main
-navigation. It SHOULD offer an app switcher built from `GET /api/v1/apps`
-([§ 6](#6-browser-api-of-the-hub)). Other links into the hub:
+navigation. It SHOULD offer the app switcher of the hub's
+frame ([§ 5.5](#55-the-hubs-frame)) rather than building its own from
+`GET /api/v1/apps` ([§ 6](#6-browser-api-of-the-hub)). Other links into the hub:
 
 | Purpose | Link |
 |---|---|
@@ -353,6 +354,70 @@ navigation. It SHOULD offer an app switcher built from `GET /api/v1/apps`
 | Password, two-factor authentication, signed-in devices | `/account/security` |
 | Administration (only for `role` = `admin`) | `/admin` |
 | Access to this app (only for `role` = `admin`) | `/admin/apps/<slug>` |
+
+### 5.5 The hub's frame
+
+What every app needs around its own content belongs to the hub, so that the
+apps look and behave alike and contain only what is their own. The hub serves
+these shared parts as web components in one dependency-free script, the
+**frame**. Including it defines the elements; the app places them in its
+header:
+
+```html
+<script type="module" src="/api/v1/frame.js"></script>
+…
+<roedy-app-switcher></roedy-app-switcher>
+```
+
+For the frame as a whole:
+
+- **CSP:** it needs `script-src 'self'`, `connect-src 'self'` (it reads the
+  endpoints of [§ 6](#6-browser-api-of-the-hub) with the session cookie) and
+  `img-src 'self'` (the apps' icons). It has no inline script or style and
+  needs no `style-src` (its styles are constructed style sheets in shadow
+  roots) and no `font-src`; it makes no request to another origin. This is
+  the policy of the example app:
+  `default-src 'none'; script-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'self'`.
+- **Look:** the design tokens of `@roedy/tokens`. Custom properties reach
+  into the shadow DOM: an app that sets the tokens' properties on its page
+  (`--pop`, `--fg`, `--acc`, `--font-sans` …) gets its colours, accent, mode
+  and fonts in the frame as well. Where a property is not set, the frame uses
+  the tokens' values for light or dark: those of `theme="light"` or
+  `theme="dark"` on the element, else of `prefers-color-scheme`. Further
+  adjustments go through `::part()`.
+- **Language:** English or German (`de…`) from `lang` on the element, else
+  the closest `lang` in the page, else the browser's language.
+- **Updates:** the address stays; the hub revalidates the script on every
+  load (`Cache-Control: no-cache` with an `ETag`), so that every app shows
+  the hub's current frame without a release of its own.
+
+#### App switcher: `<roedy-app-switcher>`
+
+A 40 × 40 px button that opens a menu with the apps the user can open (icon
+and name, the current app marked, `Offline` for an app whose health check
+failed) and the links of [§ 5.4](#54-links-to-the-hub) to the home page, the
+account and, for administrators, the administration. Signed out, it offers
+`/login?next=<the current page>`; when the hub cannot be reached, a retry.
+
+- **Attributes,** all optional:
+
+  | Attribute | Meaning |
+  |---|---|
+  | `current` | Slug of the current app; default the first segment of the page's path. |
+  | `theme` | `light` or `dark` for the tokens the page does not set; default `prefers-color-scheme`. |
+  | `lang` | Language of its texts (see above). |
+  | `align` | `end` (default) or `start`: the edge of the button the menu lines up with. |
+
+- **Script interface:** the property `open` (whether the menu is open), the
+  methods `close()` and `refresh()` (fetch the apps again; the switcher does
+  so by itself when the menu opens and its data is older than 30 s), and the
+  event `toggle` (does not bubble) when the menu opens or closes.
+- **Parts:** `button` and `menu`.
+- **Behaviour:** the menu button pattern of WAI-ARIA: Enter, Space or ↓ open
+  the menu on its first item, ↑ on its last; in the menu the arrow keys move
+  (↑/↓ by row, ←/→ one by one), Home and End go to the ends, a letter to the
+  next item starting with it, Escape closes it and puts focus back on the
+  button, Tab or a click outside closes it.
 
 ## 6. Browser API of the hub
 
@@ -420,6 +485,13 @@ immutable`; without `v` or with an earlier one `no-cache`, so that the
 browser revalidates. An app that waits for pairing, or an unknown slug, gets
 `404 {"error": "not_found"}`. The icon has a square `viewBox` and scales to
 any size.
+
+### `GET /api/v1/frame.js`
+
+The hub's frame ([§ 5.5](#55-the-hubs-frame)), an ES module for
+`<script type="module">`. Public, `Content-Type: text/javascript;
+charset=utf-8`, `Cache-Control: no-cache` with an `ETag`,
+`Cross-Origin-Resource-Policy: same-origin`.
 
 ### `POST /api/v1/auth/logout`
 
@@ -892,7 +964,7 @@ An app in hub mode MUST:
 
 It SHOULD:
 
-- [ ] offer an app switcher from `GET /api/v1/apps`;
+- [ ] use the app switcher of the hub's frame ([§ 5.5](#55-the-hubs-frame));
 - [ ] catch up on events at start;
 - [ ] send keep-alives at least every 30 s on long-lived streams;
 - [ ] log `X-Roedy-Request-Id`;
