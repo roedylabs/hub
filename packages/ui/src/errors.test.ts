@@ -46,6 +46,7 @@ describe('errors of the gateway', () => {
     expect(gatewayErrorOf('not_found')).toBe('404');
     expect(gatewayErrorOf('app_unreachable')).toBe('502');
     expect(gatewayErrorOf('app_not_ready')).toBe('503');
+    expect(gatewayErrorOf('app_disabled')).toBe('off');
     expect(gatewayErrorOf('app_timeout')).toBe('504');
     for (const unknown of ['', 'internal', 'toString', '__proto__', null, undefined]) {
       expect(gatewayErrorOf(unknown), String(unknown)).toBeNull();

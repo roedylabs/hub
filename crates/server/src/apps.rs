@@ -44,6 +44,9 @@ pub struct App {
     pub manifest: Option<Arc<Manifest>>,
     pub access_default: AccessDefault,
     pub health: Option<Health>,
+    /// `false` while an administrator has switched the app off: the gateway
+    /// answers `503 app_disabled` (contract § 12).
+    pub enabled: bool,
     /// [`icon_version`] of the manifest's icon; `None` while pending.
     pub icon_version: Option<String>,
 }
@@ -69,6 +72,7 @@ impl App {
             manifest: row.manifest.map(Arc::new),
             access_default: row.access_default,
             health: row.health,
+            enabled: row.disabled_at.is_none(),
         })
     }
 
@@ -114,11 +118,12 @@ impl AppTable {
         self.snapshot().get(slug).cloned()
     }
 
-    /// The paired apps, by slug.
-    pub fn paired(&self) -> Vec<Arc<App>> {
+    /// The paired apps that are switched on, by slug: those whose health
+    /// the hub checks.
+    pub fn active(&self) -> Vec<Arc<App>> {
         self.snapshot()
             .values()
-            .filter(|app| app.status == Status::Paired)
+            .filter(|app| app.status == Status::Paired && app.enabled)
             .cloned()
             .collect()
     }
@@ -497,12 +502,20 @@ mod tests {
         let app = table.get("mail").unwrap();
         assert_eq!(app.status, Status::Pending);
         assert_eq!(app.internal("/readyz"), "http://mail.test:8080/mail/readyz");
-        assert!(table.paired().is_empty());
+        assert!(table.active().is_empty());
         repo::pair(&conn, &mail, &manifest(), &[1; 32]).unwrap();
         table.reload(&conn).unwrap();
-        let paired = table.paired();
+        let paired = table.active();
         assert_eq!(paired.len(), 1);
         assert_eq!(paired[0].manifest.as_deref(), Some(&manifest()));
+        assert!(paired[0].enabled);
+        // Switched off: still in the table (the gateway answers 503), not
+        // checked.
+        repo::set_enabled(&conn, &mail, false).unwrap();
+        table.reload(&conn).unwrap();
+        assert!(!table.get("mail").unwrap().enabled);
+        assert!(table.active().is_empty());
+        repo::set_enabled(&conn, &mail, true).unwrap();
         repo::delete(&conn, &mail).unwrap();
         table.reload(&conn).unwrap();
         assert!(table.get("mail").is_none());

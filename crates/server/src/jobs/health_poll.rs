@@ -1,4 +1,5 @@
-//! Health of the paired apps (every 30 s; docs/plan.md › Keys and events):
+//! Health of the paired apps that are switched on (every 30 s; docs/plan.md
+//! › Keys and events; a switched-off app's container may well be stopped):
 //! `GET /<slug>/readyz` at each app's internal address, all at once, stored
 //! in `apps.health` and `health_at` and in the app table. A change between
 //! online and offline is logged. An app that is online again gets its event
@@ -34,17 +35,19 @@ pub fn job() -> Job<AppState> {
     }
 }
 
-/// One run: checks every paired app and returns their health by slug.
+/// One run: checks every paired app that is switched on and returns their
+/// health by slug.
 pub async fn run(state: &AppState) -> anyhow::Result<Vec<(String, Health)>> {
-    check(state, state.apps.paired()).await
+    check(state, state.apps.active()).await
 }
 
-/// Checks one app right away (after pairing); nothing if it is not paired.
+/// Checks one app right away (after pairing, after switching it on);
+/// nothing if it is not paired or switched off.
 pub async fn check_one(state: &AppState, slug: &str) -> anyhow::Result<Option<Health>> {
     let Some(app) = state
         .apps
         .get(slug)
-        .filter(|app| app.status == db::repo::apps::Status::Paired)
+        .filter(|app| app.status == db::repo::apps::Status::Paired && app.enabled)
     else {
         return Ok(None);
     };

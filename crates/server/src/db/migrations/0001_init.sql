@@ -200,6 +200,11 @@ CREATE TABLE apps (
     access_default TEXT NOT NULL DEFAULT 'all' CHECK (access_default IN ('all', 'selected')),
     -- Order on the home page.
     position       INTEGER NOT NULL,
+    -- Switched off by an administrator since then (empty: switched on). The
+    -- gateway answers `503 app_disabled`, the app is not listed, its events
+    -- wait in the outbox and its health is not checked; data, access and
+    -- pairing stay.
+    disabled_at    TEXT,
     -- Result of the last health check (`GET /<slug>/readyz`), empty before it.
     health         TEXT CHECK (health IN ('online', 'offline')),
     health_at      TEXT,

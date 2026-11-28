@@ -9,7 +9,9 @@
 //! every paired app (contract § 10.2: the app may hold data from earlier
 //! access), `access.changed` only to its app, the `stalwart.*` events to
 //! every paired app whose manifest asks for Stalwart accounts
-//! ([`to_stalwart_apps`]); pending apps get none. Each
+//! ([`to_stalwart_apps`]); pending apps get none. A switched-off app gets
+//! its events written as well: they wait in the outbox, and delivery
+//! resumes with them once it is on again (within the retention). Each
 //! app has its own `seq`, counted in `event_delivery.last_seq` so that it
 //! never repeats after old events are deleted.
 //!
@@ -130,9 +132,17 @@ pub fn append(conn: &Connection, app_id: &str, kind: Kind, data: &Value) -> rusq
     })
 }
 
-/// IDs of the paired apps, which get events.
+/// IDs of the paired apps, which get events – switched on or off.
 pub fn paired_apps(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     conn.prepare("SELECT id FROM apps WHERE state = 'paired' ORDER BY id")?
+        .query_map([], |row| row.get(0))?
+        .collect()
+}
+
+/// IDs of the paired apps that are switched on: those the delivery job
+/// sends events to.
+pub fn delivered_apps(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    conn.prepare("SELECT id FROM apps WHERE state = 'paired' AND disabled_at IS NULL ORDER BY id")?
         .query_map([], |row| row.get(0))?
         .collect()
 }
@@ -315,7 +325,8 @@ const STORED: &str = "SELECT id, seq, type, data FROM events";
 /// What the delivery of an app does next ([`next`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Next {
-    /// The app is gone or no longer paired: delivery ends.
+    /// The app is gone, no longer paired or switched off: delivery ends
+    /// (its events wait in the outbox).
     Gone,
     /// Nothing to deliver.
     Idle,
@@ -337,7 +348,7 @@ pub enum Next {
 pub fn next(conn: &Connection, app_id: &str) -> rusqlite::Result<Next> {
     let state = conn
         .query_row(
-            "SELECT a.slug, a.internal_url, a.state = 'paired', \
+            "SELECT a.slug, a.internal_url, a.state = 'paired' AND a.disabled_at IS NULL, \
                     coalesce(d.delivered_seq, 0), coalesce(d.attempts, 0), \
                     d.retry_at IS NULL, \
                     CAST(max(0, (julianday(d.retry_at) - julianday('now')) * 86400000) \
@@ -357,10 +368,10 @@ pub fn next(conn: &Connection, app_id: &str) -> rusqlite::Result<Next> {
             },
         )
         .optional()?;
-    let Some((slug, internal_url, paired, delivered, attempts, no_retry, wait_ms)) = state else {
+    let Some((slug, internal_url, active, delivered, attempts, no_retry, wait_ms)) = state else {
         return Ok(Next::Gone);
     };
-    if !paired {
+    if !active {
         return Ok(Next::Gone);
     }
     let event = conn
@@ -987,5 +998,34 @@ pub(crate) mod tests {
         // A pending app gets no delivery.
         apps::delete(&conn, &mail).unwrap();
         assert_eq!(next(&conn, &mail).unwrap(), Next::Gone);
+    }
+
+    #[test]
+    fn a_switched_off_app_keeps_its_events_for_later() {
+        let conn = conn();
+        let mail = paired(&conn, "mail", 1);
+        let notes = paired(&conn, "notes", 2);
+        apps::set_enabled(&conn, &mail, false).unwrap();
+        assert_eq!(delivered_apps(&conn).unwrap(), std::slice::from_ref(&notes));
+        // Written as for every paired app, but not delivered.
+        assert_eq!(user_locked(&conn, "u1").unwrap(), 2);
+        assert_eq!(events_of_after(&conn, &mail, 0), [1]);
+        assert_eq!(next(&conn, &mail).unwrap(), Next::Gone);
+        // A catch-up still reads them.
+        assert!(matches!(
+            page(&conn, &mail, 0, 10).unwrap(),
+            Page::Events { ref events, .. } if events.len() == 1
+        ));
+        // On again: delivery goes on with the waiting event.
+        apps::set_enabled(&conn, &mail, true).unwrap();
+        let mut ids = delivered_apps(&conn).unwrap();
+        ids.sort();
+        let mut both = vec![mail.clone(), notes];
+        both.sort();
+        assert_eq!(ids, both);
+        assert!(matches!(
+            next(&conn, &mail).unwrap(),
+            Next::Deliver { ref event, attempts: 0, .. } if event.seq == 1
+        ));
     }
 }

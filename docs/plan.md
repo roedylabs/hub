@@ -145,7 +145,7 @@ New:
 
 | Table | Content |
 |---|---|
-| `apps` | `id`, `slug` (unique), `internal_url`, `state` (`pending`, `paired`), `manifest_json`, `manifest_id`, `version`, `secret_hash`, `access_default` (`all`, `selected`), `position`, `health`, `health_at`, `online_at`, `contacted_at`, `paired_at`, `created_at` |
+| `apps` | `id`, `slug` (unique), `internal_url`, `state` (`pending`, `paired`), `manifest_json`, `manifest_id`, `version`, `secret_hash`, `access_default` (`all`, `selected`), `disabled_at` (switched off since), `position`, `health`, `health_at`, `online_at`, `contacted_at`, `paired_at`, `created_at` |
 | `pairing_codes` | `app_id` (one open code per app), `code_hash`, `expires_at`, `created_by` |
 | `app_access` | `user_id`, `app_id`, `app_role`; primary key (user, app) |
 | `invitation_access` | `invitation_id`, `app_id`, `app_role` (empty: no access); what an invitation gives, other apps get their default |
@@ -1088,8 +1088,26 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
     2. [ ] **Email and web push** – digest and quiet hours, VAPID, encryption,
        subscriptions per session, the hub's service worker for notifications.
 11. [ ] **Operations** – one PR each:
-    1. [ ] **Switching apps on and off** – Administration › Apps and the
+    1. [x] **Switching apps on and off** – Administration › Apps and the
        gateway (`503`), Compose profiles per app.
+       Done: `apps.disabled_at` (in `0001_init.sql`), `PATCH
+       admin/apps/:slug` with `enabled` (audit `apps.disable`,
+       `apps.enable`), the switch on the list and the app's page (off after
+       a confirmation). Switched off (contract § 3.7): the gateway answers
+       `503 app_disabled` to everyone before reading the session (the
+       hub's page "App switched off" for page loads) and closes every open
+       stream and WebSocket to the app, with a session or without (also when
+       an app is removed); `GET /api/v1/apps` leaves it out; health checks
+       pause. "It gets no events" means no deliveries: its events are still
+       written and go out in order once it is on again (backoff reset), so
+       that no `user.deleted` is lost; past the retention the app catches
+       up with `410` as after any gap. Its internal API keeps working so
+       that the container can start and catch up, except Stalwart access
+       tokens (`503 app_disabled`). Compose: every app under a profile named
+       like its slug (`mail`, the example app's `example` in
+       `compose.test.yml`), the pattern for Calendar and Contacts in
+       `compose.yml`; docs/ops.md › Switching apps on and off compares the
+       switch with `COMPOSE_PROFILES`.
     2. [ ] **Maintenance mode and banner** – for the hub and through the
        gateway for every app, the notice bar in the frame.
     3. [ ] **Update check** – the hub's releases, and the paired apps'

@@ -9,8 +9,9 @@
 //!   in the browser API, only for users with access to the app.
 //! - `POST /internal/v1/users/<sub>/stalwart-accounts/<id>/token`: an access
 //!   token from the token broker, only with `stalwart.backend` in the
-//!   manifest and only for active users with access to the app. It does not
-//!   count as a browser fetch (no early refresh for it).
+//!   manifest and only for active users with access to the app, not while
+//!   an administrator has switched the app off (`503 app_disabled`). It
+//!   does not count as a browser fetch (no early refresh for it).
 
 use axum::{
     Json,
@@ -117,6 +118,15 @@ pub async fn access_token(
 ) -> Result<Json<Value>, ApiError> {
     if !requested(&app)?.backend {
         return Err(not_requested());
+    }
+    // Switched off, the app does no work with the users' mail, calendars
+    // and contacts; the rest of the internal API stays open, so that it
+    // can start and catch up.
+    if !app.enabled() {
+        return Err(ApiError::rejected(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "app_disabled",
+        ));
     }
     let body = body.map(|JsonBody(body)| body).unwrap_or_default();
     let (app_id, user) = (app.id.clone(), sub.clone());

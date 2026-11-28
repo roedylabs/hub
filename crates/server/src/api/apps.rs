@@ -16,12 +16,23 @@
 //!   `fields.slug`: `required`, `invalid`, `reserved`, `taken`); the internal
 //!   address is scheme, host and port (`fields.internal_url`).
 //! - `GET admin/apps/:slug`: one app.
-//! - `PATCH admin/apps/:slug` (`{access_default}`): `all` ("everyone": new
-//!   users get the default role) or `selected` ("selected only": new users
-//!   get none). It applies to users created from then on – accepted
-//!   invitations without their own choice for the app included; existing
-//!   access stays exactly as it is, in both directions (contract § 11). The
-//!   administration grants or removes it per user (`users`).
+//! - `PATCH admin/apps/:slug` (`{access_default?, enabled?}`, at least one;
+//!   422 `fields.access_default: required` without either):
+//!   - `access_default`: `all` ("everyone": new users get the default role)
+//!     or `selected` ("selected only": new users get none). It applies to
+//!     users created from then on – accepted invitations without their own
+//!     choice for the app included; existing access stays exactly as it
+//!     is, in both directions (contract § 11). The administration grants or
+//!     removes it per user (`users`).
+//!   - `enabled`: switches the app off (`false`) or on again (`true`;
+//!     docs/plan.md § 9.1). Off, the gateway answers `503 app_disabled`,
+//!     `GET apps` leaves it out, its open streams and WebSockets close, its
+//!     events wait in the outbox and its health is not checked; pairing,
+//!     access, settings and its data stay, and its internal API keeps
+//!     working except for Stalwart access tokens (contract § 7.1). On
+//!     again, a failing delivery's backoff is reset, the waiting events go
+//!     out at once and its health is checked right away. Audit
+//!     `apps.disable` / `apps.enable`.
 //! - `GET admin/apps/:slug/users`: every user (active and locked) with
 //!   their role in the app (`app_role`, `null` without access) and every
 //!   open invitation with the role it will give.
@@ -156,6 +167,8 @@ pub fn app_json(state: &AppState, app: &App, extra: &Extra) -> Value {
             "admin": role.admin,
         })).collect::<Vec<_>>()),
         "access_default": app.access_default.as_str(),
+        "enabled": app.enabled(),
+        "disabled_at": app.disabled_at,
         "position": app.position,
         "health": app.health.map(repo::Health::as_str),
         "health_at": app.health_at,
@@ -269,11 +282,14 @@ async fn reorder(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UpdateBody {
-    access_default: AccessDefault,
+    #[serde(default)]
+    access_default: Option<AccessDefault>,
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
-/// "Access for new users": "Everyone" or "Selected users only". Existing
-/// access stays as it is.
+/// "Access for new users" ("Everyone" or "Selected users only"; existing
+/// access stays as it is) and "Switched on" (module documentation).
 async fn update(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
@@ -281,12 +297,18 @@ async fn update(
     Path(slug): Path<String>,
     JsonBody(body): JsonBody<UpdateBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let (app, extra) = change(&state, admin, ip, move |tx, actor| {
+    if body.access_default.is_none() && body.enabled.is_none() {
+        let mut errors = FieldErrors::default();
+        errors.code("access_default", "required");
+        return Err(errors.into_error());
+    }
+    let (app, extra, switched) = change(&state, admin, ip, move |tx, actor| {
         let Some(app) = repo::by_slug(tx, &slug)? else {
             return Ok(Err(ApiError::NotFound));
         };
-        let access = body.access_default;
-        if repo::set_access_default(tx, &app.id, access)? {
+        if let Some(access) = body.access_default
+            && repo::set_access_default(tx, &app.id, access)?
+        {
             let details = json!({
                 "slug": slug,
                 "access_default": access.as_str(),
@@ -294,9 +316,49 @@ async fn update(
             });
             audit_log::insert(tx, &app_entry(actor, "apps.access_default", &slug, details))?;
         }
-        Ok(Ok(with_extra(tx, &app.id)?))
+        let mut switched = None;
+        if let Some(enabled) = body.enabled
+            && repo::set_enabled(tx, &app.id, enabled)?
+        {
+            if enabled {
+                // The waiting events go out at once, not after a backoff
+                // that ran out while the app was off.
+                events::resume(tx, &app.id, false)?;
+            }
+            let action = if enabled {
+                "apps.enable"
+            } else {
+                "apps.disable"
+            };
+            let details = json!({
+                "slug": slug,
+                "name": app.manifest.as_ref().map(|m| m.name_in("en")),
+            });
+            audit_log::insert(tx, &app_entry(actor, action, &slug, details))?;
+            switched = Some(enabled);
+        }
+        let (app, extra) = with_extra(tx, &app.id)?;
+        Ok(Ok((app, extra, switched)))
     })
     .await?;
+    match switched {
+        Some(false) => {
+            tracing::info!(slug = app.slug, "app switched off");
+            state.gateway.streams.end_app(&app.id);
+        }
+        Some(true) => {
+            tracing::info!(slug = app.slug, "app switched on");
+            state.events.wake();
+            let checker = state.clone();
+            let slug = app.slug.clone();
+            state.background.spawn(async move {
+                if let Err(error) = crate::jobs::health_poll::check_one(&checker, &slug).await {
+                    tracing::warn!(slug, "health check after switching on failed: {error:#}");
+                }
+            });
+        }
+        None => {}
+    }
     Ok(Json(json!({ "app": app_json(&state, &app, &extra) })))
 }
 
@@ -535,7 +597,7 @@ async fn remove(
     ip: ClientIp,
     Path(slug): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    change(&state, admin, ip, move |tx, actor| {
+    let id = change(&state, admin, ip, move |tx, actor| {
         let Some(app) = repo::by_slug(tx, &slug)? else {
             return Ok(Err(ApiError::NotFound));
         };
@@ -545,9 +607,11 @@ async fn remove(
             "name": app.manifest.as_ref().map(|m| m.name_in("en")),
         });
         audit_log::insert(tx, &app_entry(actor, "apps.remove", &slug, details))?;
-        Ok(Ok(()))
+        Ok(Ok(app.id))
     })
     .await?;
+    // Forwarding stopped with the reload; open streams go as well.
+    state.gateway.streams.end_app(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 

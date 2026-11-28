@@ -35,6 +35,7 @@ describe('error page of the router and the gateway', () => {
     ['origin_mismatch', 'Access denied'],
     ['app_unreachable', 'App not reachable'],
     ['app_not_ready', 'App not ready yet'],
+    ['app_disabled', 'App switched off'],
     ['app_timeout', 'The app took too long'],
     ['not_found', 'Page not found'],
   ])('shows the gateway’s error %s at the same address', (code, title) => {

@@ -26,7 +26,17 @@
 # Settings come from environment variables or the .env file next to this file;
 # .env.example is the template (all variables: docs/ops.md › Configuration).
 # Empty values count as unset. deploy/compose.test.yml adds the example app for
-# tests.
+# tests (profile `example`).
+#
+# Every app has a profile of its own named like its slug, so that only the
+# apps in use run: COMPOSE_PROFILES=mail,calendar,contacts in .env starts
+# them. To stop one, `docker compose stop roedy-calendar` and remove it from
+# the list (Compose leaves the running container of a profile no longer
+# listed alone). The hub has no profile and always runs; it never gets a
+# Docker socket. Stopping a container only takes the app away – the hub then
+# answers 502 at its address and still lists it; to take it out of the home
+# page and the switchers, switch it off in Administration › Apps (docs/ops.md ›
+# Switching apps on and off).
 
 name: roedy
 
@@ -111,6 +121,12 @@ services:
   # contract's example app takes them (docs/ops.md › Pairing an app). In the
   # hub: Administration › Apps › Add, slug `mail`, internal address
   # http://roedy-mail:8080.
+  #
+  # Roedy Calendar and Roedy Contacts follow the same pattern once they are
+  # released: a copy of this service named roedy-calendar or roedy-contacts,
+  # with the profile, slug and volume `calendar` or `contacts`, their image
+  # and their own ROEDY_<APP>_* variables, in the network `apps` only and
+  # without `ports`.
   roedy-mail:
     profiles:
       - mail

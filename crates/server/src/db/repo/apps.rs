@@ -95,6 +95,16 @@ pub struct App {
     pub contacted_at: Option<String>,
     /// The last health check the app passed.
     pub online_at: Option<String>,
+    /// Since when an administrator has switched the app off; `None` while
+    /// it is on.
+    pub disabled_at: Option<String>,
+}
+
+impl App {
+    /// Switched on (not [`App::disabled_at`]).
+    pub fn enabled(&self) -> bool {
+        self.disabled_at.is_none()
+    }
 }
 
 const SELECT: &str = "SELECT a.id, a.slug, a.internal_url, a.state, a.manifest_json, \
@@ -103,7 +113,7 @@ const SELECT: &str = "SELECT a.id, a.slug, a.internal_url, a.state, a.manifest_j
                              (SELECT p.expires_at FROM pairing_codes p \
                               WHERE p.app_id = a.id \
                                 AND p.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), \
-                             a.contacted_at, a.online_at \
+                             a.contacted_at, a.online_at, a.disabled_at \
                       FROM apps a";
 
 fn app(row: &rusqlite::Row<'_>) -> rusqlite::Result<App> {
@@ -140,6 +150,7 @@ fn app(row: &rusqlite::Row<'_>) -> rusqlite::Result<App> {
         pairing_expires_at: row.get(11)?,
         contacted_at: row.get(12)?,
         online_at: row.get(13)?,
+        disabled_at: row.get(14)?,
     })
 }
 
@@ -279,6 +290,19 @@ pub fn set_access_default(
     Ok(n == 1)
 }
 
+/// Switches the app on or off; `false` if it already was (or the app is
+/// gone). Off, it keeps its pairing, access and events.
+pub fn set_enabled(conn: &Connection, id: &str, enabled: bool) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        &format!(
+            "UPDATE apps SET disabled_at = CASE WHEN ?2 THEN NULL ELSE {NOW} END \
+             WHERE id = ?1 AND (disabled_at IS NULL) <> ?2"
+        ),
+        (id, enabled),
+    )?;
+    Ok(n == 1)
+}
+
 /// The order on the home page: `ids` are every app's ID, in the new order;
 /// positions become 1, 2, …. Returns whether anything moved.
 pub fn set_order(conn: &Connection, ids: &[String]) -> rusqlite::Result<bool> {
@@ -413,6 +437,25 @@ pub(crate) mod tests {
         assert!(delete(&conn, &notes).unwrap());
         assert!(!delete(&conn, &notes).unwrap());
         assert!(by_id(&conn, &notes).unwrap().is_none());
+    }
+
+    #[test]
+    fn switching_off_and_on() {
+        let conn = conn();
+        let app = insert(&conn, "mail", "http://mail.test:8080").unwrap();
+        assert!(by_id(&conn, &app).unwrap().unwrap().enabled());
+        assert!(!set_enabled(&conn, &app, true).unwrap(), "already on");
+        assert!(set_enabled(&conn, &app, false).unwrap());
+        let off = by_id(&conn, &app).unwrap().unwrap();
+        assert!(!off.enabled());
+        assert!(off.disabled_at.is_some());
+        assert!(!set_enabled(&conn, &app, false).unwrap(), "already off");
+        // Pairing keeps the switch as it is.
+        pair(&conn, &app, &manifest(), &[1; 32]).unwrap();
+        assert!(!by_id(&conn, &app).unwrap().unwrap().enabled());
+        assert!(set_enabled(&conn, &app, true).unwrap());
+        assert_eq!(by_id(&conn, &app).unwrap().unwrap().disabled_at, None);
+        assert!(!set_enabled(&conn, "missing", false).unwrap());
     }
 
     #[test]

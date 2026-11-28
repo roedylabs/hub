@@ -14,13 +14,19 @@
  * first pairing code, which is shown once with "Copy" until it is closed.
  * Field errors are checked before sending like the server does
  * (`apps::check_slug`, `apps::internal_origin`) and shown at the field, as
- * are the server's (`fields.slug`, `fields.internal_url`).
+ * are the server's (`fields.slug`, `fields.internal_url`). Each row has the
+ * switch "Switched on" (`switchApp`, below).
  *
  * App page: status, addresses, version, the event delivery, "New pairing
  * code" (shown once), the access default for new users (`PATCH
  * admin/apps/:slug`; existing access stays as it is, the page says so), the
  * roles of the manifest, who has access (`GET admin/apps/:slug/users`) and
  * "Remove app" after a confirmation. A 404 shows "App not found".
+ *
+ * Both pages switch an app off and on (`PATCH admin/apps/:slug` with
+ * `enabled`, `switchApp`): off only after a confirmation that says what
+ * happens (gone from the home page, `503` at its address, events wait), on
+ * at once. The switch shows the new state only once the server has it.
  *
  * Only the latest load writes; nothing writes after `dispose`, failed actions
  * still show their toast. 401/403 reload the account (`lostAccess`).
@@ -121,6 +127,40 @@ async function copyCode(code: string): Promise<void> {
   else ui.toasts.error(m.error_copy());
 }
 
+/** What the caller of `switchApp` hears. */
+export interface SwitchHandlers {
+  /** The request goes out (after the confirmation, if any). */
+  start: () => void;
+  /** The app as the server returns it. */
+  done: (app: AdminApp) => void;
+  /** The request's error; a toast is up to the caller. */
+  failed: (error: unknown) => void;
+}
+
+/** Switches `app` off (after a confirmation; cancelling it changes nothing) or on. */
+export function switchApp(app: AdminApp, on: boolean, handlers: SwitchHandlers): void {
+  const send = () => {
+    handlers.start();
+    void api<{ app: AdminApp }>('PATCH', `admin/apps/${app.slug}`, { enabled: on }).then((res) => {
+      const name = appName(res.app);
+      ui.toasts.show(on ? m.apps_enabled({ name }) : m.apps_disabled({ name }));
+      handlers.done(res.app);
+    }, handlers.failed);
+  };
+  if (on) {
+    send();
+    return;
+  }
+  const name = appName(app);
+  ui.ask({
+    title: m.apps_disable_title({ name }),
+    text: m.apps_disable_text({ name }),
+    icon: 'ti-plug-off',
+    ok: m.apps_disable_ok(),
+    run: send,
+  });
+}
+
 /** Form "Add app". */
 interface AddForm {
   /** Counts up per opened form: responses only apply to their form. */
@@ -159,6 +199,8 @@ export class AppsPage {
   #ordering = 0;
   /** An order write failed: load the list once all have settled. */
   #reconcile = false;
+  /** Loads on their way: one a switch discards is replaced (it may be the reload after a failed order write). */
+  #loadsOut = 0;
 
   start(): void {
     void this.load();
@@ -166,6 +208,7 @@ export class AppsPage {
 
   async load(): Promise<void> {
     const seq = ++this.#seq;
+    this.#loadsOut++;
     try {
       const { apps } = await this.loading.run(api<{ apps: AdminApp[] }>('GET', 'admin/apps'));
       if (seq !== this.#seq || this.#disposed) return;
@@ -178,6 +221,8 @@ export class AppsPage {
         this.failure = loadFailText(error);
         this.status = 'failed';
       } else ui.toasts.error(failText(error, m.apps_list_failed()));
+    } finally {
+      this.#loadsOut--;
     }
   }
 
@@ -296,6 +341,44 @@ export class AppsPage {
     this.shown = null;
   }
 
+  /** Slugs whose switch is on its way. */
+  switching = $state<readonly string[]>([]);
+
+  /** "Switched on" of a row: off after a confirmation, on at once; the row shows the server's answer. */
+  setEnabled(slug: string, on: boolean): void {
+    const app = this.rows.find((a) => a.slug === slug);
+    if (!app || app.enabled === on || this.switching.includes(slug)) return;
+    const settle = () => (this.switching = this.switching.filter((s) => s !== slug));
+    switchApp(app, on, {
+      start: () => (this.switching = [...this.switching, slug]),
+      done: (next) => {
+        settle();
+        if (this.#disposed) return;
+        // A list load still on its way may predate the switch: it would show the old state. It is discarded and
+        // loaded again after the switch, so that what it was for (e.g. the order after a failed move) still applies.
+        const discarded = this.#loadsOut > 0;
+        this.#seq++;
+        // Only the switch and the event delivery (switching on resets its backoff): a move on its way keeps its order.
+        this.rows = this.rows.map((a) =>
+          a.slug === slug ? { ...a, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events } : a,
+        );
+        if (!discarded) return;
+        // Behind queued order writes, as after a failed move: an earlier read would show the old order.
+        if (this.#ordering > 0) this.#reconcile = true;
+        else void this.load();
+      },
+      failed: (error) => {
+        settle();
+        if (isApiError(error, 404)) ui.toasts.error(m.apps_gone());
+        else ui.toasts.error(failText(error, m.apps_switch_failed()));
+        if (this.#disposed || lostAccess(error)) return;
+        // Reload once the queued order writes have settled, as after a failed move.
+        if (this.#ordering > 0) this.#reconcile = true;
+        else void this.load();
+      },
+    });
+  }
+
   copyShown(): void {
     if (this.shown) void copyCode(this.shown.pairing.code);
   }
@@ -342,6 +425,8 @@ export class AppPage {
   /** Default saves not settled yet; a reload waits for them (`#reload`). */
   #saving = 0;
   #reloadAfterSaves = false;
+  /** Loads on their way: one a switch discards is replaced. */
+  #loadsOut = 0;
 
   constructor(slug: string, ctx: AppPageContext) {
     this.#slug = slug;
@@ -358,6 +443,7 @@ export class AppPage {
 
   async load(): Promise<void> {
     const seq = ++this.#seq;
+    this.#loadsOut++;
     try {
       const { app } = await this.loading.run(api<{ app: AdminApp }>('GET', `admin/apps/${this.#slug}`));
       if (seq !== this.#seq || this.#disposed) return;
@@ -375,6 +461,8 @@ export class AppPage {
         this.failure = loadFailText(error);
         this.status = 'failed';
       } else ui.toasts.error(failText(error, m.apps_app_failed()));
+    } finally {
+      this.#loadsOut--;
     }
   }
 
@@ -443,6 +531,30 @@ export class AppPage {
     if (this.pairing) void copyCode(this.pairing.code);
   }
 
+  /** "Switched on": off after a confirmation, on at once; shows the server's answer. */
+  setEnabled(on: boolean): void {
+    const app = this.app;
+    if (!app || app.enabled === on || this.busy) return;
+    switchApp(app, on, {
+      start: () => (this.busy = true),
+      done: (next) => {
+        this.busy = false;
+        if (this.#disposed || !this.app) return;
+        // A load still on its way may predate the switch: it would show the old state. It is discarded and
+        // loaded again after the switch.
+        const discarded = this.#loadsOut > 0;
+        this.#seq++;
+        // Only the switch: the response may predate a save of the default.
+        this.app = { ...this.app, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events };
+        if (discarded) this.#reload();
+      },
+      failed: (error) => {
+        this.busy = false;
+        this.#failed(error, m.apps_switch_failed());
+      },
+    });
+  }
+
   /** Access default for new users: shown at once, back on an error. */
   setDefault(value: AccessDefault): void {
     const app = this.app;
@@ -457,7 +569,11 @@ export class AppPage {
     void this.#save(() => api<{ app: AdminApp }>('PATCH', `admin/apps/${this.#slug}`, { access_default: value }))
       .then(
         (res) => {
-          if (current()) this.app = res.app;
+          // Not the switch: the response may predate a switch that succeeded meanwhile.
+          if (current() && this.app) {
+            const { enabled, disabled_at, events } = this.app;
+            this.app = { ...res.app, enabled, disabled_at, events };
+          }
           ui.toasts.show(m.apps_default_saved());
         },
         (error: unknown) => {

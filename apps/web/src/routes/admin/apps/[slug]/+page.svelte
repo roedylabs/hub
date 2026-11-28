@@ -1,6 +1,7 @@
 <!--
-  Administration › Apps › an app: status (health, addresses, version, event
-  delivery), "New pairing code" (shown once), and for a paired app the access
+  Administration › Apps › an app: the switch "Switched on" (off after a
+  confirmation), status (health, addresses, version, event delivery), "New
+  pairing code" (shown once), and for a paired app the access
   default for new users, the roles of its manifest and who has access; at the
   end "Remove app" with confirmation. "Apps" leads back to the list. Flow in
   `#lib/admin-apps.svelte.ts` (`AppPage`).
@@ -129,6 +130,28 @@
     <section class="sec">
       <h2>{m.apps_sec_status()}</h2>
       <div class="box">
+        <div class="row toggle">
+          <div class="row-text">
+            <div class="label" id="{uid}-switch">{m.apps_switch()}</div>
+            <div class="desc" id="{uid}-switch-desc">
+              {app.enabled ? m.apps_switch_on_desc() : m.apps_switch_off_desc()}
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            class="switch"
+            class:on={app.enabled}
+            aria-checked={app.enabled}
+            aria-disabled={p.busy}
+            aria-labelledby="{uid}-switch"
+            aria-describedby="{uid}-switch-desc"
+            onclick={() => p?.setEnabled(!app.enabled)}
+          >
+            <span class="knob"></span>
+          </button>
+        </div>
+        <div class="sep"></div>
         <div class="row">
           <div class="row-text">
             <div class="label">{m.apps_fact_status()}</div>
@@ -495,15 +518,63 @@
     background: var(--danger);
   }
 
+  /* switched off: a muted ring */
+  .st-disabled {
+    color: var(--mfg);
+  }
+
   /* waiting: a ring, as for invitations */
+  .st-disabled .st-dot,
   .st-pending .st-dot,
   .st-unknown .st-dot {
     background: transparent;
     box-shadow: inset 0 0 0 2px var(--acc);
   }
 
+  .st-disabled .st-dot,
   .st-unknown .st-dot {
     box-shadow: inset 0 0 0 2px var(--mfg);
+  }
+
+  .row.toggle {
+    flex-wrap: nowrap;
+  }
+
+  /* Switch, as on Administration › Email */
+  .switch {
+    width: 52px;
+    height: 32px;
+    border-radius: 9999px;
+    background: var(--sunken);
+    position: relative;
+    flex-shrink: 0;
+    transition: background-color var(--dur, 220ms);
+  }
+
+  .switch.on {
+    background: var(--acc);
+  }
+
+  .switch[aria-disabled='true'] {
+    cursor: progress;
+    opacity: 0.6;
+  }
+
+  .knob {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: 24px;
+    height: 24px;
+    border-radius: 9999px;
+    /* fixed values (switch) */
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(60, 35, 10, 0.25);
+    transition: transform var(--dur, 220ms) cubic-bezier(0.3, 1.5, 0.5, 1);
+  }
+
+  .switch.on .knob {
+    transform: translateX(20px);
   }
 
   .problem {

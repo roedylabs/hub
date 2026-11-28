@@ -39,7 +39,8 @@ own still works with `ROEDY_TLS=off` ([Behind your own proxy](#behind-your-own-p
 
 ### With Docker Compose
 
-The basis is [`deploy/compose.yml`](../deploy/compose.yml): the hub and, with the profile `mail`, Roedy Mail. Only
+The basis is [`deploy/compose.yml`](../deploy/compose.yml): the hub and, with the profile `mail`, Roedy Mail (every
+app has a Compose profile of its own, [Switching apps on and off](#switching-apps-on-and-off)). Only
 the hub publishes ports: `443` (HTTPS, its port `8443`) and `80` (HTTP, its port `8080`), TCP only. It runs with
 `ROEDY_TLS=acme` and gets its certificate from Let's Encrypt by itself ([TLS](#tls)). The hub and the apps share one
 private network:
@@ -185,7 +186,38 @@ Mail with `deploy/compose.yml` (needs a Roedy Mail version with hub mode):
 Another app: add a service like `roedy-mail` in the network `apps` only (never with `ports`), with
 `ROEDY_PUBLIC_URL=<hub public URL>/<slug>`, `ROEDY_TRUST_PROXY` the hub's value plus one, the hub's internal address
 `http://roedy-hub:8081` and the code, and choose the same slug in the hub. "New pairing code" pairs an app again, for
-example after its data was lost.
+example after its data was lost. Give the service a profile named like the slug (`profiles: [calendar]`), as
+`roedy-mail` has, and add it to `COMPOSE_PROFILES`.
+
+## Switching apps on and off
+
+Two switches, for different things:
+
+| | Administration › Apps › "Switched on" | `COMPOSE_PROFILES` in `.env` |
+|---|---|---|
+| What it changes | What users see and reach | Which containers run |
+| The app's address | `503` with the page "App switched off" (`app_disabled`), for everyone, administrators included | `502` (`app_unreachable`) while the hub still knows the app |
+| Home page and app switchers | Not listed | Still listed, as offline |
+| Open streams and WebSockets | Closed at once | Broken off with the container |
+| Events | Kept and delivered in order once it is on again (within the retention of 30 days) | Retried with backoff, given up after 7 days until the app is back |
+| Health check | Paused | Fails: "Offline" |
+| Data, pairing, access | Stay | Stay |
+| Who does it | An administrator in the web interface, logged in the audit log | The operator on the host |
+
+To take an app out of service, switch it off in the administration first, then stop its container with
+`docker compose stop roedy-calendar` and remove its profile from `COMPOSE_PROFILES` (e.g.
+`COMPOSE_PROFILES=mail,contacts` without `calendar`), so that the next `docker compose up -d` leaves it stopped.
+Compose does not stop the running container of a profile that is no longer listed, not even with `--remove-orphans`;
+its volume and data stay. To bring it back, add the profile and run `docker compose up -d`, wait until the container
+is running (`docker compose ps`), switch the app on in Administration › Apps and wait until it shows online there: the
+hub checks its health from then on, not while it is off. The hub has no Docker socket and never starts or stops containers itself.
+
+While an app is switched off, its internal API keeps working, so that its container can start, send its manifest and
+catch up on events; only access tokens for users' Stalwart accounts are refused (`503 app_disabled`), so a switched-off
+app does no work in their mail, calendars and contacts. Events that wait longer than 30 days are deleted: the app then
+catches up with `410` and reconciles when it is switched on again
+([app contract › Catching up](app-contract.md#103-catching-up)). Removing an app (Administration › Apps › Remove app)
+is different: it ends the pairing and everyone's access and deletes its events.
 
 ## Stalwart servers
 
@@ -503,6 +535,7 @@ when:
 | `431` | `headers_too_large` | More than 64 KiB of request headers; always JSON, also for page loads |
 | `502` | `app_unreachable` | No connection to the app within 5 seconds (name lookup, TCP and TLS), or the app breaks it off before its response |
 | `503` | `app_not_ready` | The app waits for pairing and the user is no hub administrator |
+| `503` | `app_disabled` | An administrator switched the app off ([Switching apps on and off](#switching-apps-on-and-off)), for everyone |
 | `504` | `app_timeout` | No response headers from the app within 300 seconds after the hub took the request body's last part to send it (an upload has no time limit; an app that stops reading its last bytes counts as not answering) |
 
 Every `502` and `504` is logged as a warning with the slug and the request's `X-Roedy-Request-Id`, which the app
@@ -523,7 +556,8 @@ hour; the first failure of a series is logged as a warning (`event delivery fail
 and the reason: `status <code>`, `timeout` or `not reachable`), the repetitions only at `debug`. After 7 days the hub
 gives up (`event delivery given up until the app is back`) and tries again as soon as the app sends its manifest, reads
 missed events, pairs again or answers its health check. Events written by `roedy-hub reset-admin` go out within a
-minute. Events are kept for 30 days for apps that catch up; removing an app deletes its events.
+minute. Events are kept for 30 days for apps that catch up; removing an app deletes its events. An app that is
+switched off gets none: its events wait and go out in order, at once, when it is switched on again.
 
 ## Health
 

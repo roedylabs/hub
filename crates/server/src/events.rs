@@ -20,7 +20,10 @@
 //! (`roedy-hub reset-admin`) are found by the check every minute.
 //!
 //! Removing an app deletes its events (`ON DELETE CASCADE`) and stops its
-//! worker.
+//! worker. Switching an app off stops its worker too, but its events stay
+//! in the outbox and are written on; switching it on starts the worker
+//! again, which delivers them in order at once (`api::apps`: the backoff of
+//! a failing delivery is reset).
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -194,7 +197,7 @@ pub async fn start(state: &AppState) -> anyhow::Result<Delivery> {
     })
 }
 
-/// Keeps one worker per paired app.
+/// Keeps one worker per paired app that is switched on.
 async fn supervise(state: AppState) {
     let mut changed = state.events.subscribe();
     let mut workers: HashMap<String, AbortHandle> = HashMap::new();
@@ -202,7 +205,7 @@ async fn supervise(state: AppState) {
     let mut tasks = JoinSet::new();
     loop {
         changed.borrow_and_update();
-        match db::call(&state.db, |conn| Ok(repo::paired_apps(conn)?)).await {
+        match db::call(&state.db, |conn| Ok(repo::delivered_apps(conn)?)).await {
             Ok(apps) => {
                 workers.retain(|id, worker| {
                     let keep = apps.contains(id) && !worker.is_finished();
@@ -220,9 +223,12 @@ async fn supervise(state: AppState) {
             }
             Err(error) => tracing::warn!("event delivery: apps not read: {error:#}"),
         }
-        while tasks.try_join_next().is_some() {}
         tokio::select! {
             _ = changed.changed() => {}
+            // A worker that ended (its app switched off, or gone) while the
+            // app came back in the meantime: look again at once. Every
+            // completion is taken here, one per pass, so none goes unseen.
+            _ = tasks.join_next(), if !tasks.is_empty() => {}
             () = tokio::time::sleep(state.events.schedule.recheck) => {}
         }
     }

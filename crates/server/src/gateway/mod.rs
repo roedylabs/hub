@@ -6,7 +6,9 @@
 //!
 //! 1. finds the app in the in-memory `apps::AppTable` (a first segment that
 //!    cannot be a slug, or a reserved name, stays with the hub's web app);
-//!    unknown slugs and `/<slug>/_roedy/…` get `404 not_found`;
+//!    unknown slugs and `/<slug>/_roedy/…` get `404 not_found`, an app an
+//!    administrator switched off `503 app_disabled` – for everyone, before
+//!    the session is read;
 //! 2. reads the hub session from its cookie through the [`SessionCache`]
 //!    (10 s; ending a session clears it at once) and decides: a paired app
 //!    gets the request without identity when signed out, with
@@ -27,8 +29,14 @@
 //! The app's responses are marked [`Proxied`]: the hub's own security
 //! headers stay off them.
 //!
-//! Every response body and WebSocket of a session is registered in
-//! [`Streams`]; ending the session closes them.
+//! Every request is registered in [`Streams`] before it goes to the app,
+//! and stays registered with its response body or WebSocket; ending its
+//! session closes it, and switching the app off closes all of the app's
+//! ([`Streams::end_app`]) – also a request still uploading or waiting for
+//! the app's response headers, which then gets `503 app_disabled`. A
+//! request registered while the app is being switched off is stopped by
+//! the check right after its registration (the app table is reloaded
+//! before the streams end).
 
 pub mod client;
 pub mod headers;
@@ -167,6 +175,7 @@ pub enum GatewayError {
     OriginMismatch,
     Unreachable,
     NotReady,
+    Disabled,
     Timeout,
     HeadersTooLarge,
     Internal,
@@ -178,7 +187,7 @@ impl GatewayError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::NoAccess | Self::OriginMismatch => StatusCode::FORBIDDEN,
             Self::Unreachable => StatusCode::BAD_GATEWAY,
-            Self::NotReady => StatusCode::SERVICE_UNAVAILABLE,
+            Self::NotReady | Self::Disabled => StatusCode::SERVICE_UNAVAILABLE,
             Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
             Self::HeadersTooLarge => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -192,6 +201,7 @@ impl GatewayError {
             Self::OriginMismatch => "origin_mismatch",
             Self::Unreachable => "app_unreachable",
             Self::NotReady => "app_not_ready",
+            Self::Disabled => "app_disabled",
             Self::Timeout => "app_timeout",
             Self::HeadersTooLarge => "headers_too_large",
             Self::Internal => "internal",
@@ -406,6 +416,9 @@ pub async fn serve(State(state): State<AppState>, request: Request) -> Response 
         Some(app) if !is_reserved_app_path(request.uri().path()) => app,
         _ => return error_response(&state, page_load, GatewayError::NotFound).await,
     };
+    if !app.enabled {
+        return error_response(&state, page_load, GatewayError::Disabled).await;
+    }
     // Before the session is read: a revocation from here on until the
     // stream is registered makes `forward` check the session again.
     let generation = state.gateway.sessions.generation();
@@ -491,6 +504,27 @@ async fn forward(
         identity,
         websocket,
     };
+    let mut watch = gateway.streams.watch(signed.map_or_else(
+        || Owner::anonymous(&app.id),
+        |signed| Owner {
+            sid: &signed.user.session_id,
+            user_id: &signed.user.id,
+            app_id: &app.id,
+        },
+    ));
+    // Until the app's response headers: the app alone, so that switching
+    // it off still stops the request once its session has ended.
+    let mut app_watch = gateway.streams.watch(Owner::anonymous(&app.id));
+    // Switched off (or removed) since the app was looked up: its streams
+    // were ended before this one was registered, and the table says so.
+    let gone = || match state.apps.get(slug) {
+        None => Some(GatewayError::NotFound),
+        Some(now) if !now.enabled => Some(GatewayError::Disabled),
+        Some(_) => None,
+    };
+    if let Some(error) = gone() {
+        return Err(error);
+    }
     let outgoing = headers::request_headers(request.headers(), &forward);
     let uri = app_uri(app, request.uri()).ok_or(GatewayError::Internal)?;
     let client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
@@ -502,12 +536,47 @@ async fn forward(
     *to_app.version_mut() = Version::HTTP_11;
     *to_app.headers_mut() = outgoing;
 
-    let answer = client::respond(
+    let respond = client::respond(
         gateway.client.request(to_app),
         sent,
         gateway.limits.response,
-    )
-    .await;
+    );
+    tokio::pin!(respond);
+    // Switched off or removed while the request was on its way: dropping it
+    // ends the upload and the connection to the app. Checked before a
+    // response that is ready at the same moment.
+    let stopped = |error: GatewayError| {
+        tracing::debug!(
+            slug,
+            request_id = request_id.to_str().unwrap_or_default(),
+            "request stopped: app switched off or removed"
+        );
+        Err(error)
+    };
+    let mut session_ended = false;
+    let answer = loop {
+        tokio::select! {
+            biased;
+            // Only switching the app off, removing it or the shutdown end
+            // it; a switch-off stops the request even if the app is on
+            // again by now.
+            () = app_watch.ended() => {
+                if !gateway.streams.shutting_down() {
+                    return stopped(gone().unwrap_or(GatewayError::Disabled));
+                }
+                // The server shuts down: the response still goes out, and
+                // its body ends at once.
+                break (&mut respond).await;
+            }
+            () = watch.ended(), if !session_ended => match gone() {
+                Some(error) => return stopped(error),
+                // The session ended: the response still goes out, and its
+                // body ends at once – unless the app is switched off first.
+                None => session_ended = true,
+            },
+            answer = &mut respond => break answer,
+        }
+    };
     let mut from_app = match answer {
         Some(Ok(response)) => response,
         Some(Err(error)) => {
@@ -539,18 +608,18 @@ async fn forward(
         );
         return Err(GatewayError::Unreachable);
     }
-    let watch = gateway.streams.watch(signed.map(|signed| Owner {
-        sid: &signed.user.session_id,
-        user_id: &signed.user.id,
-        app_id: &app.id,
-    }));
-    // A session that ended, or an access that went, since it was read
-    // (while the app answered) had no stream to close yet.
+    // A session that ended, or an access that went, after it was read and
+    // before this request was registered had no stream to close yet.
     if let Some(signed) = signed
         && gateway.sessions.generation() != generation
     {
         still_valid(state, app, signed).await;
+        // Switched off while that check waited – even if on again by now.
+        if app_watch.has_ended() && !gateway.streams.shutting_down() {
+            return stopped(gone().unwrap_or(GatewayError::Disabled));
+        }
     }
+    drop(app_watch);
     let app_upgrade = switching.then(|| hyper::upgrade::on(&mut from_app));
     let (mut parts, incoming) = from_app.into_parts();
     let body = match (client_upgrade, app_upgrade) {
@@ -818,6 +887,7 @@ mod tests {
             manifest: None,
             access_default: crate::db::repo::apps::AccessDefault::All,
             health: None,
+            enabled: true,
             icon_version: None,
         }
     }
@@ -889,6 +959,7 @@ mod tests {
             (GatewayError::OriginMismatch, 403, "origin_mismatch"),
             (GatewayError::Unreachable, 502, "app_unreachable"),
             (GatewayError::NotReady, 503, "app_not_ready"),
+            (GatewayError::Disabled, 503, "app_disabled"),
             (GatewayError::Timeout, 504, "app_timeout"),
             (GatewayError::HeadersTooLarge, 431, "headers_too_large"),
             (GatewayError::Internal, 500, "internal"),
