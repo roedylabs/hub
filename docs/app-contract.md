@@ -967,11 +967,16 @@ It SHOULD:
   Apps ignore what they do not know.
 - **Incompatible changes** get version 2 (`/internal/v2`, `"contract": 2`);
   the hub then supports both versions for at least one minor release.
-- **Planned extension – shared mail accounts:** a later version may let the
-  hub manage Stalwart accounts and tokens for all apps. It would add an
-  optional manifest field (e.g. `"requires": ["mail-account"]`), internal
-  endpoints under `/internal/v1/accounts/…` and claims or events for them.
-  Nothing in version 1 depends on it.
+- **Planned platform services:** the hub is becoming the shared platform for
+  all Roedy apps ([`plan.md`](plan.md) § 9): what several apps need is built
+  in the hub, and an app should not build its own. Planned as compatible
+  additions: Stalwart servers, accounts and access tokens for the browser and
+  for the app's backend (an optional manifest field, endpoints in the browser
+  and internal API, events); shared settings such as time zone and formats;
+  notifications with topics from the manifest; a frame of web components
+  served by the hub (app switcher, notification bell, notice bar); switching
+  an app off in the administration. Until each is in this document, nothing
+  here depends on it.
 
 ## 15. Examples
 

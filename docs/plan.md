@@ -1,7 +1,8 @@
 # Roedy Hub – implementation plan
 
-> **Status: agreed on 2026-11-25.** Companion to [`app-contract.md`](app-contract.md)
-> and the roadmap of the repository; finished milestones are ticked off here.
+> **Status: agreed on 2026-11-25; platform direction (§ 9) agreed on
+> 2026-11-28.** Companion to [`app-contract.md`](app-contract.md) and the
+> roadmap of the repository; finished milestones are ticked off here.
 
 ## 1. What gets built
 
@@ -64,9 +65,10 @@ origin in each file's module comment:
   change and the security notices that go with them (password changed, email
   changed, new sign-in), with the snapshot tests.
 
-Not taken over: the token broker, mail servers, tags, notifications (bell,
-push, digests), backups in the app, update check, maintenance mode, GeoIP.
-Each can follow later; v1 stays small.
+Not taken over in milestones 1–6: the token broker, mail servers, tags,
+notifications (bell, push, digests), backups in the app, update check,
+maintenance mode, GeoIP. Since the platform direction (§ 9) the shared ones
+among them follow in milestones 7–11; tags stay with Mail.
 
 ## 3. Repository layout
 
@@ -195,7 +197,8 @@ is built plainly with the tokens first and finished once there is a draft.
 ## 6. Milestones
 
 Each milestone is one PR (milestone 3 possibly two: server API, then pages). All
-checks pass in every PR; every PR has tests for what it adds.
+checks pass in every PR; every PR has tests for what it adds. Milestones 7–11
+(the platform for all Roedy apps) are in § 9.6.
 
 1. [x] **Scaffold** – workspace, tools, hooks, CI, `CLAUDE.md`, `CONTRIBUTING.md`,
    `README.md`, `LICENSE`, `SECURITY.md`, the approved contract; empty
@@ -752,32 +755,32 @@ checks pass in every PR; every PR has tests for what it adds.
 
 ## 7. Open points (not in this assignment)
 
-- **Shared design tokens:** move `packages/tokens` into a package both repos
-  use (npm package from a `roedylabs/design` repository, or a Git
-  dependency). Until then the copy carries its origin and version.
-- **Moving Mail's users into the hub** – proposal: once Mail is paired, it
-  offers "Move users to the hub" in its administration. It calls a new
-  internal endpoint `POST /internal/v1/import/users` with username, email,
-  name, role, status, the Argon2id hash and the TOTP secrets of each user (over
-  the private network, secret-authenticated). The hub shows the request to an
-  administrator, who approves it; then the hub creates the users (or matches
-  existing ones by email), grants them access to Mail with the matching role
-  and returns the mapping from Mail's user IDs to `sub`. Mail stores the
-  mapping, so that existing data stays with the right person. Passwords and
-  second factors keep working; sessions start anew.
-- **Shared Stalwart accounts and tokens** for all apps – see contract § 14.
-- **Ready-made app switcher** as a small script/web component served by the
-  hub, so that each app does not build its own. Done: `<roedy-app-switcher>`
-  from `GET /api/v1/app-switcher.js` (contract § 5.5), source in
-  `apps/web/src/switcher`, used by the example app.
-- **Notifications, web push, backups in the app, update check, maintenance
-  mode, GeoIP** for the hub.
+The shared design tokens, Stalwart accounts and tokens, the app switcher,
+notifications, web push, backups in the app, update check, maintenance mode
+and GeoIP are milestones now (§ 9.6). Moving Mail's users into the hub is no
+longer a goal (decided on 2026-11-28): the standalone Roedy Mail is archived,
+the new Mail starts on the hub, and the mail itself stays in Stalwart.
+
 - **Restoring an older backup** leaves the apps' event position ahead of the
   hub's numbering (`docs/ops.md` › Backup and restore); the hub could
   announce a new stream (e.g. an epoch in the events) so that apps reset it.
-- **Roedy Mail in hub mode:** `deploy/compose.yml` passes the hub's address
-  and the pairing code as `ROEDY_HUB_INTERNAL_URL` and `ROEDY_PAIRING_CODE`,
-  as the example app takes them; Mail's hub mode should use these names.
+- **The new Roedy Mail** pairs like the example app: `deploy/compose.yml`
+  passes the hub's address and the pairing code as `ROEDY_HUB_INTERNAL_URL`
+  and `ROEDY_PAIRING_CODE`, and the profile `mail` starts the new image
+  instead of the standalone one once it exists.
+- **Backups of the apps' data:** each app backs up its own database for now;
+  the hub could trigger and list them (an internal endpoint or an event) so
+  that Administration › Maintenance covers the whole installation.
+- **Single sign-on to Stalwart:** the hub as an OpenID Connect provider for
+  Stalwart, so that connecting an account needs no second sign-in at the mail
+  server. Depends on what Stalwart supports as an external identity source.
+- **Audit entries from apps:** an internal endpoint so that apps record
+  administrative actions in the hub's audit log instead of keeping their own.
+- **Search across apps** on the home page (mails, events, contacts) through
+  the apps' own search; and **tags shared by several apps** – both only once
+  Calendar and Contacts exist.
+- **Installable apps:** one installed "Roedy" with the switcher, or one web
+  app manifest per app with its own scope – decided with the new Mail.
 - **OIDC/SAML, groups** – not in v1.
 
 ## 8. Additions to the brief (agreed on 2026-11-25)
@@ -812,3 +815,238 @@ These go beyond the original brief and are part of the contract:
 14. **Additional reserved slugs** (`apps`, `auth`, `branding`, `error`,
     `help`, `hub`, `logout`, `oauth`, `settings`, `static`, `_hub`,
     `favicon.ico`, `robots.txt`).
+
+## 9. Platform for all Roedy apps (agreed on 2026-11-28)
+
+### 9.1 Direction and decisions
+
+- **The hub is the shared platform (decided on 2026-11-28):** everything that
+  several Roedy apps need (Mail, Calendar, Contacts …) is built in the hub;
+  the apps contain only what is specific to them. There is no release yet, so
+  the hub stays clean code without compatibility layers for earlier states.
+- **Roedy Mail standalone** (`../mail`) is archived as `mail-standalone` and
+  only a reference from now on. A new Roedy Mail is built on the hub.
+- **Apps stay separate containers behind the gateway (decided on
+  2026-11-28).** Considered and rejected: apps as modules inside the
+  `roedy-hub` binary, switched on and off in the web interface (as in
+  node64). The contract (`app-contract.md`) stays the only interface between
+  hub and apps.
+- **Switching apps on and off (decided on 2026-11-28):** Administration ›
+  Apps turns an app off – the gateway answers `503`, it disappears from the
+  switcher and the home page, it gets no events, its data and pairing stay.
+  The containers are started and stopped with Compose profiles
+  (`COMPOSE_PROFILES=mail,calendar`); the hub gets no Docker socket.
+- **Separate repositories with published packages (decided on
+  2026-11-28):** each app has its own repository; the hub publishes what they
+  share as packages (§ 9.4, § 9.5).
+- **Shared interface: hybrid (recommendation, no preference from the
+  maintainer, 2026-11-28):** the frame that every app shows the same way is
+  served by the hub at run time, everything else comes as packages at build
+  time (§ 9.4).
+- **Stalwart: the hub owns servers, accounts and tokens, without a JMAP proxy
+  (recommendation, no preference from the maintainer, 2026-11-28):** browsers
+  keep talking JMAP directly to Stalwart with short-lived tokens from the hub
+  (§ 9.3).
+- **Milestone order (recommendation, no preference from the maintainer,
+  2026-11-28):** what the new Mail needs first (§ 9.6).
+
+### 9.2 What Roedy Mail has, and where it goes
+
+Inventory of `../mail` (paths below `crates/server/src/`, `apps/web/src/` and
+`packages/`). **Hub:** already in the hub. **Shared:** belongs in the hub, with
+its milestone. **Mail:** stays in the app.
+
+| Building block | In Roedy Mail | Where |
+|---|---|---|
+| Sign-in, sessions, devices, authenticator apps, recovery codes, fresh sign-in | `auth/*`, `api/auth`, `api/mfa`, `api/sessions`, `api/me`, `api/password` | Hub |
+| Setup, setup token, `reset-admin` | `api/setup`, `setup_token`, `setup_totp`, `reset_admin` | Hub |
+| Users, invitations, email change | `api/users`, `api/invites`, `api/email` | Hub |
+| Audit log with texts | `api/audit`, `api/audit/texts` | Hub |
+| Branding, logo, organization, public config | `api/branding`, `api/instance` (without the banner), `api/public`, `logo/*`, `web/branding` | Hub |
+| System mails over JMAP, templates, security notices | `mailer/*` (without `preview`), `events/mail`, `crates/jmap` (sending) | Hub |
+| Language, colour scheme, accent | `settings` (these three fields) | Hub |
+| Server base: config, database, scheduler, rate limits, client IP, security headers, embedded web app, healthcheck, locks, server texts | `config`, `db`, `jobs/scheduler`, `rate_limit`, `client_ip`, `web/*`, `healthcheck`, `locks`, `i18n` | Hub |
+| Guest pages, account and administration shell | `routes/(auth)`, `setup`, `invite`, `account`, `admin`, `components/{auth,setup,signin,invite}` | Hub |
+| App switcher | `components/AppsMenu.svelte` | Shared, 7 (done) |
+| Interface building blocks: Sheet, Toast, Tooltip, ConfirmDialog, DirtyBar, Skeleton, PickerList, ErrorView, FirstLoad, Header, AccountMenu, SettingsNav, ColorEditor, TimePicker, CommandPalette, ShortcutsDialog, LicensesDialog, DebugBar | `lib/components/*` | Shared, 7 (`@roedy/ui`) |
+| Actions and helpers: focus trap, tooltip, radio group, tab list, scroll bar; `api`, `ago`, `date`, `theme`, `swipe`, `keys`, `wait`, `undo`, network state and "No connection", new-build detection, developer log | `lib/actions/*`, `lib/*.ts`, `lib/state/{network,devlog}`, `lib/app-worker.ts` | Shared, 7 (`@roedy/ui`) |
+| Design tokens | `packages/tokens` | Shared, 7 (`@roedy/tokens`, the hub's copy becomes the source) |
+| JMAP for the browser: client, session, token, batching, sync, EventSource stream, push, errors; contact cards | `packages/jmap/src/{client,core,session,token,methods,sync,stream,push,errors,contacts}.ts` | Shared, 7 (`@roedy/jmap`) |
+| JMAP for servers | `crates/jmap` (session, requests, quota) | Shared, 7 (`roedy-jmap`, already in the hub for sending) |
+| Stalwart server registry, policy for custom servers, diagnosis, OAuth client by DCR | `api/servers`, `broker/{probe,dcr,outbound}`, `jobs/server_probe`, `db/repo/servers`, `admin/mail-servers`, `ServerDialog` | Shared, 8 |
+| Users' Stalwart accounts: several per user, default account, colour, "Sign in again", removal | `api/mail_accounts`, `broker/account`, `db/repo/mail_accounts`, `routes/{account/mail-accounts,oauth/callback,no-account}`, `lib/auth/*` | Shared, 8 |
+| Token broker with strict rotation, early refresh, revocation | `broker/{token,oauth,crypto}`, `jobs/token_refresh` | Shared, 8 |
+| Storage per account | `jobs/quota_check`, `crates/jmap/src/quota.rs` | Shared, 8 |
+| Shared settings: region, time zone, date, time and number formats, week start, font size, density, animations, keyboard shortcuts on or off, confirmations and undo delay, developer mode | `settings`, `routes/settings/{appearance,language,general}`, `lib/{timezone,locale,date}.ts` | Shared, 9 |
+| Directory of the instance's users | `api/directory` | Shared, 9 |
+| Notifications: catalogue, bell, channels per topic, retention | `events/{mod,texts}`, `api/notifications`, `jobs/notification_cleanup`, `NotificationsMenu`, `routes/settings/notifications` | Shared, 10 |
+| Digest by email, quiet hours, sound | `events/schedule`, `jobs/notification_mailer`, `db/repo/notification_deliveries`, `lib/chime.ts` | Shared, 10 |
+| Web push: VAPID, encryption, subscriptions, the service worker's notifications | `push/*`, `api/push`, `jobs/push_sender`, `db/repo/push_subscriptions`, `service-worker`, `lib/push.svelte.ts`, `PushDialog` | Shared, 10 |
+| Maintenance mode, storage and "Compact", banner (notice bar) | `web/maintenance`, `api/maintenance`, `api/instance` (banner), `NoticeBar`, `admin/{maintenance,banner}` | Shared, 11 |
+| Update check | `updates/*`, `jobs/update_check`, `api/updates`, `admin/updates` | Shared, 11 |
+| Backups in the app | `backups/*`, `api/backups`, `jobs/backup` | Shared, 11 (the hub's own data) |
+| GeoIP | `geoip`, `jobs/geoip_reload` | Shared, 11 |
+| Template preview for Administration › Email | `mailer/preview` | Shared, later (no milestone) |
+| Mailboxes, threads, lists, message view, rendering and sanitizing, external content | `lib/mail/*`, `lib/state/{mailboxes,threads,message,list-view,folders}`, `MailList*`, `MessageView`, `FolderTree` | Mail |
+| Compose, drafts, scheduled sending, replies, recipient suggestions | `ComposeView`, `lib/state/{compose,scheduled,sent-replies,contacts}` | Mail |
+| Rules (Sieve), vacation, identities | `lib/sieve`, `packages/jmap/src/sieve.ts`, `MailRules`, `MailVacation`, `MailIdentities` | Mail |
+| JMAP for mail, push for new mail | `packages/jmap/src/mail.ts`, `crates/jmap/src/mail.rs` (beyond sending), `lib/mail-push-*` | Mail |
+| Mail search | `lib/search*`, `SearchFilters`, `SearchSuggestions` | Mail |
+| Tags | `api/tags`, `db/repo/tags`, `TagList` | Mail |
+| Mail's own settings: list design, swipe actions, external content, start page | `settings` (`pfDesign`, `swL`, `swR`, `extMode`, `extAllow`, `gStart`) | Mail |
+
+Borderline cases:
+
+- **Tags** group mailboxes across a user's accounts; nothing else uses them
+  yet. They stay with Mail; tags shared by several apps are an open point.
+- **Search:** Mail searches with `Email/query`, which only Mail can do. A
+  search across apps on the home page would ask each app and is an open
+  point.
+- **Backups:** the hub backs up its own database; each app its own until the
+  hub coordinates them (open point). The mail, events and contacts are
+  Stalwart's to back up.
+- **Account colour and default account** belong to the Stalwart account, so
+  the hub keeps them; every app shows them the same way.
+- **App settings:** the hub keeps the settings that every app applies (§ 9.2,
+  milestone 9). An app's own settings stay in the app's database; the hub
+  offers no generic settings store.
+- **About, licences, developer page:** the components are shared, the
+  content (version, licence list, log) is each app's.
+- **New-build detection and the offline app shell** are shared helpers; every
+  app registers its own service worker under its prefix.
+- **Push for new mail** is JMAP push from Stalwart to Mail's service worker,
+  not a hub notification; `@roedy/jmap` has the shared part.
+- **Imports and exports** (mbox, iCalendar, vCard) and attachments are each
+  app's; JMAP blobs live in Stalwart, so the hub needs no blob storage.
+
+### 9.3 Stalwart
+
+Mail, Calendar and Contacts talk to the same Stalwart server: JMAP for Mail
+(RFC 8621), Calendars and Contacts (RFC 9610), one account and one OAuth grant
+per person and server. The hub owns what is the same for all of them:
+
+- **Servers:** the registry with the OAuth client per server (DCR with an
+  administrator's credentials, confidential clients with their secret in the
+  hub), the policy for custom servers (public addresses only, the SSRF guard
+  of Mail's `broker::outbound`), the diagnosis and its daily run. The system
+  mail's sending account picks a server from the registry.
+- **Accounts:** each user's connected accounts (several, one default, a
+  colour), the sign-in at Stalwart with PKCE (the code exchanged by the hub for
+  confidential clients), "Sign in again", removal with revocation, the check
+  and the storage per account.
+- **Tokens:** refresh tokens only in the hub, encrypted with the instance key;
+  the token broker with Stalwart's strict rotation, early refresh and one
+  refresh per account at a time. Access tokens are short-lived; a refresh
+  token never leaves the hub.
+
+What the apps get (details with milestone 8, as compatible additions to
+contract version 1):
+
+- **In the browser:** the hub's browser API lists the user's accounts (with
+  the JMAP session URL, state and the capabilities the server offers) and
+  hands out an access token per account. Apps share the hub's origin, so
+  their pages call it with the hub's session like the other browser API
+  (contract § 6). Apps add the servers' origins to their own `connect-src`.
+  Script in any app on the origin can fetch these tokens, which the trust
+  model already accepts (contract § 2: only apps trusted like the hub).
+- **In the background:** an internal endpoint gives an app's backend an
+  access token for a user's account – with the app's secret, only for users
+  with access to the app and only if its manifest asks for it.
+- **Events** when an account is added, removed or needs a new sign-in.
+
+What stays with the apps: everything above the JMAP session – their data
+types, their own push subscriptions at Stalwart, and per-account settings of
+their own (e.g. Mail's identities).
+
+No JMAP proxy: as in Mail, the browser talks to Stalwart directly (requests,
+EventSource, uploads and downloads of blobs). A proxy would carry all mail
+traffic through the hub against the budgets, and Stalwart has to be
+reachable from the browsers for webmail anyway.
+
+### 9.4 Shared interface and packages
+
+- **Frame served by the hub (run time):** web components under a versioned
+  path of the hub, which every app loads with one script: the app switcher
+  (milestone 7, done), the notification bell (10) and the
+  notice bar for the banner and maintenance mode (11). They always match the
+  running hub, and apps need no new build when the hub changes them. They read
+  the design tokens' custom properties, which reach into the shadow DOM.
+- **Packages (build time),** built and tested in this repository and
+  published with every hub release under the hub's version (`0.x`
+  pre-releases until the first release):
+  - `@roedy/tokens` – `packages/tokens` becomes the source; Mail's copy is
+    archived with it.
+  - `@roedy/ui` – Svelte 5 components, actions and helpers (§ 9.2), published
+    as source with `@sveltejs/package`, with their own English and German
+    texts so that apps need no message keys for them. The hub's web app uses
+    the same package from the workspace.
+  - `@roedy/jmap` – JMAP for the browser: the core, contact cards and
+    calendars. Mail-specific types (mail, Sieve) stay in Mail.
+  - Crates `roedy-hub-contract` (identity and event verification, manifest,
+    vectors) and `roedy-jmap` (JMAP for servers).
+- **Publishing:** the release workflow publishes to npm with provenance and
+  to crates.io. The maintainer sets up the npm scope and the crates.io
+  ownership before the first publication; nothing is created without asking.
+
+Options considered: everything as packages (the frame would only change when
+every app is rebuilt), everything as web components (shadow DOM for every
+component, a second Svelte runtime per page, weaker types), Git dependencies
+(see § 9.5).
+
+### 9.5 Repositories
+
+| Option | For | Against |
+|---|---|---|
+| **Separate repositories, published packages (decided)** | Clear boundary: apps use only the contract and published packages, as an app from someone else would; releases and changelogs per app | A shared change needs a hub release and an update in the app; a release pipeline for packages |
+| Apps in this repository (monorepo) | Hub and app change in one PR, no package releases, one CI | The boundary is a convention only; one repository grows with every app |
+| Separate repositories, Git dependencies | No registry | Pinned commits, slower installs, weak Dependabot support |
+
+Consequences: the new Mail (and later Calendar and Contacts) lives in a
+repository of its own – created by the maintainer; this repository publishes
+`@roedy/*` and the two crates; the example app stays the reference for the
+contract. Every image is built and released in its own repository.
+
+### 9.6 Milestones
+
+Ordered by what the new Mail needs first: it can start once 7 and 8.1 are
+merged. Each item is one PR; "API" and "pages" are separate PRs where named.
+
+7. [ ] **Shared interface and packages**
+   1. [x] **App switcher** – the first web component of the hub's frame.
+      Done: `<roedy-app-switcher>` from `GET /api/v1/frame.js` (contract
+      § 5.5), source in `apps/web/src/frame`, used by the example app.
+   2. [ ] **Packages** – `packages/ui` from the hub's web app and Mail's
+      shared components, actions and helpers (§ 9.2); `packages/jmap` from
+      Mail's shared JMAP layer; `packages/tokens` as the source. The hub's web
+      app uses them from the workspace.
+   3. [ ] **Publishing** – packing (`@sveltejs/package`), versions with the
+      hub's release, npm with provenance and crates.io in the release
+      workflow, a dry run in CI.
+8. [ ] **Stalwart servers, accounts and tokens**
+   1. [ ] **API** – registry and policy, diagnosis and its daily job, DCR,
+      accounts with OAuth and PKCE, the token broker with early refresh and
+      revocation, storage, the system mail's server from the registry, the
+      browser and internal endpoints, events, the manifest field.
+   2. [ ] **Pages** – Administration › Stalwart servers, Account › Accounts,
+      the sign-in at Stalwart and its return, "No account yet".
+9. [ ] **Shared settings and directory** – the settings of § 9.2 with their
+   pages under Account, handed to the apps (browser API, the users endpoint,
+   `roedy.hub.prefs`), the recipient's time zone and formats in the hub's
+   mails, the directory of active users for the apps.
+10. [ ] **Notifications**
+    1. [ ] **Bell** – notifications with topics from the apps' manifests,
+       an internal endpoint to send them, channels per topic, retention, the
+       bell as a web component of the frame and on the home page, the hub's
+       security notices in it.
+    2. [ ] **Email and web push** – digest and quiet hours, VAPID, encryption,
+       subscriptions per session, the hub's service worker for notifications.
+11. [ ] **Operations** – one PR each:
+    1. [ ] **Switching apps on and off** – Administration › Apps and the
+       gateway (`503`), Compose profiles per app.
+    2. [ ] **Maintenance mode and banner** – for the hub and through the
+       gateway for every app, the notice bar in the frame.
+    3. [ ] **Update check** – the hub's releases, and the paired apps'
+       versions.
+    4. [ ] **Backups in the app** – the hub's database.
+    5. [ ] **GeoIP** – places for sessions, the audit log and security
+       notices.
