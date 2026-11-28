@@ -23,6 +23,11 @@ describe('parseSession', () => {
     expect(session.eventSourceUrl).toBe(`${SERVER}/jmap/eventsource/?types={types}`);
   });
 
+  it('puts a query-only template on the path of the session URL', () => {
+    const session = parseSession(sessionJson({ eventSourceUrl: '?types={types}' }), `${SERVER}/jmap/session?x=1`);
+    expect(session.eventSourceUrl).toBe(`${SERVER}/jmap/session?types={types}`);
+  });
+
   it('rejects URLs on another origin', () => {
     for (const apiUrl of [
       'https://jmap.example.test:8443/jmap/',

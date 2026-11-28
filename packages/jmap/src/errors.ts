@@ -89,12 +89,24 @@ export function isJmapError(error: unknown, kind?: JmapErrorKind): error is Jmap
 
 const PROBLEM_PREFIX = 'urn:ietf:params:jmap:error:';
 
-/** Error for a non-2xx response; reads the body (Problem Details, RFC 7807). */
-export async function responseError(res: Response): Promise<JmapError> {
+/**
+ * Error for a non-2xx response; reads the body (Problem Details, RFC 7807).
+ * If `signal` aborts while reading, the abort is passed on; other failures
+ * while reading leave only the status.
+ */
+export async function responseError(res: Response, signal?: AbortSignal): Promise<JmapError> {
   const status = res.status;
+  const retryAfter = status === 429 ? retryAfterSeconds(res.headers.get('Retry-After')) : undefined;
+  const wait = retryAfter === undefined ? {} : { retryAfter };
+  let text = '';
+  try {
+    text = await res.text();
+  } catch {
+    signal?.throwIfAborted();
+  }
   let problem: Record<string, unknown> | null = null;
   try {
-    const body: unknown = JSON.parse(await res.text());
+    const body: unknown = JSON.parse(text);
     if (isRecord(body)) problem = body;
   } catch {
     // Not JSON: then only the status counts.
@@ -106,14 +118,12 @@ export async function responseError(res: Response): Promise<JmapError> {
       type: type.slice(PROBLEM_PREFIX.length),
       ...(typeof problem?.limit === 'string' ? { limit: problem.limit } : {}),
       ...(typeof problem?.detail === 'string' ? { detail: problem.detail } : {}),
+      ...wait,
     });
   }
   if (status === 401) return new JmapError('auth', { status });
   if (status === 403) return new JmapError('forbidden', { status });
-  if (status === 429) {
-    const retryAfter = retryAfterSeconds(res.headers.get('Retry-After'));
-    return new JmapError('throttled', { status, ...(retryAfter === undefined ? {} : { retryAfter }) });
-  }
+  if (status === 429) return new JmapError('throttled', { status, ...wait });
   return new JmapError('status', { status });
 }
 

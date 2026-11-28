@@ -53,13 +53,13 @@ const PING_GRACE = 10_000;
 export async function runEvents(host: StreamHost, options: EventsOptions): Promise<void> {
   const { signal } = options;
   let failures = 0;
+  /** Last `retry:` of the server, also from a connection that broke afterwards. */
   let retry: number | undefined;
   while (!signal.aborted) {
     let delay: number;
     try {
-      const result = await connect(host, options);
-      retry = result.retry ?? retry;
-      if (result.received) {
+      const received = await connect(host, options, (ms) => (retry = ms));
+      if (received) {
         failures = 0;
         delay = retry ?? 0;
       } else {
@@ -80,8 +80,8 @@ export async function runEvents(host: StreamHost, options: EventsOptions): Promi
   }
 }
 
-/** One connection until the end of the stream. */
-async function connect(host: StreamHost, options: EventsOptions): Promise<{ received: boolean; retry?: number }> {
+/** One connection until the end of the stream; whether an event arrived. */
+async function connect(host: StreamHost, options: EventsOptions, onRetry: (ms: number) => void): Promise<boolean> {
   const session = await host.session(options.signal);
   if (!session.eventSourceUrl) throw new JmapError('unsupported', { capability: 'eventSourceUrl' });
   const ping = options.ping ?? 30;
@@ -94,7 +94,9 @@ async function connect(host: StreamHost, options: EventsOptions): Promise<{ rece
   const connection = new AbortController();
   const signal = AbortSignal.any([options.signal, connection.signal]);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let limit = ping > 0 ? ping * 2000 + PING_GRACE : 0;
+  // The server may raise a requested interval to up to 30 s (RFC 8620, 7.3) and only
+  // states it in the first ping; until then the watchdog allows for that.
+  let limit = ping > 0 ? Math.max(ping, 30) * 2000 + PING_GRACE : 0;
   const watch = (): void => {
     clearTimeout(timer);
     if (limit > 0) timer = setTimeout(() => connection.abort(new JmapError('unreachable', { detail: 'ping' })), limit);
@@ -102,7 +104,7 @@ async function connect(host: StreamHost, options: EventsOptions): Promise<{ rece
   try {
     watch();
     const res = await host.authFetch(url, { headers: { Accept: 'text/event-stream' }, cache: 'no-store' }, signal);
-    if (!res.ok) throw await responseError(res);
+    if (!res.ok) throw await responseError(res, signal);
     if (!res.body) throw new JmapError('invalidResponse', { detail: 'body' });
     options.onOpen?.();
     const parser = new EventStreamParser();
@@ -113,7 +115,9 @@ async function connect(host: StreamHost, options: EventsOptions): Promise<{ rece
       const { done, value } = await reader.read();
       if (done) break;
       watch();
-      for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+      const events = parser.push(decoder.decode(value, { stream: true }));
+      if (parser.retry !== undefined) onRetry(parser.retry);
+      for (const event of events) {
         received = true;
         if (event.event === 'ping') {
           // The server may change the interval (RFC 8620, 7.3) and states it in `interval`.
@@ -125,10 +129,12 @@ async function connect(host: StreamHost, options: EventsOptions): Promise<{ rece
         }
         if (event.event !== 'state') continue;
         const change = parseStateChange(event.data);
+        // An `onState` that aborts gets no further events, even from the same chunk.
+        options.signal.throwIfAborted();
         if (change) options.onState(change);
       }
     }
-    return parser.retry === undefined ? { received } : { received, retry: parser.retry };
+    return received;
   } catch (error) {
     options.signal.throwIfAborted();
     connection.signal.throwIfAborted();
@@ -155,9 +161,17 @@ function parseStateChange(data: string): StateChange | null {
   } catch {
     return null;
   }
-  return isRecord(json) && json['@type'] === 'StateChange' && isRecord(json.changed)
-    ? (json as unknown as StateChange)
+  return isRecord(json) && json['@type'] === 'StateChange' && isStateMap(json.changed)
+    ? { '@type': 'StateChange', changed: json.changed }
     : null;
+}
+
+/** `changed` of a `StateChange` (RFC 8620, 7.1): account id → data type → state. */
+export function isStateMap(value: unknown): value is Record<Id, Record<string, string>> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((types) => isRecord(types) && Object.values(types).every((s) => typeof s === 'string'))
+  );
 }
 
 /** Wait time after the `failures`-th consecutive error: 1 s, 2 s, 4 s … up to 60 s, ±20 %. */

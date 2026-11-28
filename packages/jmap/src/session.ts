@@ -109,5 +109,12 @@ function absoluteTemplate(template: unknown, base: string): string {
   if (/^[a-z][a-z\d+.-]*:/i.test(template)) return template;
   if (template.startsWith('//')) return new URL(base).protocol + template;
   if (template.startsWith('/')) return new URL(base).origin + template;
+  // Only a query: on the base's path (RFC 3986, 5.2.2).
+  if (template.startsWith('?')) {
+    const url = new URL(base);
+    url.search = '';
+    url.hash = '';
+    return url.href + template;
+  }
   return new URL('.', base).href + template;
 }

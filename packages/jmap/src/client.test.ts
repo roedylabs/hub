@@ -2,7 +2,7 @@
 // mail data types; the tests of `capabilityOf` moved to `methods.test.ts`.
 import { describe, expect, it, vi } from 'vitest';
 import { CALENDARS, CONTACTS, CORE } from './core.ts';
-import { JmapError, MethodError, isJmapError } from './errors.ts';
+import { JmapError, MethodError, isJmapError, responseError } from './errors.ts';
 import {
   SERVER,
   bodyOf,
@@ -192,6 +192,34 @@ describe('request errors', () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(JmapError);
     expect(error).toMatchObject({ kind: 'request', details: { type: 'limit', limit: 'maxSizeRequest', status: 400 } });
+  });
+
+  it('keeps Retry-After on a 429 with Problem Details', async () => {
+    const server = fakeFetch(
+      jsonResponse({ type: 'urn:ietf:params:jmap:error:limit', limit: 'maxConcurrentRequests' }, 429, {
+        'Content-Type': 'application/problem+json',
+        'Retry-After': '9',
+      }),
+    );
+    await expect(testClient(server.fetch).call('Core/echo', {})).rejects.toMatchObject({
+      kind: 'request',
+      retryAfter: 9,
+      details: { type: 'limit', limit: 'maxConcurrentRequests', status: 429 },
+    });
+  });
+
+  it('passes an abort while reading the error body on, other read failures leave the status', async () => {
+    const failing = (reason: unknown) =>
+      new Response(new ReadableStream({ start: (controller) => controller.error(reason) }), { status: 503 });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(responseError(failing(controller.signal.reason), controller.signal)).rejects.toBe(
+      controller.signal.reason,
+    );
+    await expect(responseError(failing(new TypeError('reset')))).resolves.toMatchObject({
+      kind: 'status',
+      status: 503,
+    });
   });
 
   it('reports 429 with Retry-After and other statuses', async () => {
@@ -386,6 +414,27 @@ describe('concurrency limit', () => {
     await vi.waitFor(() => expect(server.seen).toHaveLength(2));
     release.shift()?.();
     await second;
+  });
+
+  it('applies the limit of a reloaded session', async () => {
+    const release: (() => void)[] = [];
+    const later = (id: string) => () =>
+      new Promise<Response>((resolve) => release.push(() => resolve(jmapResponse('s2', ['Core/echo', {}, id]))));
+    const raised = sessionJson({ state: 's2', capabilities: { [CORE]: { maxConcurrentRequests: 2 }, [CONTACTS]: {} } });
+    const server = fakeFetch(
+      jmapResponse('s2', ['Core/echo', {}, 'c0']),
+      jsonResponse(raised),
+      later('c1'),
+      later('c2'),
+    );
+    const capabilities = { [CORE]: { maxConcurrentRequests: 1 }, [CONTACTS]: {} };
+    const client = testClient(server.fetch, { session: sessionJson({ capabilities }) });
+    await client.call('Core/echo', {});
+
+    const both = Promise.all([client.call('Core/echo', {}), client.call('Core/echo', {})]);
+    await vi.waitFor(() => expect(server.seen).toHaveLength(4));
+    release.forEach((go) => go());
+    await both;
   });
 
   it('does not make a keepalive request wait', async () => {

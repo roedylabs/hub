@@ -25,7 +25,7 @@ export type ObjectOf<T extends ChangesType> = ResponseOf<`${T}/get`> extends Get
 export interface ChangesOptions<T extends ChangesType> {
   accountId: Id;
   sinceState: string;
-  /** At most this many ids per page; with `fetch` the default is `maxObjectsInGet`. */
+  /** At most this many ids per page; with `fetch` at most (and by default) `maxObjectsInGet`. */
   maxChanges?: number;
   /** Also fetch new and changed objects in the same request (`Foo/get` with `#ids`). */
   fetch?: boolean;
@@ -61,8 +61,11 @@ export async function changes<T extends ChangesType>(
 ): Promise<ChangesResult<ObjectOf<T>>> {
   const { accountId, signal } = options;
   let maxChanges = options.maxChanges;
-  if (options.fetch && maxChanges === undefined)
-    maxChanges = coreCapability(await client.session(signal)).maxObjectsInGet;
+  if (options.fetch) {
+    // Each `Foo/get` gets as many ids as a page has changes.
+    const { maxObjectsInGet } = coreCapability(await client.session(signal));
+    maxChanges = Math.min(maxChanges ?? maxObjectsInGet, maxObjectsInGet);
+  }
   const created = new Set<Id>();
   const updated = new Set<Id>();
   const destroyed = new Set<Id>();

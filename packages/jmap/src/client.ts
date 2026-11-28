@@ -269,7 +269,9 @@ export class JmapClient {
     if (new TextEncoder().encode(body).length > core.maxSizeRequest) {
       throw new JmapError('request', { type: 'limit', limit: 'maxSizeRequest' });
     }
+    // A reloaded session may state another limit; the limiter keeps its running and waiting tasks.
     this.#requests ??= new Limiter(core.maxConcurrentRequests);
+    this.#requests.max = core.maxConcurrentRequests;
     const init: RequestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -299,7 +301,7 @@ export class JmapClient {
       type: blob.type ?? 'application/octet-stream',
     });
     const res = await this.#authorized(url, { cache: 'no-store' }, signal, this.#timeout, (r) => Promise.resolve(r));
-    if (!res.ok) throw await responseError(res);
+    if (!res.ok) throw await responseError(res, signal);
     return readBody(() => res.blob(), signal);
   }
 
@@ -327,6 +329,7 @@ export class JmapClient {
     const url = expandTemplate(session.uploadUrl, { accountId });
     const init = { method: 'POST', headers: { 'Content-Type': contentType }, body: data };
     this.#uploads ??= new Limiter(core.maxConcurrentUpload);
+    this.#uploads.max = core.maxConcurrentUpload;
     const json = await this.#uploads.run(
       () => this.#authorized(url, init, signal, this.#timeout + Math.ceil(size / 16), readOkJson),
       signal,
@@ -450,12 +453,18 @@ class Deadline {
 
 /** At most `max` tasks at a time; the others wait in order until they abort. */
 class Limiter {
-  readonly #max: number;
+  #max: number;
   #active = 0;
   readonly #waiting: (() => void)[] = [];
 
   constructor(max: number) {
     this.#max = max;
+  }
+
+  /** A new limit applies to waiting and later tasks; running ones finish. */
+  set max(max: number) {
+    this.#max = max;
+    this.#next();
   }
 
   async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -465,10 +474,16 @@ class Limiter {
     try {
       return await task();
     } finally {
-      // The slot passes directly to the next one.
-      const next = this.#waiting.shift();
-      if (next) next();
-      else this.#active--;
+      this.#active--;
+      this.#next();
+    }
+  }
+
+  /** Hands free slots to the waiting tasks in order. */
+  #next(): void {
+    while (this.#active < this.#max && this.#waiting.length > 0) {
+      this.#active++;
+      this.#waiting.shift()?.();
     }
   }
 
@@ -527,7 +542,7 @@ function parseResponse(json: unknown): JmapResponse {
 
 /** JSON of a 2xx response, otherwise the error for the status. */
 async function readOkJson(res: Response, signal?: AbortSignal): Promise<unknown> {
-  if (!res.ok) throw await responseError(res);
+  if (!res.ok) throw await responseError(res, signal);
   return readJson(res, signal);
 }
 

@@ -1,6 +1,6 @@
 // Taken over from Roedy Mail (`packages/jmap/src/push.test.ts`) with an extension property declared here instead of
 // `emailPush`, and without the tests of `EmailPush` messages.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { CORE, WEBPUSH_VAPID } from './core.ts';
 import { JmapError } from './errors.ts';
 import {
@@ -64,6 +64,9 @@ describe('subscriptions', () => {
     );
     const list = await listPushSubscriptions(testClient(server.fetch));
     expect(list.map((entry) => entry.id)).toEqual(['p1']);
+    // The server never returns them (RFC 8620, 7.2).
+    expectTypeOf(list[0]).exclude<undefined>().not.toHaveProperty('url');
+    expectTypeOf(list[0]).exclude<undefined>().not.toHaveProperty('keys');
     const sent = bodyOf(server.seen.at(-1)) as Sent;
     expect(sent.methodCalls[0]?.[1]).toEqual({ ids: null });
   });
@@ -195,6 +198,11 @@ describe('parsePushObject', () => {
       '{"@type":"Unknown"}',
       '{"@type":"PushVerification","pushSubscriptionId":"p1"}',
       '{"@type":"StateChange"}',
+      '{"@type":"StateChange","changed":[]}',
+      '{"@type":"StateChange","changed":null}',
+      '{"@type":"StateChange","changed":{"a1":[]}}',
+      '{"@type":"StateChange","changed":{"a1":{"ContactCard":2}}}',
+      '[]',
       '{"@type":"EmailPush","accountId":"a1","emails":[]}',
     ]) {
       expect(parsePushObject(raw)).toBeNull();

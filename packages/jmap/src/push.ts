@@ -16,7 +16,8 @@
 
 import type { JmapClient } from './client.ts';
 import { WEBPUSH_VAPID, type Id, type PatchObject, type Session, type SetError } from './core.ts';
-import { JmapError } from './errors.ts';
+import { JmapError, isRecord } from './errors.ts';
+import { isStateMap } from './stream.ts';
 
 export interface PushKeys {
   p256dh: string;
@@ -50,7 +51,10 @@ export interface JmapPushSubscription extends Partial<PushSubscriptionExtensions
   types: string[] | null;
 }
 
-export type PushSubscriptionProperty = keyof JmapPushSubscription;
+/** A subscription as `PushSubscription/get` returns it: the server never returns `url` and `keys` (RFC 8620, 7.2). */
+export type ListedPushSubscription = Omit<JmapPushSubscription, 'url' | 'keys'>;
+
+export type PushSubscriptionProperty = keyof ListedPushSubscription;
 
 export interface PushSubscriptionGetArgs {
   ids?: Id[] | null;
@@ -58,7 +62,7 @@ export interface PushSubscriptionGetArgs {
 }
 
 export interface PushSubscriptionGetResponse {
-  list: JmapPushSubscription[];
+  list: ListedPushSubscription[];
   notFound: Id[] | null;
 }
 
@@ -101,8 +105,11 @@ export function webPushKey(session: Session): string | null {
   return typeof applicationServerKey === 'string' && applicationServerKey ? applicationServerKey : null;
 }
 
-/** All subscriptions of the person; `url` and `keys` are missing. */
-export async function listPushSubscriptions(client: JmapClient, signal?: AbortSignal): Promise<JmapPushSubscription[]> {
+/** All subscriptions of the person, without `url` and `keys`. */
+export async function listPushSubscriptions(
+  client: JmapClient,
+  signal?: AbortSignal,
+): Promise<ListedPushSubscription[]> {
   return (await client.call('PushSubscription/get', { ids: null }, signal)).list;
 }
 
@@ -172,8 +179,8 @@ export function parsePushObject(raw: string | null | undefined): PushObject | nu
   } catch {
     return null;
   }
-  if (!data || typeof data !== 'object') return null;
-  const object = data as Record<string, unknown>;
+  if (!isRecord(data)) return null;
+  const object = data;
   switch (object['@type']) {
     case 'PushVerification': {
       const { pushSubscriptionId, verificationCode } = object;
@@ -182,8 +189,7 @@ export function parsePushObject(raw: string | null | undefined): PushObject | nu
     }
     case 'StateChange': {
       const { changed } = object;
-      if (!changed || typeof changed !== 'object') return null;
-      return { type: 'StateChange', changed: changed as Record<Id, Record<string, string>> };
+      return isStateMap(changed) ? { type: 'StateChange', changed } : null;
     }
     default:
       return null;

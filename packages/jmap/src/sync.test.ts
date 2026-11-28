@@ -94,6 +94,26 @@ describe('changes', () => {
     });
   });
 
+  it('asks for at most maxObjectsInGet changes per page when fetching the objects', async () => {
+    const get = { accountId: 'a1', state: 'k2', list: [], notFound: [] };
+    const reply = (n: number) =>
+      jmapResponse(
+        's1',
+        ['ContactCard/changes', page('k1', 'k2', false, {}), `c${n}`],
+        ['ContactCard/get', get, `c${n + 1}`],
+        ['ContactCard/get', get, `c${n + 2}`],
+      );
+    const server = fakeFetch(reply(0), reply(3));
+    const client = testClient(server.fetch);
+    for (const maxChanges of [500, 20]) {
+      await changes(client, 'ContactCard', { accountId: 'a1', sinceState: 'k1', fetch: true, maxChanges });
+    }
+    expect(server.seen.map((s) => bodyOf(s))).toMatchObject([
+      { methodCalls: [['ContactCard/changes', { maxChanges: 100 }, 'c0'], expect.anything(), expect.anything()] },
+      { methodCalls: [['ContactCard/changes', { maxChanges: 20 }, 'c3'], expect.anything(), expect.anything()] },
+    ]);
+  });
+
   it('reports reset when the server cannot calculate the changes', async () => {
     const server = fakeFetch(jmapResponse('s1', ['error', { type: 'cannotCalculateChanges' }, 'c0']));
     expect(await changes(testClient(server.fetch), 'ContactCard', { accountId: 'a1', sinceState: 'old' })).toEqual({

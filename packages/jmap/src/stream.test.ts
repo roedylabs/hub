@@ -199,7 +199,7 @@ describe('events', () => {
     await done;
   });
 
-  it('reconnects when ping stays away', async () => {
+  it('reconnects when ping stays away, allowing the first one up to 30 s', async () => {
     const server = fakeFetch(stream([': open\n'], true), stream([STATE]));
     const controller = new AbortController();
     const onError = vi.fn();
@@ -209,7 +209,8 @@ describe('events', () => {
       onError,
       onState: () => controller.abort(),
     });
-    await vi.advanceTimersByTimeAsync(11_999);
+    // The server may raise ping=1 to 30 s (RFC 8620, 7.3): twice that plus the grace period.
+    await vi.advanceTimersByTimeAsync(69_999);
     expect(onError).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(onError).toHaveBeenCalledWith(
@@ -219,6 +220,62 @@ describe('events', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await done;
     expect(server.seen[0]?.url).toContain('ping=1');
+  });
+
+  it('dispatches no further events of a chunk once onState aborts', async () => {
+    const server = fakeFetch(stream([STATE + STATE]));
+    const controller = new AbortController();
+    const onState = vi.fn(() => controller.abort());
+    const onError = vi.fn();
+    await testClient(server.fetch).events({ signal: controller.signal, onState, onError });
+    expect(onState).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('follows retry from a connection that breaks afterwards', async () => {
+    const broken = (): Response => {
+      let pulls = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          // The first read gets `retry`, the second one fails.
+          if (pulls++ === 0) controller.enqueue(new TextEncoder().encode('retry: 5000\n\n'));
+          else controller.error(new TypeError('connection reset'));
+        },
+      });
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    };
+    const server = fakeFetch(broken, stream([STATE]));
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const done = testClient(server.fetch).events({
+      signal: controller.signal,
+      onError,
+      onState: () => controller.abort(),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'connection reset' }), 5000);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(server.seen).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(server.seen).toHaveLength(2);
+  });
+
+  it('ignores state events with an invalid changed map', async () => {
+    const invalid = ['[]', 'null', '{"a1":[]}', '{"a1":null}', '{"a1":{"ContactCard":1}}'].map(
+      (changed) => `event: state\ndata: {"@type":"StateChange","changed":${changed}}\n\n`,
+    );
+    const server = fakeFetch(stream([...invalid, STATE]));
+    const controller = new AbortController();
+    const changes: StateChange[] = [];
+    await testClient(server.fetch).events({
+      signal: controller.signal,
+      onState: (change) => {
+        changes.push(change);
+        controller.abort();
+      },
+    });
+    expect(changes).toEqual([{ '@type': 'StateChange', changed: { a1: { ContactCard: 's2' } } }]);
   });
 
   it('ends without an error when the signal aborts', async () => {
