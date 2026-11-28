@@ -859,6 +859,13 @@ export class SystemMailPage {
         if (urlOf(this.servers) !== shown) {
           this.edits = { ...this.edits, pass: '', token: '' };
           this.serverErrors = { ...this.serverErrors, srv: 'changed' };
+          // "Connected" and the identities were of the previous address – also if the stored account cannot be
+          // loaded again.
+          this.good = null;
+          this.tested = null;
+          this.result = 'unchecked';
+          this.errText = '';
+          this.identities = [];
         }
         return api<SystemMail>('GET', 'admin/system-mail');
       })

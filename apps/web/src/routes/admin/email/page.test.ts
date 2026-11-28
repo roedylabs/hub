@@ -367,6 +367,29 @@ describe('Administration › Email page', () => {
     await vi.waitFor(() => expect(field('Password')).toHaveValue(''));
   });
 
+  it('a moved server is no longer "Connected", even if the stored account does not load again', async () => {
+    const moved = [{ ...SERVERS[0], url: 'https://mail.example.net', host: 'mail.example.net' }];
+    const view = renderPage(STORED, {
+      'GET admin/system-mail': [{ body: STORED }, { status: 500, body: { error: 'internal' } }],
+      'GET admin/stalwart/servers': [
+        { body: { ...REGISTRY.body, servers: SERVERS } },
+        { body: { ...REGISTRY.body, servers: moved } },
+      ],
+      'PUT admin/system-mail': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+        },
+      ],
+    });
+    await ready();
+    expect(view.getByText('Connected')).toBeInTheDocument();
+    await fireEvent.input(field('Password'), { target: { value: 'new-pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() => expect(view.getByText('JMAP session via mail.example.net')).toBeInTheDocument());
+    await vi.waitFor(() => expect(view.queryByText('Connected')).toBeNull());
+  });
+
   it('a late refusal for a server no longer chosen keeps the secret entered for the new one', async () => {
     let refuse: (reply: { status: number; body: unknown }) => void = () => {};
     renderPage(STORED, {
