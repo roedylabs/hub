@@ -6,9 +6,8 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { tooltip } from '#lib/actions/tooltip.ts';
+  import { Icon, tooltip } from '@roedy/ui';
   import type { Pairing } from '#lib/apps.ts';
-  import Icon from '#lib/components/Icon.svelte';
   import { intlLocale } from '#lib/locale.ts';
   import { m } from '#lib/paraglide/messages.js';
 

@@ -7,8 +7,7 @@
   Taken over from Roedy Mail (`apps/web/src/lib/components/EmailConfirmArt.svelte`).
 -->
 <script lang="ts">
-  import Icon from '#lib/components/Icon.svelte';
-  import type { IconName } from '#lib/icons.ts';
+  import { Icon, type IconName } from '@roedy/ui';
 
   let {
     mail,

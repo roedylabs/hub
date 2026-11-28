@@ -58,13 +58,15 @@ const t = texts({
     e502_text: 'Die App antwortet gerade nicht. Versuchen Sie es gleich noch einmal.',
     e502_title: 'App nicht erreichbar',
     e503_kicker: 'Fehler 503',
-    e503_text: 'Diese App wird noch eingerichtet. Versuchen Sie es später erneut oder wenden Sie sich an Ihre Administration.',
+    e503_text:
+      'Diese App wird noch eingerichtet. Versuchen Sie es später erneut oder wenden Sie sich an Ihre Administration.',
     e503_title: 'App noch nicht bereit',
     e504_kicker: 'Fehler 504',
     e504_text: 'Die App hat nicht rechtzeitig geantwortet. Versuchen Sie es erneut.',
     e504_title: 'Die App braucht zu lange',
     act: 'Das hat nicht geklappt. Bitte versuchen Sie es erneut.',
-    app_text: 'Sie sind angemeldet, haben aber keinen Zugriff auf diese App. Bitten Sie Ihre Administration um Zugriff.',
+    app_text:
+      'Sie sind angemeldet, haben aber keinen Zugriff auf diese App. Bitten Sie Ihre Administration um Zugriff.',
     app_title: 'Kein Zugriff auf diese App',
     limit: ({ wait }) => `Zu viele Anfragen. Versuchen Sie es in ${wait} erneut.`,
     offline: 'Keine Verbindung. Bitte versuchen Sie es erneut.',

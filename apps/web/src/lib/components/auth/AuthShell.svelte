@@ -18,7 +18,7 @@
   import type { Attachment } from 'svelte/attachments';
   import AuthFrame from '#lib/components/auth/AuthFrame.svelte';
   import type { Back, Bars, Overview, Primary, SlideBack } from '#lib/components/auth/types.ts';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import {
     DESK_LEVELS,
     MOB_LEVELS,

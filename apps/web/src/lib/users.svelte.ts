@@ -50,8 +50,20 @@
 import { AV } from '@roedy/tokens';
 import { SvelteSet } from 'svelte/reactivity';
 import { lostAccess } from '#lib/access.ts';
-import { ago } from '#lib/ago.ts';
-import { api, fieldsOf, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  ago,
+  api,
+  failText,
+  fieldsOf,
+  type IconName,
+  isApiError,
+  type KeyInput,
+  loadFailText,
+  Loading,
+  retryAfter,
+  ui,
+  waitText,
+} from '@roedy/ui';
 import {
   accessOptions,
   appName,
@@ -64,16 +76,11 @@ import {
 import { copyPending } from '#lib/clipboard.svelte.ts';
 import { Countdown } from '#lib/countdown.svelte.ts';
 import { isEmail } from '#lib/email.ts';
-import { failText, loadFailText } from '#lib/errors.ts';
-import type { IconName } from '#lib/icons.ts';
-import type { KeyInput } from '#lib/keys.ts';
 import { intlLocale } from '#lib/locale.ts';
 import { nameError, nameErrorText, normalizeName } from '#lib/name.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { pickList, type SelectValues } from '#lib/select.ts';
 import { initialsOf, session } from '#lib/state/session.svelte.ts';
-import { Loading, ui } from '#lib/state/ui.svelte.ts';
-import { waitText } from '#lib/wait.ts';
 
 /** At most this many addresses at once (`POST invites`, `MAX_INVITES` of the server). */
 export const MAX_INVITES = 50;

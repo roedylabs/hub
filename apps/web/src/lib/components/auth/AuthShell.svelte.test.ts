@@ -3,8 +3,9 @@ import { fireEvent, render, within } from '@testing-library/svelte';
 import { createRawSnippet, flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import AuthShell from '#lib/components/auth/AuthShell.svelte';
+import { guest } from '#lib/state/guest.svelte.ts';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -135,11 +136,11 @@ describe('AuthShell', () => {
   it('submits on Enter in a field and sets the document title', async () => {
     const onsubmit = vi.fn();
     const view = shell({ onsubmit });
-    expect(ui.authTitle).toBe('Screen · Test');
+    expect(guest.title).toBe('Screen · Test');
     await fireEvent.keyDown(view.getByLabelText('Field'), { key: 'Enter' });
     expect(onsubmit).toHaveBeenCalledOnce();
     view.unmount();
-    expect(ui.authTitle).toBeNull();
+    expect(guest.title).toBeNull();
   });
 
   it('shows the skeleton instead of the form while the first request is pending', () => {

@@ -14,7 +14,7 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
-  import ErrorView from '#lib/components/ErrorView.svelte';
+  import { api, ErrorView, NetworkError, Reconnect, ui } from '@roedy/ui';
   import NoConnection from '#lib/components/auth/NoConnection.svelte';
   import InviteExpired from '#lib/components/invite/InviteExpired.svelte';
   import InviteLoadError from '#lib/components/invite/InviteLoadError.svelte';
@@ -26,14 +26,11 @@
   import InviteStep4 from '#lib/components/invite/InviteStep4.svelte';
   import InviteWelcome from '#lib/components/invite/InviteWelcome.svelte';
   import { InviteTargets } from '#lib/components/invite/targets.ts';
-  import { NetworkError, api } from '#lib/api.ts';
   import { isMobileWidth } from '#lib/auth-layout.ts';
   import { InviteFlow, type InviteField } from '#lib/invite.svelte.ts';
-  import { Reconnect } from '#lib/no-connection.svelte.ts';
   import { shake } from '#lib/shake.ts';
   import { forgetAccount, loadSignedIn } from '#lib/state/account.ts';
   import { session, type PublicConfig } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const token = $derived(page.params.token ?? '');
 
@@ -156,7 +153,7 @@
 <svelte:window onoffline={() => net.show()} ononline={() => void net.attempt()} />
 
 {#if flow.status === 'missing'}
-  <ErrorView code="404" />
+  <ErrorView code="404" appName={session.appName} support={session.config?.org.email ?? null} />
 {:else if flow.status === 'failed'}
   <InviteLoadError {flow} {targets} hidden={net.open} />
 {:else if flow.status !== 'ready'}

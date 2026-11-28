@@ -9,13 +9,12 @@
 -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, ui } from '@roedy/ui';
   import { codesCols, type Look } from '#lib/auth-layout.ts';
   import { Copied } from '#lib/clipboard.svelte.ts';
   import { downloadCodes } from '#lib/download.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   interface Props {
     codes: readonly string[];

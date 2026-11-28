@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, NetworkError } from '#lib/api.ts';
+import { ApiError, NetworkError, ui } from '@roedy/ui';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 import { lostAccess } from './access.ts';
 
 afterEach(() => {

@@ -15,16 +15,12 @@
   import { resolve } from '$app/paths';
   import { autofocus } from '#lib/actions/autofocus.ts';
   import { focusback } from '#lib/actions/focusback.ts';
-  import { tooltip } from '#lib/actions/tooltip.ts';
-  import DirtyBar from '#lib/components/DirtyBar.svelte';
-  import FirstLoad from '#lib/components/FirstLoad.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { DirtyBar, FirstLoad, Icon, tooltip, ui } from '@roedy/ui';
   import { MAX_NAME } from '#lib/name.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { PROFILE_PATH, ProfilePage, profileValues, type AcctRowValues } from '#lib/profile.svelte.ts';
   import { pageOf } from '#lib/settings-nav.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const p = new ProfilePage();
   void p.load();

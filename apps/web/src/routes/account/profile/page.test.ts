@@ -2,7 +2,7 @@ import { fireEvent, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProfileMe } from '#lib/profile.svelte.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import { sessionOf } from '#lib/test/session.ts';
 import Page from './+page.svelte';

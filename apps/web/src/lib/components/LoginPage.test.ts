@@ -7,9 +7,10 @@ import type { LoginRoute } from '#lib/login.svelte.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { RESET0, prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session, type PublicConfig } from '#lib/state/session.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import LoginPage from '#lib/components/LoginPage.svelte';
+import { guest } from '#lib/state/guest.svelte.ts';
 
 const CONFIG: PublicConfig = {
   name: 'Roedy Hub',
@@ -70,7 +71,7 @@ describe('page sign-in', () => {
     expect(view.getByRole('checkbox', { name: 'Stay signed in' })).toHaveAttribute('aria-checked', 'true');
     expect(view.queryByText(`© ${new Date().getFullYear()} Roedy Hub`)).toBeNull();
     expect(view.queryByRole('link', { name: 'Privacy policy' })).toBeNull();
-    expect(ui.authTitle).toBe('Sign in · Roedy Hub');
+    expect(guest.title).toBe('Sign in · Roedy Hub');
   });
 
   it('asks the signed-in account again on a fresh sign-in, with its address and a notice above the fields', () => {
@@ -321,7 +322,7 @@ describe('page sign-in', () => {
     await fireEvent.click(view.getByRole('button', { name: 'Sign in' }));
     const heading = await view.findByRole('heading', { name: 'Hello, Anna' });
     await vi.waitFor(() => expect(document.activeElement).toBe(heading));
-    expect(ui.authTitle).toBe('Signed in · Roedy Hub');
+    expect(guest.title).toBe('Signed in · Roedy Hub');
     expect(view.getByRole('status')).toHaveTextContent('Signed in for this session only.');
     expect(view.getByText('Redirecting you to Roedy Hub …')).toBeInTheDocument();
     await fireEvent.click(view.getByRole('button', { name: 'Back to sign-in' }));
@@ -432,7 +433,7 @@ async function onPhone(body: () => Promise<void>) {
 describe('page code steps', () => {
   it('shows the authenticator step with its preview, field and Back', async () => {
     const view = await atCode();
-    expect(ui.authTitle).toBe('Multi-factor authentication · Roedy Hub');
+    expect(guest.title).toBe('Multi-factor authentication · Roedy Hub');
     const preview = view.container.querySelector('.acct')!;
     expect(preview).toHaveAttribute('aria-hidden', 'true');
     expect(preview).toHaveTextContent('Authenticator app');
@@ -566,7 +567,7 @@ describe('page code steps', () => {
     const view = await atCode();
     await fireEvent.click(view.getByRole('button', { name: 'Use a recovery code' }));
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent(m.login_bc_title());
-    expect(ui.authTitle).toBe('Recovery code · Roedy Hub');
+    expect(guest.title).toBe('Recovery code · Roedy Hub');
     const field = view.getByLabelText('Recovery code');
     expect(field).toHaveAttribute('id', 'ln-bc');
     expect(field).toHaveAttribute('name', 'backup-code');
@@ -649,7 +650,7 @@ describe('page reset password', () => {
     const view = atForgot();
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Reset password');
     expect(view.getByText(m.login_forgot_intro())).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Reset password · Roedy Hub');
+    expect(guest.title).toBe('Reset password · Roedy Hub');
     expect(view.container.querySelector('.login')).toBeNull();
     const field = view.getByLabelText('Email address');
     expect(field).toHaveAttribute('id', 'ln-fg');
@@ -773,7 +774,7 @@ describe('page check your inbox', () => {
   it('shows the address, the link chips and "Back to sign-in"; the focus on the heading', async () => {
     const view = await atSent();
     const heading = view.getByRole('heading', { level: 1 });
-    expect(ui.authTitle).toBe('Check your inbox · Roedy Hub');
+    expect(guest.title).toBe('Check your inbox · Roedy Hub');
     await vi.waitFor(() => expect(document.activeElement).toBe(heading));
     const status = view.getByRole('status');
     expect(status).toHaveTextContent(
@@ -861,7 +862,7 @@ describe('page set a new password', () => {
     const view = atNewPw();
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Set a new password');
     expect(view.getByText(m.login_newpw_intro())).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Set a new password · Roedy Hub');
+    expect(guest.title).toBe('Set a new password · Roedy Hub');
     expect(view.container.querySelector('.login')).toBeNull();
     const rules = view.getByRole('list', { name: 'Password requirements' });
     expect(rules).toHaveAttribute('id', 'ln-np-rules');
@@ -1047,7 +1048,7 @@ describe('page password changed', () => {
     await fillNewPw();
     await fireEvent.click(save());
     const heading = await view.findByRole('heading', { name: 'Password changed' });
-    expect(ui.authTitle).toBe('Password changed · Roedy Hub');
+    expect(guest.title).toBe('Password changed · Roedy Hub');
     await vi.waitFor(() => expect(document.activeElement).toBe(heading));
     const status = view.getByRole('status');
     expect(status).toHaveTextContent(m.login_done_text());
@@ -1083,7 +1084,7 @@ describe('page link expired or invalid', () => {
     await fillNewPw();
     await fireEvent.click(save());
     const heading = await view.findByRole('heading', { name: 'Link expired or invalid' });
-    expect(ui.authTitle).toBe('Link expired or invalid · Roedy Hub');
+    expect(guest.title).toBe('Link expired or invalid · Roedy Hub');
     await vi.waitFor(() => expect(document.activeElement).toBe(heading));
     expect(view.getByRole('alert')).toHaveTextContent(m.login_link_bad_text());
     await fireEvent.click(view.getByRole('button', { name: 'Request a new link' }));

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { violations } from '#lib/test/axe.ts';
+import { violations } from '@roedy/ui/testing';
 import de from '../../messages/de.json';
 import en from '../../messages/en.json';
 import {

@@ -6,7 +6,7 @@
 import { fireEvent, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { violations } from '#lib/test/axe.ts';
+import { violations } from '@roedy/ui/testing';
 import { renderSignedIn, resetSignedIn, setPhone, TEST_CONFIG } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 

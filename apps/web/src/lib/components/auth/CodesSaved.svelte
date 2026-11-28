@@ -9,7 +9,7 @@
 -->
 <script lang="ts">
   import type { Attachment } from 'svelte/attachments';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
   import { m } from '#lib/paraglide/messages.js';
 

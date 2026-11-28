@@ -26,13 +26,11 @@
  * still show their toast. 401/403 reload the account (`lostAccess`).
  */
 import { lostAccess } from '#lib/access.ts';
-import { api, fieldsOf, isApiError } from '#lib/api.ts';
+import { api, failText, fieldsOf, isApiError, loadFailText, Loading, ui } from '@roedy/ui';
 import { appName, type AccessDefault, type AdminApp, type Pairing } from '#lib/apps.ts';
 import { copyText } from '#lib/clipboard.svelte.ts';
-import { failText, loadFailText } from '#lib/errors.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { serial } from '#lib/serial.ts';
-import { Loading, ui } from '#lib/state/ui.svelte.ts';
 import { trimWs } from '#lib/trim.ts';
 
 export type LoadStatus = 'loading' | 'ready' | 'failed';

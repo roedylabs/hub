@@ -24,7 +24,7 @@
   import { DESK_LEVELS, MOB_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { CODE_LOCK_S, type SetupFlow } from '#lib/setup.svelte.ts';
-  import { waitText } from '#lib/wait.ts';
+  import { waitText } from '@roedy/ui';
 
   let { flow, targets, hidden = false }: { flow: SetupFlow; targets: SetupTargets; hidden?: boolean } = $props();
 

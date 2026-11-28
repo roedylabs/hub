@@ -12,7 +12,7 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
+  import { Icon, type IconName, LoadCard, radiogroup, Skeleton, ui } from '@roedy/ui';
   import { AppPage } from '#lib/admin-apps.svelte.ts';
   import {
     appName,
@@ -25,14 +25,9 @@
     type AdminApp,
   } from '#lib/apps.ts';
   import AppIcon from '#lib/components/AppIcon.svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import LoadCard from '#lib/components/LoadCard.svelte';
   import PairingCode from '#lib/components/PairingCode.svelte';
-  import Skeleton from '#lib/components/Skeleton.svelte';
-  import type { IconName } from '#lib/icons.ts';
   import { intlLocale } from '#lib/locale.ts';
   import { m } from '#lib/paraglide/messages.js';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const LIST = resolve('/admin/apps');
   const ctx = { leave: () => void goto(LIST) };

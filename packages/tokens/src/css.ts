@@ -17,7 +17,7 @@ import {
 } from './tokens.ts';
 
 const HEADER = `/*
- * Roedy Mail design tokens – generated from packages/tokens/src/tokens.ts.
+ * Roedy design tokens – generated from packages/tokens/src/tokens.ts.
  * Do not edit by hand: pnpm --filter @roedy/tokens build
  *
  * Controlled by attributes on <html>:

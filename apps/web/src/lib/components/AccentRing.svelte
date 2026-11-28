@@ -8,9 +8,7 @@
   Taken over from Roedy Mail (`apps/web/src/lib/components/AccentRing.svelte`).
 -->
 <script lang="ts">
-  import { accentInk, type HexColor } from '#lib/color.ts';
-  import Icon from '#lib/components/Icon.svelte';
-  import type { IconName } from '#lib/icons.ts';
+  import { accentInk, type HexColor, Icon, type IconName } from '@roedy/ui';
 
   let { dot = null, icon }: { dot?: HexColor | null; icon: IconName } = $props();
 </script>

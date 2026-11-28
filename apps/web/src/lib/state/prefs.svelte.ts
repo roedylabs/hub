@@ -19,18 +19,21 @@
  * trimmed to the hub's three settings; without a choice the color scheme
  * follows the system.
  */
-import { ACCENTS, type AccentName } from '@roedy/tokens';
-import { MediaQuery } from 'svelte/reactivity';
-import { ApiError, api, isRecord } from '#lib/api.ts';
-import { isHexColor, type HexColor } from '#lib/color.ts';
+import { ACCENTS } from '@roedy/tokens';
+import {
+  api,
+  ApiError,
+  connectSettings,
+  isHexColor,
+  isRecord,
+  MODES,
+  type AccentChoice,
+  type ModeName,
+} from '@roedy/ui';
 import { browserLang, deviceLang, rememberLang, type Lang } from '#lib/locale.ts';
 import { baseLocale, isLocale, overwriteGetLocale } from '#lib/paraglide/runtime.js';
 import { writeSharedPrefs } from '#lib/shared-prefs.ts';
 
-export const MODES = ['light', 'dark', 'system'] as const;
-export type ModeName = (typeof MODES)[number];
-/** Named accent or a custom colour as `#rrggbb` (`#lib/color.ts`). */
-export type AccentChoice = AccentName | HexColor;
 /** Language setting: a UI language or `system` (follows the browser, `browserLang()`). */
 export type LangChoice = Lang | 'system';
 
@@ -95,16 +98,6 @@ export class Prefs {
   );
   /** Last error on save; the affected fields are then reset. */
   error = $state<ApiError | Error | null>(null);
-  /** System setting "reduce motion" (`prefers-reduced-motion`). */
-  #reduceMotion = new MediaQuery('(prefers-reduced-motion: reduce)');
-  /** Animations of this page; the hub stores no such setting (Roedy Mail's "Animations"), tests turn them off. */
-  animations = $state(true);
-
-  /** Motion on: animations and no reduced motion in the system. */
-  get motion(): boolean {
-    return this.animations && !this.#reduceMotion.current;
-  }
-
   constructor() {
     globalThis.addEventListener?.('languagechange', () => {
       this.#browserLang = browserLang();
@@ -248,5 +241,7 @@ export const prefs = new Prefs();
  */
 export const fitLang = $state<{ value: Lang | null }>({ value: null });
 
-// UI language from the settings; via `$state` templates and `$derived` follow a change.
+// UI language from the settings; via `$state` templates and `$derived` follow a change. The texts of
+// `@roedy/ui` follow the same language, its dark theme the colour scheme.
 overwriteGetLocale(() => fitLang.value ?? prefs.lang);
+connectSettings({ lang: () => fitLang.value ?? prefs.lang, mode: () => prefs.values.mode });

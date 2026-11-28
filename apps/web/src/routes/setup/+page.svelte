@@ -21,14 +21,13 @@
   import StepToken from '#lib/components/setup/StepToken.svelte';
   import StepWelcome from '#lib/components/setup/StepWelcome.svelte';
   import { SetupTargets } from '#lib/components/setup/targets.ts';
-  import { NetworkError, api } from '#lib/api.ts';
-  import { NET_PROBE_MS, Reconnect } from '#lib/no-connection.svelte.ts';
+  import { api, NET_PROBE_MS, NetworkError, Reconnect, ui } from '@roedy/ui';
   import { isMobileWidth } from '#lib/auth-layout.ts';
   import { choicesOf, SetupFlow, type Focus } from '#lib/setup.svelte.ts';
   import { shake } from '#lib/shake.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session, type PublicConfig } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
+  import { guest } from '#lib/state/guest.svelte.ts';
 
   const targets = new SetupTargets();
   /** Controls a user may have moved to while a step waits (see `refocus`). */
@@ -140,7 +139,7 @@
       signInOnAnswer = true;
       net.show();
     };
-    ui.setupLeaving = true;
+    guest.setupLeaving = true;
     const answered = await loaded();
     if (!owns()) return;
     if (!answered) {
@@ -149,7 +148,7 @@
     }
     if (!session.authed) {
       // No session (cookie rejected) or a server error: the layout shows the sign-in or the error page.
-      ui.setupLeaving = false;
+      guest.setupLeaving = false;
       return;
     }
     try {
@@ -200,7 +199,7 @@
     for (const timer of enterTimers) clearTimeout(timer);
     flow.dispose();
     net.close();
-    ui.setupLeaving = false;
+    guest.setupLeaving = false;
   });
 </script>
 

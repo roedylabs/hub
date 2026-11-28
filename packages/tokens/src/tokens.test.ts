@@ -85,15 +85,18 @@ describe('shadow tokens', () => {
     expect(renderTokensCss().split(`--sh-edge: ${edge};`)).toHaveLength(4);
   });
 
-  it('defines every --sh* token that the web app uses (an undefined one invalidates the whole box-shadow)', () => {
-    const root = fileURLToPath(new URL('../../../apps/web/src', import.meta.url));
+  it('defines every --sh* token that the hub and @roedy/ui use (an undefined one invalidates the whole box-shadow)', () => {
     const used = new Set<string>();
-    for (const file of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
-      if (!/\.(svelte|ts|css)$/.test(file)) continue;
-      for (const [, name] of readFileSync(join(root, file), 'utf8').matchAll(/var\((--sh(?:\d|-[\w-]+))\s*[,)]/g)) {
-        used.add(name!);
+    for (const dir of ['../../../apps/web/src', '../../ui/src']) {
+      const root = fileURLToPath(new URL(dir, import.meta.url));
+      for (const file of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+        if (!/\.(svelte|ts|css)$/.test(file)) continue;
+        for (const [, name] of readFileSync(join(root, file), 'utf8').matchAll(/var\((--sh(?:\d|-[\w-]+))\s*[,)]/g)) {
+          used.add(name!);
+        }
       }
     }
+    expect(used.size).toBeGreaterThan(0);
     for (const name of used) {
       expect(MODES.light, name).toHaveProperty([name]);
       expect(MODES.dark, name).toHaveProperty([name]);

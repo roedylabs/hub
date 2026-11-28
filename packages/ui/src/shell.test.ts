@@ -19,7 +19,8 @@ describe('confirmValues', () => {
   it('takes icon, label, danger and the word; "OK" stays disabled until the word matches', () => {
     const cf = confirmValues(
       { title: 'T', text: 'X', icon: 'ti-trash', ok: 'Delete', danger: true, word: 'DELETE', noCancel: true },
-      false);
+      false,
+    );
     expect(cf).toMatchObject({ icon: 'ti-trash', ok: 'Delete', danger: true, hasWord: true, word: 'DELETE' });
     expect(cf).toMatchObject({ hasCancel: false, okDis: true });
   });

@@ -3,7 +3,7 @@
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/components/auth/types.ts`).
  */
-import type { IconName } from '#lib/icons.ts';
+import type { IconName } from '@roedy/ui';
 
 /** Step bars: `total` bars, bar `n` long, bars up to `n` in the accent; `label` names them ("Step 2 of 7"). */
 export interface Bars {

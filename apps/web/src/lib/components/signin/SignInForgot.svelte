@@ -14,7 +14,7 @@
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
   import PreviewCard from '#lib/components/auth/PreviewCard.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import { resetFrame } from '#lib/components/signin/frame.ts';
   import type { SignInTargets } from '#lib/components/signin/targets.ts';
   import { DESK_LEVELS, MOB_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';

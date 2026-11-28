@@ -39,19 +39,27 @@
  * toasts only inform).
  */
 import { lostAccess } from '#lib/access.ts';
-import { ago } from '#lib/ago.ts';
-import { api, ApiError, fieldsOf as apiFieldsOf, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  ago,
+  api,
+  ApiError,
+  failText,
+  fieldsOf as apiFieldsOf,
+  type IconName,
+  isApiError,
+  loadFailText,
+  Loading,
+  retryAfter,
+  ui,
+  waitText,
+} from '@roedy/ui';
 import { segOptions } from '#lib/select.ts';
 import type { SegOption } from '#lib/appearance.ts';
 import { isEmail } from '#lib/email.ts';
-import { failText, loadFailText } from '#lib/errors.ts';
-import type { IconName } from '#lib/icons.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { session } from '#lib/state/session.svelte.ts';
-import { Loading, ui } from '#lib/state/ui.svelte.ts';
 import { hostOf, mailUrlOf, normUrl } from '#lib/system-mail-url.ts';
 import { trimWs } from '#lib/trim.ts';
-import { waitText } from '#lib/wait.ts';
 
 export type MailAuth = 'password' | 'token';
 

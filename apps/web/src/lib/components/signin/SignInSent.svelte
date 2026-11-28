@@ -12,7 +12,7 @@
 -->
 <script lang="ts">
   import AuthResult from '#lib/components/auth/AuthResult.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon } from '@roedy/ui';
   import type { SignInTargets } from '#lib/components/signin/targets.ts';
   import type { LoginFlow, LoginPageValues } from '#lib/login.svelte.ts';
   import { m } from '#lib/paraglide/messages.js';

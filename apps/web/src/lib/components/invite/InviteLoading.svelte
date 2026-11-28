@@ -15,8 +15,8 @@
   import type { InviteTargets } from '#lib/components/invite/targets.ts';
   import { isMobileWidth, sharedCardH, sharedLevel, stepLook, type Look } from '#lib/auth-layout.ts';
   import { m } from '#lib/paraglide/messages.js';
-  import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
+  import { ui } from '@roedy/ui';
 
   let { targets, hidden = false }: { targets: InviteTargets; hidden?: boolean } = $props();
 
@@ -36,7 +36,7 @@
   {@const rows = detailRows(look.mobile, level)}
   <div
     class="sk"
-    class:still={!prefs.motion}
+    class:still={!ui.motion}
     role="status"
     aria-busy="true"
     aria-label={m.invite_checking()}

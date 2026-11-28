@@ -13,17 +13,13 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { focusback } from '#lib/actions/focusback.ts';
-  import { tooltip } from '#lib/actions/tooltip.ts';
+  import { FirstLoad, Icon, LoadCard, tooltip, ui } from '@roedy/ui';
   import { AppsPage, slugErrorText, urlErrorText } from '#lib/admin-apps.svelte.ts';
   import { appName, appStatus, eventsProblem } from '#lib/apps.ts';
   import AppIcon from '#lib/components/AppIcon.svelte';
-  import FirstLoad from '#lib/components/FirstLoad.svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import LoadCard from '#lib/components/LoadCard.svelte';
   import PairingCode from '#lib/components/PairingCode.svelte';
   import { m } from '#lib/paraglide/messages.js';
   import { pageOf } from '#lib/settings-nav.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const p = new AppsPage();
   const isMobile = $derived(ui.isMobile);

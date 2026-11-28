@@ -30,16 +30,25 @@
  */
 import { ACCENTS, DEFAULT_ACCENT, PLATES, type AccentName } from '@roedy/tokens';
 import { lostAccess } from '#lib/access.ts';
-import { ApiError, api, fieldsOf, isApiError } from '#lib/api.ts';
+import {
+  api,
+  ApiError,
+  BRAND0,
+  type Branding,
+  failText,
+  fieldsOf,
+  type IconName,
+  isApiError,
+  type LogoValues,
+  mkLogo,
+  type PlateName,
+  ui,
+} from '@roedy/ui';
 import { accentLabel, type SegOption, type Toggle } from '#lib/appearance.ts';
-import { failText } from '#lib/errors.ts';
-import type { IconName } from '#lib/icons.ts';
 import { intlLocale } from '#lib/locale.ts';
-import { mkLogo, type LogoValues } from '#lib/logo.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { serial } from '#lib/serial.ts';
-import { BRAND0, session, type Branding, type PlateName } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session } from '#lib/state/session.svelte.ts';
 
 export type BrandingSection = 'logo' | 'color';
 

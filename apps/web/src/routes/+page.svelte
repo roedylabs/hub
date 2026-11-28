@@ -12,11 +12,9 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
-  import Icon from '#lib/components/Icon.svelte';
-  import LoadCard from '#lib/components/LoadCard.svelte';
+  import { Icon, LoadCard, ui } from '@roedy/ui';
   import { HomePage, homeValues } from '#lib/home.svelte.ts';
   import { m } from '#lib/paraglide/messages.js';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const p = new HomePage();
   const v = $derived(homeValues(p, { openApps: () => void goto(resolve('/admin/apps')) }));

@@ -12,12 +12,19 @@
  * `banner.svelte.ts`.
  */
 import { ACCENTS, MODE_PREV, type AccentName } from '@roedy/tokens';
-import { accentInk, isHexColor, type HexColor } from '#lib/color.ts';
-import type { IconName } from '#lib/icons.ts';
+import {
+  accentInk,
+  accentOf,
+  type Branding,
+  type HexColor,
+  type IconName,
+  isHexColor,
+  modeName,
+  type ModeName,
+  MODES,
+} from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
-import { MODES, type ModeName, type Settings } from '#lib/state/prefs.svelte.ts';
-import type { Branding } from '#lib/state/session.svelte.ts';
-import { accentOf, modeName } from '#lib/theme.ts';
+import type { Settings } from '#lib/state/prefs.svelte.ts';
 
 /** Sections of the page (`data-sec`, `tabs`). */
 export type AppearanceSection = 'mode' | 'accent';

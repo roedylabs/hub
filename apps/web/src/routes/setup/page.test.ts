@@ -5,10 +5,11 @@ import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session } from '#lib/state/session.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import { sessionOf } from '#lib/test/session.ts';
 import Page from './+page.svelte';
+import { guest } from '#lib/state/guest.svelte.ts';
 
 const nav = vi.hoisted(() => ({ goto: vi.fn(() => Promise.resolve()) }));
 vi.mock('$app/navigation', () => ({ goto: nav.goto }));
@@ -120,7 +121,7 @@ describe('Setup page', () => {
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Set up Roedy Hub');
     expect(view.getByText('Roedy Hub')).toBeInTheDocument();
     expect(view.getByRole('img', { name: 'Step 2 of 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Setup token · Setup');
+    expect(guest.title).toBe('Setup token · Setup');
     expect(view.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     // One line of text with its spaces (a selection copies the command as it is).
     expect(view.container.querySelector('.cmd-parts')?.textContent).toBe(
@@ -173,7 +174,7 @@ describe('Setup page', () => {
     atToken();
     const view = render(Page);
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Roedy Hub einrichten');
-    expect(ui.authTitle).toBe('Setup-Token · Einrichtung');
+    expect(guest.title).toBe('Setup-Token · Einrichtung');
     expect(view.getByText('[setup] Not set up yet')).toBeInTheDocument();
     expect(view.getByRole('button', { name: /^Kopieren:/ })).toBeInTheDocument();
   });
@@ -216,7 +217,7 @@ describe('Setup page', () => {
     await type('Email address', 'anna@example.com');
     await fireEvent.keyDown(view.getByRole('heading', { level: 1 }), { key: 'Enter' });
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Set password');
-    expect(ui.authTitle).toBe('Password · Setup');
+    expect(guest.title).toBe('Password · Setup');
     await fireEvent.click(view.getByRole('button', { name: 'Back' }));
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Create administrator');
     expect(view.getByLabelText('Your name')).toHaveValue('Anna Becker');
@@ -482,7 +483,7 @@ describe('Setup page', () => {
     // 5: authenticator app (the key from the setup API, the sixth digit confirms by itself)
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent(MFA_TITLE);
     expect(view.getByRole('img', { name: 'Step 5 of 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Authenticator app · Setup');
+    expect(guest.title).toBe('Authenticator app · Setup');
     await vi.waitFor(() => expect(view.getByRole('img', { name: 'QR code for the authenticator app' })).toBeVisible());
     expect(view.getByText('JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP')).toBeInTheDocument();
     const totp = calls.find((c) => c.path === 'setup/totp');
@@ -494,7 +495,7 @@ describe('Setup page', () => {
 
     // 6: recovery codes from the confirmed code (no request of its own); reading them comes first, so the heading
     expect(view.getByRole('img', { name: 'Step 6 of 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Recovery codes · Setup');
+    expect(guest.title).toBe('Recovery codes · Setup');
     await vi.waitFor(() => expect(view.getByRole('heading', { level: 1 })).toHaveFocus());
     const codes = view.getByRole('list', { name: 'Recovery codes' });
     expect(
@@ -521,7 +522,7 @@ describe('Setup page', () => {
     // 7: summary and completion
     await vi.waitFor(() => expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('All set?'));
     expect(view.getByRole('img', { name: 'Step 7 of 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Review · Setup');
+    expect(guest.title).toBe('Review · Setup');
     const summary = view.getByRole('list', { name: 'Your details' });
     const rows = within(summary).getAllByRole('listitem');
     // (The page renders at mobile width here: "Change" is a pencil with its label.)
@@ -591,7 +592,7 @@ describe('Setup page', () => {
       password: 'Safe-enough1',
       settings: { lang: 'system', mode: 'dark', accent: 'sage' },
     });
-    expect(ui.authTitle).toBe('Done · Setup');
+    expect(guest.title).toBe('Done · Setup');
     // The done screen has read the first name: the session keys go.
     expect(Object.keys(sessionStorage).filter((k) => k.startsWith('roedy.hub.setup.'))).toEqual([]);
 
@@ -602,7 +603,7 @@ describe('Setup page', () => {
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/', { replace: true }));
     expect(session.authed).toBe(true);
     // The layout keeps the setup until the home page is there.
-    expect(ui.setupLeaving).toBe(true);
+    expect(guest.setupLeaving).toBe(true);
     expect(calls.map((c) => c.path)).toContain('settings');
   });
 });
@@ -616,7 +617,7 @@ describe('Step 5: authenticator app', () => {
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     const view = await atMfa();
     expect(view.getByRole('img', { name: 'Step 5 of 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Authenticator app · Setup');
+    expect(guest.title).toBe('Authenticator app · Setup');
     const qr = await view.findByRole('img', { name: 'QR code for the authenticator app' });
     expect(qr.querySelector('svg path')?.getAttribute('d')).toMatch(/^M\d/);
     expect(view.getByText('Or enter the key manually')).toBeInTheDocument();
@@ -789,7 +790,7 @@ describe('Step 5: authenticator app', () => {
     await next('Weiter');
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Multi-Faktor-Authenti­fizierung');
     expect(view.getByRole('img', { name: 'Schritt 5 von 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Authenticator-App · Einrichtung');
+    expect(guest.title).toBe('Authenticator-App · Einrichtung');
     expect(view.getByText(/Schützen Sie das Administratorkonto/)).toBeInTheDocument();
     await vi.waitFor(() => expect(view.getByRole('img', { name: 'QR-Code für die Authenticator-App' })).toBeVisible());
     expect(view.getByText('Oder Schlüssel manuell eingeben')).toBeInTheDocument();
@@ -910,7 +911,7 @@ describe('Step 6: recovery codes', () => {
     await type('Bestätigungscode', '123456');
     await vi.waitFor(() => expect(heading()).toHaveTextContent('Wieder\u00adherstellungs\u00adcodes'));
     expect(view.getByRole('img', { name: 'Schritt 6 von 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Wiederherstellungscodes · Einrichtung');
+    expect(guest.title).toBe('Wiederherstellungscodes · Einrichtung');
     expect(view.getByText(/Mit diesen Codes melden Sie sich an/)).toBeInTheDocument();
     expect(view.getByRole('list', { name: 'Wiederherstellungscodes' })).toBeInTheDocument();
     expect(view.getByRole('button', { name: 'Kopieren: Wiederherstellungscodes' })).toHaveTextContent('Kopieren');
@@ -997,7 +998,7 @@ describe('Step 7: review', () => {
     await vi.waitFor(() => expect(session.status).toBe('ready'));
     expect(session.setupRequired).toBe(false);
     expect(session.authed).toBe(false);
-    expect(ui.setupLeaving).toBe(false);
+    expect(guest.setupLeaving).toBe(false);
     expect(view.queryByRole('alert')).toBeNull();
   });
 
@@ -1059,7 +1060,7 @@ describe('Step 7: review', () => {
     await vi.advanceTimersByTimeAsync(2700);
     // The done screen stays (no redirect to the home page), "No connection" offers the next attempt.
     await view.findByRole('alertdialog', { name: 'No connection' });
-    expect(ui.setupLeaving).toBe(true);
+    expect(guest.setupLeaving).toBe(true);
     window.dispatchEvent(new Event('online'));
     await vi.waitFor(() => expect(nav.goto).toHaveBeenCalledTimes(2));
     expect(nav.goto).toHaveBeenLastCalledWith('/', { replace: true });
@@ -1079,7 +1080,7 @@ describe('Step 7: review', () => {
     await vi.waitFor(() => expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Welcome, Anna'));
     await vi.advanceTimersByTimeAsync(2700);
     view.unmount();
-    expect(ui.setupLeaving).toBe(false);
+    expect(guest.setupLeaving).toBe(false);
     // The server answers with the signed-in session after all: the old page no longer navigates.
     answer({
       status: 200,
@@ -1134,7 +1135,7 @@ describe('Step 7: review', () => {
     await fireEvent.click(view.getByRole('checkbox', { name: 'Ich habe die Codes sicher aufbewahrt' }));
     await next('Weiter');
     await vi.waitFor(() => expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Alles bereit?'));
-    expect(ui.authTitle).toBe('Überprüfen · Einrichtung');
+    expect(guest.title).toBe('Überprüfen · Einrichtung');
     expect(view.getByRole('list', { name: 'Ihre Angaben' })).toHaveTextContent('Deutsch · System · Eigene #4A7BD0');
     const change = view.getByRole('button', { name: 'Sprache und Design ändern' });
     expect(change).toHaveAttribute('title', 'Sprache und Design ändern');
@@ -1180,7 +1181,7 @@ describe('Step 1: language and appearance', () => {
       ),
     ).toBeInTheDocument();
     expect(view.getByRole('img', { name: 'Step 1 of 7' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Language and appearance · Setup');
+    expect(guest.title).toBe('Language and appearance · Setup');
     expect(view.queryByRole('button', { name: 'Back' })).toBeNull();
 
     const lang = group('Language');
@@ -1211,7 +1212,7 @@ describe('Step 1: language and appearance', () => {
     expect(prefs.values.lang).toBe('de');
     expect(sessionStorage.getItem('roedy.hub.setup.lang')).toBe('de');
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Willkommen');
-    expect(ui.authTitle).toBe('Sprache und Design · Einrichtung');
+    expect(guest.title).toBe('Sprache und Design · Einrichtung');
 
     await fireEvent.click(group('Design').option('Hell'));
     expect(prefs.values.mode).toBe('light');
@@ -1333,7 +1334,7 @@ describe('Step 1: language and appearance', () => {
     expect(accent.option('Sky')).toHaveAttribute('aria-checked', 'true');
 
     // A pick in "More colors" leads, the own colour follows it.
-    prefs.animations = false;
+    ui.animations = false;
     await fireEvent.click(screen.getByRole('button', { name: 'More colors' }));
     await fireEvent.click(accent.option('Mint'));
     await fireEvent.click(screen.getByRole('button', { name: 'Back' }));
@@ -1416,7 +1417,7 @@ describe('Step 1: language and appearance', () => {
   });
 
   it('applies every pick in "More colors" at once; "Back" keeps it, the new order shows after closing', async () => {
-    prefs.animations = false;
+    ui.animations = false;
     render(Page);
     const accent = group('Accent color');
     await fireEvent.click(screen.getByRole('button', { name: 'More colors' }));
@@ -1453,7 +1454,7 @@ describe('Step 1: language and appearance', () => {
   });
 
   it('applies a hex code once all six digits are there, a short one when leaving the field', async () => {
-    prefs.animations = false;
+    ui.animations = false;
     render(Page);
     await fireEvent.click(screen.getByRole('button', { name: 'More colors' }));
     const hex = screen.getByLabelText('Your own hex code');
@@ -1481,7 +1482,7 @@ describe('Step 1: language and appearance', () => {
 
   it('"Get started" goes on with the colour; an invalid hex code blocks it', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    prefs.animations = false;
+    ui.animations = false;
     const view = render(Page);
     await fireEvent.click(screen.getByRole('button', { name: 'More colors' }));
     const hex = screen.getByLabelText('Your own hex code');
@@ -1504,7 +1505,7 @@ describe('Step 1: language and appearance', () => {
   });
 
   it('starts with Enter on a tile while "More colors" is open', async () => {
-    prefs.animations = false;
+    ui.animations = false;
     const view = render(Page);
     await fireEvent.click(screen.getByRole('button', { name: 'More colors' }));
     const lime = group('Accent color').option('Lime');
@@ -1530,7 +1531,7 @@ describe('Step 1: language and appearance', () => {
 describe('Step 3: administrator', () => {
   it('shows a live preview of the account with the initials', async () => {
     const view = await atAdmin();
-    expect(ui.authTitle).toBe('Administrator · Setup');
+    expect(guest.title).toBe('Administrator · Setup');
     await vi.waitFor(() => expect(view.getByLabelText('Your name')).toHaveFocus());
     const preview = view.container.querySelector<HTMLElement>('.acct');
     expect(preview).toHaveAttribute('aria-hidden', 'true');
@@ -1617,7 +1618,7 @@ describe('Step 3: administrator', () => {
     await type('Setup-Token', 'abcd-efgh-jklm');
     await next('Weiter');
     await vi.waitFor(() => expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Administrator anlegen'));
-    expect(ui.authTitle).toBe('Administrator · Einrichtung');
+    expect(guest.title).toBe('Administrator · Einrichtung');
     expect(view.getByLabelText('E-Mail-Adresse')).toHaveAttribute('placeholder', 'name@beispiel.example');
     await type('Ihr Name', 'Anna 1');
     expect(view.getByRole('alert')).toHaveTextContent('Name ungültig.');
@@ -1627,7 +1628,7 @@ describe('Step 3: administrator', () => {
 describe('Step 4: password', () => {
   it('shows the check card with strength and four chips, live while typing', async () => {
     const view = await atPassword();
-    expect(ui.authTitle).toBe('Password · Setup');
+    expect(guest.title).toBe('Password · Setup');
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Set password');
     const rules = view.getByRole('list', { name: 'Password requirements' });
     expect(
@@ -1759,7 +1760,7 @@ describe('Step 4: password', () => {
     await type('Ihr Name', 'Anna Becker');
     await type('E-Mail-Adresse', 'anna@example.com');
     await next('Weiter');
-    expect(ui.authTitle).toBe('Passwort · Einrichtung');
+    expect(guest.title).toBe('Passwort · Einrichtung');
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Passwort festlegen');
     expect(view.getByText('Noch leer')).toBeInTheDocument();
     expect(view.getByRole('list', { name: 'Anforderungen an das Passwort' })).toBeInTheDocument();

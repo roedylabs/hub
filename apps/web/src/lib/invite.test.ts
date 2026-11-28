@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { normalizeName } from '#lib/name.ts';
-import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
+import { session, type PublicConfig } from '#lib/state/session.svelte.ts';
 import {
   CODE_LOCK_S,
   DONE_MS,
@@ -11,6 +11,7 @@ import {
   type InviteField,
   type InviteInfo,
 } from '#lib/invite.svelte.ts';
+import { BRAND0 } from '@roedy/ui';
 
 const TOKEN = 'b'.repeat(43);
 const INFO: InviteInfo = {

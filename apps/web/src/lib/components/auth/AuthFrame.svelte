@@ -12,8 +12,7 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
   import type { Attachment } from 'svelte/attachments';
-  import Icon from '#lib/components/Icon.svelte';
-  import Logo from '#lib/components/Logo.svelte';
+  import { errorTones, Icon, Logo, ui } from '@roedy/ui';
   import { AuthFit } from '#lib/auth-fit.svelte.ts';
   import type { Bars } from '#lib/components/auth/types.ts';
   import type { Look } from '#lib/auth-layout.ts';
@@ -23,8 +22,7 @@
   import { locales } from '#lib/paraglide/runtime.js';
   import { fitLang, prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
-  import { errorTones } from '#lib/theme.ts';
+  import { guest } from '#lib/state/guest.svelte.ts';
 
   interface Props {
     docTitle: string;
@@ -136,7 +134,7 @@
     // Without a layout (a hidden page, tests) there is nothing to reveal.
     if (!cr.height || (r.top >= cr.top + 12 && r.bottom <= cr.bottom - 12)) return;
     const top = card.scrollTop + (r.top - cr.top) - Math.max(16, (cr.height - r.height) / 3);
-    card.scrollTo({ top, behavior: prefs.motion ? 'smooth' : 'auto' });
+    card.scrollTo({ top, behavior: ui.motion ? 'smooth' : 'auto' });
   }
   $effect(() => {
     void fit.h;
@@ -162,10 +160,10 @@
 
   // Document title per screen and language.
   $effect(() => {
-    ui.authTitle = docTitle;
+    guest.title = docTitle;
   });
   $effect(() => () => {
-    if (ui.authTitle === docTitle) ui.authTitle = null;
+    if (guest.title === docTitle) guest.title = null;
   });
 
   // Hover styles only while a mouse is in use (the last pointer), so a tapped button does not stay lifted.
@@ -193,9 +191,9 @@
   const modeLabel = $derived(dark ? m.theme_light() : m.theme_dark());
 
   /** Duration of the switch of an inline editor (slide of "Back", the card's height); 0 with motion off. */
-  const switchMs = $derived(prefs.motion ? FOLD_MS : 0);
+  const switchMs = $derived(ui.motion ? FOLD_MS : 0);
 
-  const gesture = $derived(mobile && swipe ? { motion: prefs.motion, back: swipe } : null);
+  const gesture = $derived(mobile && swipe ? { motion: ui.motion, back: swipe } : null);
 </script>
 
 {#snippet brand(top: boolean)}

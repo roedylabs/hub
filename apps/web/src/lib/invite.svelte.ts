@@ -17,14 +17,22 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/invite.svelte.ts`) with the
  * optional multi-factor step and without maintenance mode.
  */
-import { ApiError, NetworkError, api, fieldsOf, isApiError, retryAfter, type FieldDetail } from '#lib/api.ts';
+import {
+  api,
+  ApiError,
+  failText,
+  type FieldDetail,
+  fieldsOf,
+  isApiError,
+  NetworkError,
+  retryAfter,
+  waitText,
+} from '@roedy/ui';
 import { Countdown } from '#lib/countdown.svelte.ts';
-import { failText } from '#lib/errors.ts';
 import { formatOtp } from '#lib/login.svelte.ts';
 import { nameError, nameErrorText, normalizeName } from '#lib/name.ts';
 import { PW_RULES, meetsPolicy, tooLong, type PasswordRuleId } from '#lib/password.ts';
 import { m } from '#lib/paraglide/messages.js';
-import { waitText } from '#lib/wait.ts';
 import { intlLocale } from '#lib/locale.ts';
 import { session } from '#lib/state/session.svelte.ts';
 

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { goto } from '$app/navigation';
 import type { MfaOverview } from '#lib/security.svelte.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { sessionOf } from '#lib/test/session.ts';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';

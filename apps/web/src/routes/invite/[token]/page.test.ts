@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InviteInfo } from '#lib/invite.svelte.ts';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { RESET0, prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session, type PublicConfig } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session, type PublicConfig } from '#lib/state/session.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import { sessionOf } from '#lib/test/session.ts';
 import Page from './+page.svelte';
+import { guest } from '#lib/state/guest.svelte.ts';
 
 const nav = vi.hoisted(() => ({
   goto: vi.fn(() => Promise.resolve()),
@@ -147,7 +148,7 @@ describe('Invitation page', () => {
     // Step 2: name and password
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Set up your account');
     expect(view.getByRole('img', { name: 'Step 2 of 4' })).toBeInTheDocument();
-    expect(ui.authTitle).toBe('Set up your account · Invitation');
+    expect(guest.title).toBe('Set up your account · Invitation');
     // Greyed out until complete; pressed anyway, it says what is missing.
     expect(view.getByRole('button', { name: 'Continue' })).toHaveAttribute('aria-disabled', 'true');
     await click('Continue');
@@ -207,7 +208,7 @@ describe('Invitation page', () => {
       // No step bars yet; the light/dark button is there.
       expect(view.queryByRole('img', { name: /^Step / })).toBeNull();
       expect(view.getByRole('button', { name: /^(Dark|Light) theme$/ })).toBeInTheDocument();
-      expect(ui.authTitle).toBe('Welcome to Roedy Hub');
+      expect(guest.title).toBe('Welcome to Roedy Hub');
     });
 
     it('shows the error card in the page frame and keeps it with “Checking …” while trying again', async () => {
@@ -273,7 +274,7 @@ describe('Invitation page', () => {
         expect.stringMatching(/^Invitation valid until \S+ 2 November$/),
       ]);
       expect(view.getByRole('img', { name: 'Step 1 of 4' })).toBeInTheDocument();
-      expect(ui.authTitle).toBe('Welcome to Roedy Hub');
+      expect(guest.title).toBe('Welcome to Roedy Hub');
       // Mobile (jsdom has no layout): “Accept invitation” alone in the bottom bar, no Back on step 1.
       expect(view.getByRole('button', { name: 'Accept invitation' })).toBeInTheDocument();
       expect(view.queryByRole('button', { name: /Back/ })).toBeNull();
@@ -478,7 +479,7 @@ describe('Invitation page', () => {
       desktop();
       const { calls } = mockApi(mfaRoutes());
       const view = await toStep3();
-      expect(ui.authTitle).toBe('Authenticator app · Invitation');
+      expect(guest.title).toBe('Authenticator app · Invitation');
       expect(view.getByRole('img', { name: 'Step 3 of 4' })).toBeInTheDocument();
       expect(
         view.getByText('Scan the QR code with your authenticator app and enter the code it shows.'),
@@ -681,7 +682,7 @@ describe('Invitation page', () => {
       const writeText = vi.fn(() => Promise.resolve());
       vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
       const { view, calls } = await toStep4();
-      expect(ui.authTitle).toBe('Recovery codes · Invitation');
+      expect(guest.title).toBe('Recovery codes · Invitation');
       expect(view.getByRole('img', { name: 'Step 4 of 4' })).toBeInTheDocument();
       const steps = view.getByRole('list', { name: 'Invitation steps' });
       expect(within(steps).getAllByRole('listitem')[3]).toHaveAttribute('aria-current', 'step');
@@ -787,7 +788,7 @@ describe('Invitation page', () => {
       await click('Activate account');
       const heading = view.getByRole('heading', { level: 1 });
       expect(heading).toHaveTextContent('Welcome, Jonas');
-      expect(ui.authTitle).toBe('Welcome to Roedy Hub');
+      expect(guest.title).toBe('Welcome to Roedy Hub');
       await vi.waitFor(() => expect(document.activeElement).toBe(heading));
       const status = view.getByRole('status');
       expect(status).toContainElement(heading);
@@ -864,7 +865,7 @@ describe('Invitation page', () => {
       const view = renderPage();
       const expired = await view.findByRole('heading', { level: 1 });
       expect(expired).toHaveTextContent('Invitation expired');
-      expect(ui.authTitle).toBe('Welcome to Roedy Hub');
+      expect(guest.title).toBe('Welcome to Roedy Hub');
       // Screen readers start at the result.
       await vi.waitFor(() => expect(document.activeElement).toBe(expired));
       expect(view.getByText('jonas.schulz@example.com').closest('p')).toHaveTextContent(

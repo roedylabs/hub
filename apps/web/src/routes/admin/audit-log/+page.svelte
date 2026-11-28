@@ -12,15 +12,12 @@
 -->
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { tooltip } from '#lib/actions/tooltip.ts';
+  import { Icon, LoadCard, tooltip, ui } from '@roedy/ui';
   import { browserTimeZone, untilNextDay } from '#lib/audit-time.ts';
   import { AuditPage, auditValues, type AuditFailure } from '#lib/audit.svelte.ts';
-  import Icon from '#lib/components/Icon.svelte';
-  import LoadCard from '#lib/components/LoadCard.svelte';
   import { m } from '#lib/paraglide/messages.js';
   import { pageOf } from '#lib/settings-nav.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   const p = new AuditPage();
   const tz = browserTimeZone();

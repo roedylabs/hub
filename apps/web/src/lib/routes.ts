@@ -6,7 +6,7 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/routes.ts` and
  * `apps/web/src/lib/page-title.ts`), trimmed to the hub's routes.
  */
-import { ERRS, type ErrorCode } from '#lib/errors.ts';
+import { type ErrorCode, ERRS } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
 import { isSectionHome, pageOf, sectionName, sectionOf } from '#lib/settings-nav.ts';
 

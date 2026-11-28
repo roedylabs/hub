@@ -11,14 +11,13 @@
   Taken over from Roedy Mail (`apps/web/src/lib/components/setup/StepReview.svelte`).
 -->
 <script lang="ts">
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, ui } from '@roedy/ui';
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import { setupFrame } from '#lib/components/setup/frame.ts';
   import type { SetupTargets } from '#lib/components/setup/targets.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { DESK_LEVELS, MOB_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';
   import type { SetupFlow } from '#lib/setup.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   let { flow, targets, hidden = false }: { flow: SetupFlow; targets: SetupTargets; hidden?: boolean } = $props();
 

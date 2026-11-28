@@ -15,18 +15,15 @@
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import CodeField from '#lib/components/auth/CodeField.svelte';
   import MessageBox from '#lib/components/auth/MessageBox.svelte';
-  import Icon from '#lib/components/Icon.svelte';
+  import { accentOf, accentText, Icon, isHexColor, TERMINAL_BG, terminalAccent, ui } from '@roedy/ui';
   import { setupFrame } from '#lib/components/setup/frame.ts';
   import type { SetupTargets } from '#lib/components/setup/targets.ts';
   import { Copied } from '#lib/clipboard.svelte.ts';
-  import { accentText, isHexColor, TERMINAL_BG, terminalAccent } from '#lib/color.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { DESK_LEVELS, MOB_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';
   import { LOG_CMD, LOG_LINES, TOKEN_LOCK_S, TOKEN_TRIES, type SetupFlow } from '#lib/setup.svelte.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
-  import { accentOf } from '#lib/theme.ts';
 
   let { flow, targets, hidden = false }: { flow: SetupFlow; targets: SetupTargets; hidden?: boolean } = $props();
 

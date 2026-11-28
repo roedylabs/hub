@@ -33,20 +33,31 @@
   import { afterNavigate, goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
-  import { scrollbar } from '#lib/actions/scrollbar.ts';
-  import type { TipState } from '#lib/actions/tooltip.ts';
-  import AccountMenu from '#lib/components/AccountMenu.svelte';
-  import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-  import ErrorView from '#lib/components/ErrorView.svelte';
-  import Header from '#lib/components/Header.svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import PickerList from '#lib/components/PickerList.svelte';
-  import SettingsNav from '#lib/components/SettingsNav.svelte';
-  import Sheet from '#lib/components/Sheet.svelte';
-  import Toast from '#lib/components/Toast.svelte';
-  import Tooltip from '#lib/components/Tooltip.svelte';
-  import { failText, gatewayErrorIn } from '#lib/errors.ts';
-  import { setInMain } from '#lib/landmark.ts';
+  import {
+    AccountMenu,
+    type AccountMenuValues,
+    applyTheme,
+    ConfirmDialog,
+    confirmValues,
+    ErrorView,
+    failText,
+    gatewayErrorIn,
+    Header,
+    type HeaderValues,
+    Icon,
+    overlayClose,
+    PickerList,
+    scrollbar,
+    setInMain,
+    SettingsNav,
+    Sheet,
+    themeOf,
+    type TipState,
+    Toast,
+    toastLift,
+    Tooltip,
+    ui,
+  } from '@roedy/ui';
   import { langChoices } from '#lib/language.ts';
   import { logout } from '#lib/logout.ts';
   import { leaveTo } from '#lib/navigate.ts';
@@ -63,14 +74,11 @@
     type PanelPage,
     type SettingsNavValues,
   } from '#lib/settings-nav.ts';
-  import { confirmValues, overlayClose, type AccountMenuValues, type HeaderValues } from '#lib/shell.ts';
   // Registers what happens when the session ends in another tab or from outside.
   import '#lib/state/account.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
-  import { applyTheme, themeOf } from '#lib/theme.ts';
-  import { toastLift } from '#lib/toast-lift.svelte.ts';
+  import { guest } from '#lib/state/guest.svelte.ts';
 
   let { children }: { children: Snippet } = $props();
 
@@ -134,7 +142,7 @@
           setupRequired: session.setupRequired,
           authed: session.authed,
           reauth: isReauth(page.url),
-          leavingSetup: ui.setupLeaving,
+          leavingSetup: guest.setupLeaving,
           here: path + page.url.search + page.url.hash,
         })
       : null,
@@ -314,7 +322,7 @@
 
   /** Document title per route (WCAG 2.4.2). */
   const title = $derived(
-    pageTitle({ path, appName: session.appName, auth: ui.authTitle, error: forbidden ? '403' : null }),
+    pageTitle({ path, appName: session.appName, auth: guest.title, error: forbidden ? '403' : null }),
   );
 </script>
 
@@ -327,7 +335,11 @@
 
 <!-- Page content; administration without admin rights "Access denied". -->
 {#snippet content()}
-  {#if forbidden}<ErrorView code="403" />{:else}{@render children()}{/if}
+  {#if forbidden}<ErrorView
+      code="403"
+      appName={session.appName}
+      support={session.config?.org.email ?? null}
+    />{:else}{@render children()}{/if}
 {/snippet}
 
 {#snippet accountPop(id: string)}<AccountMenu {...account} {id} />{/snippet}
@@ -342,7 +354,7 @@
   {#if ui.confirm}
     <ConfirmDialog
       isMobile={ui.isMobile}
-      cf={confirmValues(ui.confirm, ui.confirmReady, m.confirm_ok())}
+      cf={confirmValues(ui.confirm, ui.confirmReady)}
       confirmIn={ui.confirmIn}
       onConfirmIn={(e: Event & { currentTarget: HTMLInputElement }) => (ui.confirmIn = e.currentTarget.value)}
       confirmKey={(e: KeyboardEvent) => {
@@ -359,7 +371,12 @@
 {/snippet}
 
 {#if session.status === 'error' && !gatewayError && !page.error}
-  <ErrorView code={session.failure ?? '500'} retry={start} />
+  <ErrorView
+    code={session.failure ?? '500'}
+    appName={session.appName}
+    support={session.config?.org.email ?? null}
+    retry={start}
+  />
 {:else if shell}
   <!-- One tree for desktop and mobile: the page in `main` stays mounted across the breakpoint (unsaved inputs stay). -->
   <div class="app" class:mobile={ui.isMobile}>

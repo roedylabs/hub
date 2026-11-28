@@ -13,18 +13,12 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
-  import { tooltip } from '#lib/actions/tooltip.ts';
+  import { DirtyBar, Icon, Logo, radiogroup, tooltip, ui } from '@roedy/ui';
   import type { SegOption, Toggle } from '#lib/appearance.ts';
   import { BrandingPage, brandingValues, type BrandingSection } from '#lib/branding.svelte.ts';
-  import DirtyBar from '#lib/components/DirtyBar.svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import Logo from '#lib/components/Logo.svelte';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
   import { pageOf } from '#lib/settings-nav.ts';
-  import { prefs } from '#lib/state/prefs.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   /** Formats of the file field's `accept` (`readFile` checks them again). */
   const ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml';
@@ -34,7 +28,7 @@
   /** Image area (drop zone or file card with Replace and Remove). */
   let imgPick: HTMLElement | undefined = $state();
   const ctx = {
-    scrollTo: (section: BrandingSection) => scrollToSection(root, section, prefs.motion),
+    scrollTo: (section: BrandingSection) => scrollToSection(root, section, ui.motion),
   };
   const p = new BrandingPage(ctx);
   const v = $derived(brandingValues(p, ctx));

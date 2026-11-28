@@ -1,6 +1,6 @@
 import { fireEvent, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { page } from '#lib/test/page.svelte.ts';
 import { renderSignedIn, resetSignedIn, type ApiRoutes } from '#lib/test/signed-in.ts';

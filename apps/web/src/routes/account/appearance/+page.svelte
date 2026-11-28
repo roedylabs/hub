@@ -13,24 +13,19 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { radiogroup } from '#lib/actions/radiogroup.ts';
+  import { ColorEditor, customName, editorStart, type HexColor, Icon, presetOf, radiogroup, ui } from '@roedy/ui';
   import { appearanceValues, type AppearanceContext } from '#lib/appearance.ts';
-  import type { HexColor } from '#lib/color.ts';
-  import { customName, editorStart, presetOf } from '#lib/color-editor.svelte.ts';
   import AccentRing from '#lib/components/AccentRing.svelte';
-  import ColorEditor from '#lib/components/ColorEditor.svelte';
-  import Icon from '#lib/components/Icon.svelte';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
   import { pageOf } from '#lib/settings-nav.ts';
   import { prefs } from '#lib/state/prefs.svelte.ts';
   import { session } from '#lib/state/session.svelte.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   let root: HTMLElement | undefined = $state();
   const ctx: AppearanceContext = {
     set: (patch) => prefs.set(patch),
-    scrollTo: (section) => scrollToSection(root, section, prefs.motion),
+    scrollTo: (section) => scrollToSection(root, section, ui.motion),
   };
   const v = $derived(appearanceValues({ values: prefs.values, brand: session.branding }, ctx));
   const isMobile = $derived(ui.isMobile);

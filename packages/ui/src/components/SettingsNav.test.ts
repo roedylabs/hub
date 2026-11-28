@@ -56,10 +56,7 @@ describe('settings navigation component', () => {
 
   it('shows the area’s list with its name as the heading on mobile', async () => {
     const open = vi.fn();
-    const view = render(
-      SettingsNav,
-      values({ isMobile: true, mPanelH: 'Settings', settingsGroups: groups('', open) }),
-    );
+    const view = render(SettingsNav, values({ isMobile: true, mPanelH: 'Settings', settingsGroups: groups('', open) }));
     expect(view.getByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
     expect(view.queryByRole('navigation')).toBeNull();
     expect(view.queryByRole('button', { name: 'Back to home' })).toBeNull();

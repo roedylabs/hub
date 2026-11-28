@@ -10,9 +10,8 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/reauth.ts`), with
  * `needsReauth`.
  */
-import { ApiError, fieldsOf, retryAfter } from '#lib/api.ts';
+import { ApiError, fieldsOf, retryAfter, waitText } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
-import { waitText } from '#lib/wait.ts';
 
 /** Input cleared after the response. */
 export type ReauthClear = 'password' | 'code' | null;

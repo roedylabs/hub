@@ -9,7 +9,8 @@ function values(patch: Partial<ConfirmDialogValues> = {}): ConfirmDialogValues {
     isMobile: false,
     cf: confirmValues(
       { title: 'Remove Jordan Hale?', text: 'Jordan can no longer sign in.', danger: true, ok: 'Remove user' },
-      true),
+      true,
+    ),
     confirmIn: '',
     onConfirmIn: () => {},
     confirmKey: () => {},
@@ -33,9 +34,7 @@ describe('confirmation', () => {
       danger: false,
       okDis: false,
     });
-    expect(
-      confirmValues({ title: 'T', text: 'X', word: 'DELETE', noCancel: true }, false),
-    ).toMatchObject({
+    expect(confirmValues({ title: 'T', text: 'X', word: 'DELETE', noCancel: true }, false)).toMatchObject({
       hasWord: true,
       word: 'DELETE',
       hasCancel: false,
@@ -58,9 +57,7 @@ describe('confirmation', () => {
 
   it('requires the confirmation word', async () => {
     const onConfirmIn = vi.fn();
-    const cf = confirmValues(
-      { title: 'Delete account?', text: 'This is final.', word: 'DELETE' },
-      false);
+    const cf = confirmValues({ title: 'Delete account?', text: 'This is final.', word: 'DELETE' }, false);
     const { getByRole, getByText } = render(ConfirmDialog, values({ cf, onConfirmIn }));
     expect(getByText('Type DELETE to continue.')).toBeInTheDocument();
     const input = getByRole('textbox', { name: 'Confirmation word' });

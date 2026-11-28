@@ -9,26 +9,9 @@
  * and the polling of the configuration; the account comes from `GET session`
  * instead of `GET auth/me`.
  */
-import { DEFAULT_ACCENT, PLATES, type AccentName } from '@roedy/tokens';
-import { ApiError, api, type ApiOptions } from '#lib/api.ts';
+import { api, ApiError, BRAND0, mkLogo, type ApiOptions, type Branding } from '@roedy/ui';
 import { legalLinksOf } from '#lib/links.ts';
-import { mkLogo } from '#lib/logo.ts';
 import { m } from '#lib/paraglide/messages.js';
-
-export type PlateName = keyof typeof PLATES;
-
-/** `branding` from `public/config` (the server's `instance::Branding` without the administration's fields). */
-export interface Branding {
-  kind: string;
-  letter: string;
-  icon: string;
-  image: string | null;
-  fit: string;
-  plate: PlateName;
-  tilt: boolean;
-  color: AccentName;
-  userAccent: boolean;
-}
 
 /** Organization (`instance::Org`); `null` means "not specified". */
 export interface Org {
@@ -67,19 +50,6 @@ export interface SessionInfo {
 
 /** The signed-in account as the pages use it. */
 export type Me = SessionInfo['user'];
-
-/** Default until the first response, like the server's. */
-export const BRAND0: Branding = {
-  kind: 'standard',
-  letter: '',
-  icon: 'ti-mountain',
-  image: null,
-  fit: 'padded',
-  plate: 'accent',
-  tilt: true,
-  color: DEFAULT_ACCENT,
-  userAccent: true,
-};
 
 /** Initials: first and last word. */
 export function initialsOf(name: string): string {

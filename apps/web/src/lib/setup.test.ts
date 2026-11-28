@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { ACCENTS } from '@roedy/tokens';
-import { PRESETS } from '#lib/color-editor.svelte.ts';
+import { PRESETS } from '@roedy/ui';
 import {
   CODE_LOCK_S,
   DONE_MS,

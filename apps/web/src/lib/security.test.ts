@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { m } from '#lib/paraglide/messages.js';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { ui } from '@roedy/ui';
 import { resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 import {
   SecurityPage,

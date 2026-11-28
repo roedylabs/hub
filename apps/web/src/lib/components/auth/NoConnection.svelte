@@ -11,11 +11,8 @@
 -->
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import Icon from '#lib/components/Icon.svelte';
-  import type { Reconnect } from '#lib/no-connection.svelte.ts';
+  import { Icon, type Reconnect, ui, waitText } from '@roedy/ui';
   import { m } from '#lib/paraglide/messages.js';
-  import { prefs } from '#lib/state/prefs.svelte.ts';
-  import { waitText } from '#lib/wait.ts';
 
   let { net, box = $bindable() }: { net: Reconnect; box?: HTMLDivElement | undefined } = $props();
 
@@ -26,7 +23,7 @@
   const busy = $derived(net.busy);
   const dash = $derived(busy ? `${(C * 0.22).toFixed(1)} ${C.toFixed(1)}` : `${C.toFixed(1)} ${C.toFixed(1)}`);
   const dashOff = $derived(busy ? '0' : (C * (1 - net.left / net.total)).toFixed(1));
-  const ringTr = $derived(busy || net.left >= net.total || !prefs.motion ? 'none' : 'stroke-dashoffset 1s linear');
+  const ringTr = $derived(busy || net.left >= net.total || !ui.motion ? 'none' : 'stroke-dashoffset 1s linear');
   const status = $derived(busy ? m.net_checking() : m.net_next({ time: waitText(Math.max(1, net.left)) }));
 
   onMount(() => {

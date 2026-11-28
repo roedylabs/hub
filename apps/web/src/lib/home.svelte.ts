@@ -16,13 +16,11 @@
  * The page has no design yet (docs/plan.md › Web app): it is built plainly
  * with the tokens.
  */
-import { api } from '#lib/api.ts';
+import { api, loadFailText, Loading } from '@roedy/ui';
 import { appName, type AdminApp, type HomeApp } from '#lib/apps.ts';
-import { loadFailText } from '#lib/errors.ts';
 import { normalizeName } from '#lib/name.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { session } from '#lib/state/session.svelte.ts';
-import { Loading } from '#lib/state/ui.svelte.ts';
 
 export type HomeStatus = 'loading' | 'ready' | 'failed';
 

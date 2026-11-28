@@ -21,20 +21,31 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/setup.svelte.ts`).
  */
 import { ACCENTS, DEFAULT_ACCENT, type AccentName } from '@roedy/tokens';
-import { ApiError, NetworkError, api, isApiError, retryAfter } from '#lib/api.ts';
-import { PRESETS, customName } from '#lib/color-editor.svelte.ts';
-import { isHexColor, parseHex, type HexColor } from '#lib/color.ts';
+import {
+  type AccentChoice,
+  api,
+  ApiError,
+  customName,
+  failText,
+  type HexColor,
+  type IconName,
+  isApiError,
+  isHexColor,
+  type ModeName,
+  NetworkError,
+  parseHex,
+  PRESETS,
+  retryAfter,
+} from '@roedy/ui';
 import { Countdown } from '#lib/countdown.svelte.ts';
 import { isEmail } from '#lib/email.ts';
-import { failText } from '#lib/errors.ts';
 import { formatOtp } from '#lib/login.svelte.ts';
 import { initials, limitName, nameError, normalizeName } from '#lib/name.ts';
 import { meetsPolicy, tooLong } from '#lib/password.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { isLocale } from '#lib/paraglide/runtime.js';
 import { qrSymbol, type QrSymbol } from '#lib/qr.ts';
-import type { IconName } from '#lib/icons.ts';
-import type { AccentChoice, LangChoice, ModeName } from '#lib/state/prefs.svelte.ts';
+import type { LangChoice } from '#lib/state/prefs.svelte.ts';
 
 /** Command in the terminal box of the token step. */
 export const LOG_CMD = 'docker logs roedy-hub 2>&1 | grep Setup-Token';

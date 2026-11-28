@@ -31,14 +31,21 @@
  * the hub's errors (429 `rate_limited`, 422 `export_too_large`).
  */
 import { lostAccess } from '#lib/access.ts';
-import { api, apiBlob, isApiError, retryAfter } from '#lib/api.ts';
+import {
+  api,
+  apiBlob,
+  failText,
+  type IconName,
+  isApiError,
+  isIconName,
+  loadFailText,
+  retryAfter,
+  ui,
+  waitText,
+} from '@roedy/ui';
 import { downloadBlob } from '#lib/download.ts';
-import { failText, loadFailText } from '#lib/errors.ts';
 import { clock, dayLabel, dayNumber, exportName, type AuditTime } from '#lib/audit-time.ts';
-import { isIconName, type IconName } from '#lib/icons.ts';
 import { m } from '#lib/paraglide/messages.js';
-import { ui } from '#lib/state/ui.svelte.ts';
-import { waitText } from '#lib/wait.ts';
 
 export type AuditCat = 'login' | 'users' | 'apps' | 'settings' | 'system';
 /** Filter (`aFilter`); `all` = "All". */

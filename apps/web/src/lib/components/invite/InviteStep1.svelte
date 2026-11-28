@@ -11,11 +11,10 @@
 <script lang="ts">
   import { MA_COLORS } from '@roedy/tokens';
   import { resolve } from '$app/paths';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, type IconName } from '@roedy/ui';
   import AuthShell from '#lib/components/auth/AuthShell.svelte';
   import { INVITE_DESK, INVITE_FIT, INVITE_MOB, detailRows, inviteFrame } from '#lib/components/invite/frame.ts';
   import type { InviteTargets } from '#lib/components/invite/targets.ts';
-  import type { IconName } from '#lib/icons.ts';
   import type { InviteFlow } from '#lib/invite.svelte.ts';
   import type { Look } from '#lib/auth-layout.ts';
   import { m } from '#lib/paraglide/messages.js';

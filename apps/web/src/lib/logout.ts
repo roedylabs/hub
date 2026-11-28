@@ -6,10 +6,9 @@
  */
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import { hideTooltip } from '#lib/actions/tooltip.ts';
+import { hideTooltip, ui } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
 import { signOut } from '#lib/state/account.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
 
 /** Sends pending settings, ends the session, discards the account's state and opens the sign-in. */
 export async function logout(): Promise<void> {

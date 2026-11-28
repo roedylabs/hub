@@ -17,14 +17,7 @@
   import { onMount, tick, untrack } from 'svelte';
   import { focustrap } from '../actions/focustrap.ts';
   import { accentInk, type HexColor } from '../color.ts';
-  import {
-    ColorDraft,
-    PRESETS,
-    gridMove,
-    placePopover,
-    presetLabel,
-    type Placement,
-  } from '../color-editor.svelte.ts';
+  import { ColorDraft, PRESETS, gridMove, placePopover, presetLabel, type Placement } from '../color-editor.svelte.ts';
   import Icon from './Icon.svelte';
   import { texts } from '../i18n.ts';
   import { ui } from '../state/ui.svelte.ts';

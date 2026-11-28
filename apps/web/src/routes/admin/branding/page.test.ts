@@ -1,8 +1,8 @@
 import { fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { brandingOf, type AdminBranding } from '#lib/branding.svelte.ts';
-import { BRAND0, session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session } from '#lib/state/session.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import { type ApiRoutes, renderSignedIn, resetSignedIn, setPhone } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 

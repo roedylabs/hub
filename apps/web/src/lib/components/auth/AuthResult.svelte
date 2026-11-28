@@ -15,10 +15,8 @@
   import type { Attachment } from 'svelte/attachments';
   import AuthFrame from '#lib/components/auth/AuthFrame.svelte';
   import type { Bars, ResultChips, ResultPrimary, ResultProgress, ResultQuiet } from '#lib/components/auth/types.ts';
-  import type { IconName } from '#lib/icons.ts';
-  import Icon from '#lib/components/Icon.svelte';
+  import { Icon, type IconName, ui } from '@roedy/ui';
   import { DONE_LEVELS, DONE_MOB_LEVELS, doneLook, isMobileWidth, type Look } from '#lib/auth-layout.ts';
-  import { ui } from '#lib/state/ui.svelte.ts';
 
   interface Props {
     docTitle: string;

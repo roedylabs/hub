@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { BRAND0, session } from '#lib/state/session.svelte.ts';
-import { ui } from '#lib/state/ui.svelte.ts';
+import { session } from '#lib/state/session.svelte.ts';
+import { BRAND0, ui } from '@roedy/ui';
 import { sessionOf } from '#lib/test/session.ts';
 import Page from './+page.svelte';
 
