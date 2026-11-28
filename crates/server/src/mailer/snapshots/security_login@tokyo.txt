@@ -1,0 +1,15 @@
+Hallo Max,
+
+Ihr Konto wurde auf einem neuen Gerät angemeldet.
+
+Gerät: Safari auf iPhone
+IP-Adresse: 198.51.x.x
+Zeitpunkt: 2026-10-24, 22:57 Uhr
+
+Waren Sie das nicht? Melden Sie das Gerät ab und ändern Sie Ihr Passwort:
+https://hub.example.com/account/security
+
+--
+Example Ltd · support@example.com
+Impressum: https://example.com/imprint
+Datenschutz: https://example.com/privacy

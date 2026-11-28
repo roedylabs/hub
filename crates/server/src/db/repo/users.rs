@@ -389,6 +389,34 @@ pub fn sole_admin(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     )
 }
 
+/// An entry of the directory (`GET directory`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+}
+
+/// The active users by name (then login name), with `app_id` only those
+/// with access to that app. Locked users are left out; deleted ones and open
+/// invitations are no users.
+pub fn directory(conn: &Connection, app_id: Option<&str>) -> rusqlite::Result<Vec<DirectoryEntry>> {
+    conn.prepare(
+        "SELECT u.id, u.display_name, u.email FROM users u \
+         WHERE u.status = 'active' AND (?1 IS NULL OR EXISTS \
+             (SELECT 1 FROM app_access x WHERE x.user_id = u.id AND x.app_id = ?1)) \
+         ORDER BY u.display_name COLLATE NOCASE, u.username",
+    )?
+    .query_map([app_id], |row| {
+        Ok(DirectoryEntry {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            email: row.get(2)?,
+        })
+    })?
+    .collect()
+}
+
 /// Unlocks the user (`reset-admin`, Administration › Users) with
 /// `user.unlocked` for the apps; `true` if they were locked.
 pub fn unlock(conn: &Connection, id: &str) -> rusqlite::Result<bool> {

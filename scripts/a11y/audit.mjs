@@ -74,10 +74,29 @@ const USER = {
   name: 'Alex Example',
   role: 'admin',
   locale: 'en',
+};
+const PREFS = {
   theme: 'system',
+  accent: null,
+  font_size: 'medium',
+  density: 'normal',
+  animations: true,
+  language: 'en',
+  region: null,
+  time_zone: 'Europe/Berlin',
+  time_zone_auto: true,
+  date_format: 'iso',
+  time_format: '24h',
+  week_start: 'monday',
+  number_format: '1,234.56',
+  confirm_delete: true,
+  undo_delay: 5,
+  shortcuts: true,
+  developer: false,
 };
 const SESSION = {
   user: USER,
+  prefs: PREFS,
   session: { id: '01JSESSION', auth_time: 1795600000 },
   hub: { name: 'Example Org', home: '/', account: '/account', admin: '/admin' },
 };
@@ -436,6 +455,8 @@ async function check(browser, scenario, view, theme) {
     colorScheme: theme,
     reducedMotion: 'reduce',
     locale: 'en-US',
+    // The zone of the mocked settings: otherwise the web app reports the device's (an unmocked `PUT settings`).
+    timezoneId: 'Europe/Berlin',
   });
   const page = await context.newPage();
   const errors = [];

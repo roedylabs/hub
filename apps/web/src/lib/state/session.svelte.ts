@@ -9,7 +9,7 @@
  * and the polling of the configuration; the account comes from `GET session`
  * instead of `GET auth/me`.
  */
-import { api, ApiError, BRAND0, mkLogo, type ApiOptions, type Branding } from '@roedy/ui';
+import { api, ApiError, BRAND0, mkLogo, type ApiOptions, type Branding, type HubPrefs } from '@roedy/ui';
 import { legalLinksOf } from '#lib/links.ts';
 import { m } from '#lib/paraglide/messages.js';
 
@@ -42,8 +42,9 @@ export interface SessionInfo {
     name: string;
     role: 'admin' | 'user';
     locale: 'en' | 'de';
-    theme: 'system' | 'light' | 'dark';
   };
+  /** The shared settings for the apps; the hub's own pages use `GET settings` (`prefs`). */
+  prefs: HubPrefs;
   session: { id: string; auth_time: number };
   hub: { name: string; home: string; account: string; admin: string | null };
 }

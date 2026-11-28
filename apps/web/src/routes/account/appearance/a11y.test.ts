@@ -1,6 +1,7 @@
 /**
  * axe-core over Account › Appearance in every state (defaults, custom accent,
- * accent locked by the branding, colour editor open), desktop and mobile, in
+ * accent locked by the branding, colour editor open, text and layout
+ * changed), desktop and mobile, in
  * the light and the dark theme. Colour contrast is left to the browser audit
  * (`scripts/a11y/scenarios/appearance.mjs`).
  */
@@ -32,6 +33,7 @@ const STATES: State[] = [
   { name: 'custom accent', values: { accent: '#3a7bd5' } },
   { name: 'accent locked', config: { branding: { ...BRAND0, userAccent: false, color: 'sage' } } },
   { name: 'colour editor open', editor: true },
+  { name: 'large text, compact, no animations', values: { font_size: 'large', density: 'compact', animations: false } },
 ];
 
 describe('Appearance page accessibility', () => {

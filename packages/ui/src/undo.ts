@@ -71,10 +71,7 @@ export const TOAST_MS = 3200;
 /** Display duration of an error toast (`error()`). */
 export const ERROR_TOAST_MS = 4600;
 
-/** Choices for the display duration with undo (the undo delay of the settings), in ms. */
-export const UNDO_DELAYS = [3000, 5000, 10_000] as const;
-
-/** Display duration with undo without a setting. */
+/** Display duration with undo without a setting (the choices are `UNDO_DELAYS` of `prefs.ts`, in seconds). */
 export const UNDO_MS = 5000;
 
 export interface ToastsOptions {

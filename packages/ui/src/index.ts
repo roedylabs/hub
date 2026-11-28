@@ -1,7 +1,8 @@
 /**
  * `@roedy/ui`: the Svelte 5 components, actions and helpers that every Roedy
- * app shares, with their own English and German texts. Apps connect their
- * language and colour scheme once (`connectSettings`); see README.md.
+ * app shares, with their own English and German texts. Apps connect the hub's
+ * shared settings once (`connectHub`; the hub's web app its own state with
+ * `connectSettings`); see README.md.
  */
 
 // Components
@@ -47,12 +48,14 @@ export * from './developer.ts';
 export * from './dialog-drag.ts';
 export * from './errors.ts';
 export * from './i18n.ts';
+export * from './hub.svelte.ts';
 export * from './icons.ts';
 export * from './keys.ts';
 export * from './landmark.ts';
 export * from './licenses.svelte.ts';
 export * from './logo.ts';
 export * from './no-connection.svelte.ts';
+export * from './prefs.ts';
 export * from './settings.svelte.ts';
 export * from './shell.ts';
 export * from './stalwart.ts';

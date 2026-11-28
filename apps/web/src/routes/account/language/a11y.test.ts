@@ -1,9 +1,11 @@
 /**
- * axe-core over Account › Language (a language chosen, "System" with the
- * note on mails, German), desktop and mobile, in the light and the dark
+ * axe-core over Account › Language & region (a language chosen, "System"
+ * with the note on mails, German; a country with own formats, a chosen time
+ * zone and an open pick list), desktop and mobile, in the light and the dark
  * theme. Colour contrast is left to the browser audit
  * (`scripts/a11y/scenarios/language.mjs`).
  */
+import { fireEvent } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs, type Settings } from '#lib/state/prefs.svelte.ts';
 import { violations } from '@roedy/ui/testing';
@@ -31,6 +33,15 @@ describe('Language page accessibility', () => {
           expect(await violations(view)).toEqual([]);
         });
       }
+      it(`a country, own formats, a chosen zone and an open list (${mobile ? 'mobile' : 'desktop'}, ${mode})`, async () => {
+        setPhone(mobile);
+        document.documentElement.dataset.mode = mode;
+        prefs.set({ mode, region: 'CH' });
+        prefs.set({ date_format: 'iso', time_zone_auto: false, time_zone: 'Asia/Tokyo' });
+        const view = renderSignedIn(Page, { role: 'user' });
+        await fireEvent.click(view.getByRole(mobile ? 'button' : 'combobox', { name: /^Number format / }));
+        expect(await violations(view)).toEqual([]);
+      });
     }
   }
 });

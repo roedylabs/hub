@@ -14,7 +14,7 @@
 //! | Path | What it does |
 //! |---|---|
 //! | `/<slug>` | Redirects to `/<slug>/` |
-//! | `/<slug>/` | A small page with the signed-in user and the link to the hub |
+//! | `/<slug>/` | A small page with the signed-in user, their time zone and formats from the users endpoint, and the link to the hub |
 //! | `/<slug>/healthz`, `/<slug>/readyz` | `200` while running; `readyz` only once paired and while [`Example::set_ready`] allows it |
 //! | `/<slug>/whoami` | The verified identity, otherwise `401` |
 //! | `/<slug>/echo[/…]` | Any method: method, path, query, headers, identity and body size as JSON |
@@ -695,8 +695,20 @@ async fn to_slash(State(example): State<Example>) -> Redirect {
 /// the SSE and WebSocket endpoints from it.
 async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
     let who = match example.identity(&headers).await {
-        Ok(identity) => format!("Signed in as {}", escape(&identity.name)),
-        Err(_) => "Not signed in".to_owned(),
+        Ok(identity) => {
+            // The shared settings a backend writes texts with (contract § 7).
+            let prefs = match example.user(&identity.sub).await {
+                Ok(user) => format!(
+                    "<p id=\"prefs\">Time zone {} · date {} · time {}</p>",
+                    escape(&user.prefs.time_zone),
+                    escape(&user.prefs.date_format),
+                    escape(&user.prefs.time_format),
+                ),
+                Err(_) => String::new(),
+            };
+            format!("<p>Signed in as {}</p>{prefs}", escape(&identity.name))
+        }
+        Err(_) => "<p>Not signed in</p>".to_owned(),
     };
     let page = format!(
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
@@ -705,7 +717,7 @@ async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
          <script type=\"module\" src=\"{FRAME}\"></script>\
          <header><nav aria-label=\"Hub\"><a href=\"/\">Home</a>\
          <roedy-app-switcher></roedy-app-switcher></nav></header>\
-         <main><h1>Example</h1><p>{who}</p></main></html>"
+         <main><h1>Example</h1>{who}</main></html>"
     );
     ([(header::CONTENT_SECURITY_POLICY, CSP)], Html(page)).into_response()
 }

@@ -41,6 +41,8 @@ export default defineConfig({
           environment: 'jsdom',
           include: ['src/**/*.test.ts'],
           setupFiles: ['./vitest-setup.ts'],
+          // The device's time zone is the hub's default: an automatic zone then reports no change (`prefs.load()`).
+          env: { TZ: 'Europe/Berlin' },
         },
       },
     ],

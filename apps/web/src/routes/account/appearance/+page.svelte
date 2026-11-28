@@ -1,20 +1,20 @@
 <!--
-  Account › Appearance: colour scheme and accent colour (five named ones and
+  Account › Appearance: colour scheme, accent colour (five named ones and
   "More" for a custom colour from the shared colour editor; locked if the
-  branding sets it, `userAccent: false`) with section tabs. Values in
+  branding sets it, `userAccent: false`), font size and animations, and
+  density, with section tabs; the apps follow through the shared settings. Values in
   `#lib/appearance.ts`; saved at once via `prefs.set()` (sequenced, conflicts
   handled there; a failure toasts from the layout). Card and ring styles are
   classes, the fixed preview colours of the modes and accents come via
   `style:`.
 
   Taken over from Roedy Mail (`apps/web/src/routes/settings/appearance/+page.svelte`)
-  without the sections "Text & animation" and "Layout": the hub stores only
-  colour scheme, accent and language.
+  without the sidebar and the mailbox design of "Layout", which stay with Mail.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { ColorEditor, customName, editorStart, type HexColor, Icon, presetOf, radiogroup, ui } from '@roedy/ui';
-  import { appearanceValues, type AppearanceContext } from '#lib/appearance.ts';
+  import { appearanceValues, type AppearanceContext, type SegOption } from '#lib/appearance.ts';
   import AccentRing from '#lib/components/AccentRing.svelte';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
@@ -74,6 +74,24 @@
     onapply={applyMore}
     onclose={closeEditor}
   />
+{/snippet}
+
+{#snippet segment(label: string, opts: readonly SegOption<string>[])}
+  <div role="radiogroup" use:radiogroup aria-label={label} class="seg">
+    {#each opts as o (o.value)}
+      <button type="button" role="radio" aria-checked={o.on} class:on={o.on} onclick={o.onClick}>{o.label}</button>
+    {/each}
+  </div>
+{/snippet}
+
+{#snippet segRow(label: string, desc: string, opts: readonly SegOption<string>[])}
+  <div class="row wrap">
+    <div class="row-text">
+      <div class="row-label">{label}</div>
+      <div class="row-desc">{desc}</div>
+    </div>
+    {@render segment(label, opts)}
+  </div>
 {/snippet}
 
 <div bind:this={root} class="page" class:mobile={isMobile}>
@@ -177,6 +195,38 @@
           <span class="accent-label">{moreLabel}</span>
         </button>
       </div>
+    </div>
+  </section>
+
+  <section data-sec="text" class="sec">
+    <h2>{m.appearance_tab_text()}</h2>
+    <div class="box">
+      {@render segRow(m.appearance_font_size(), m.appearance_font_size_desc(), v.fontOpts)}
+      <div class="sep"></div>
+      <div class="row anim">
+        <div class="row-text">
+          <div class="row-label">{m.appearance_animations()}</div>
+          <div class="row-desc">{m.appearance_animations_desc()}</div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          class="switch"
+          class:on={v.tgAnim.on}
+          aria-checked={v.tgAnim.on}
+          aria-label={m.appearance_animations()}
+          onclick={v.tgAnim.onClick}
+        >
+          <span class="knob"></span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <section data-sec="layout" class="sec">
+    <h2>{m.appearance_tab_layout()}</h2>
+    <div class="box">
+      {@render segRow(m.appearance_density(), m.appearance_density_desc(), v.densityOpts)}
     </div>
   </section>
 </div>
@@ -633,5 +683,162 @@
 
   .mobile .accent-label {
     font-size: 12px;
+  }
+
+  /* Box with settings */
+  .box {
+    margin-top: 18px;
+    border-radius: 26px;
+    background: var(--surface2);
+    padding: 6px;
+  }
+
+  .mobile .box {
+    margin-top: 16px;
+    border-radius: 24px;
+    padding: 4px;
+  }
+
+  .sep {
+    height: 1px;
+    margin: 0 18px;
+    background: var(--bd);
+  }
+
+  .mobile .sep {
+    margin: 0 14px;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 16px 18px;
+  }
+
+  .row.wrap {
+    gap: 12px 24px;
+    flex-wrap: wrap;
+  }
+
+  .row.wrap .row-text {
+    flex: 1 1 220px;
+  }
+
+  .mobile .row.wrap {
+    display: block;
+    padding: 14px 14px 12px;
+  }
+
+  .mobile .row.anim {
+    justify-content: flex-start;
+    gap: 16px;
+    padding: 14px;
+  }
+
+  .row-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .row-label {
+    font-size: 15.5px;
+    font-weight: 700;
+  }
+
+  .mobile .row-label {
+    font-size: 15px;
+  }
+
+  .row-desc {
+    margin-top: 3px;
+    font-size: 14px;
+    color: var(--mfg);
+  }
+
+  .mobile .row-desc {
+    margin-top: 2px;
+    font-size: 13.5px;
+  }
+
+  /* Segment */
+  .seg {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 9999px;
+    background: var(--sunken);
+  }
+
+  .mobile .seg {
+    margin-top: 12px;
+  }
+
+  .seg button {
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 9999px;
+    background: transparent;
+    color: var(--mfg);
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    transition:
+      background-color var(--dur, 220ms),
+      color var(--dur, 220ms);
+  }
+
+  .seg button:hover,
+  .seg button.on {
+    color: var(--fg);
+  }
+
+  .seg button.on {
+    background: var(--surface);
+    box-shadow: var(--sh1);
+  }
+
+  .mobile .seg button {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    font-size: 13.5px;
+  }
+
+  .mobile .seg button:hover:not(.on) {
+    color: var(--mfg);
+  }
+
+  /* Switch */
+  .switch {
+    width: 52px;
+    height: 32px;
+    border-radius: 9999px;
+    background: var(--sunken);
+    position: relative;
+    flex-shrink: 0;
+    transition: background-color var(--dur, 220ms);
+  }
+
+  .switch.on {
+    background: var(--acc);
+  }
+
+  .knob {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: 24px;
+    height: 24px;
+    border-radius: 9999px;
+    /* fixed values (switch) */
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(60, 35, 10, 0.25);
+    transition: transform var(--dur, 220ms) cubic-bezier(0.3, 1.5, 0.5, 1);
+  }
+
+  .switch.on .knob {
+    transform: translateX(20px);
   }
 </style>

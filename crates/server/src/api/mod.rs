@@ -9,6 +9,7 @@ pub mod apps;
 pub mod audit;
 pub mod auth;
 pub mod branding;
+pub mod directory;
 pub mod email;
 pub mod error;
 pub mod health;
@@ -61,6 +62,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(audit::routes())
         .merge(organization::routes())
         .merge(branding::routes())
+        .merge(directory::routes())
         .merge(public::routes())
         .merge(system_mail::routes())
         .merge(session::routes())

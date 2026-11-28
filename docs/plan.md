@@ -139,7 +139,8 @@ From Mail, trimmed: `schema_migrations`, `app_settings`, `users`, `sessions`
 (plus `auth_time`), `audit_log` (category `apps` added), `totp_devices`,
 `recovery_codes`, `known_devices`, `password_resets`, `email_changes`,
 `invitations` (the app access chosen in the form in `invitation_access`), `user_settings`
-(language, theme, accent), `assets` (logo).
+(one JSON document: appearance, language and region, behaviour – the shared
+settings of § 9.2), `assets` (logo).
 
 New:
 
@@ -1096,10 +1097,30 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
       Stalwart and covers the pages, an unreachable server and an unknown
       return. Left for later: a token client for the apps' browsers in
       `@roedy/jmap`.
-9. [ ] **Shared settings and directory** – the settings of § 9.2 with their
+9. [x] **Shared settings and directory** – the settings of § 9.2 with their
    pages under Account, handed to the apps (browser API, the users endpoint,
    `roedy.hub.prefs`), the recipient's time zone and formats in the hub's
    mails, the directory of active users for the apps.
+   Done: `user_settings` (still one JSON document, no schema change) with
+   Mail's shared fields in snake case – font size, density, animations,
+   region (none by default; the web app takes it from the browser's
+   language tag), time zone (following the device or chosen), date, time,
+   week and number formats (automatic: the region's, without one the
+   language's; a new region resets them; `dmy` and `1’234.56` added for
+   the regions), ask before deleting, undo delay, keyboard shortcuts,
+   developer mode. Contract § 6.2: `prefs` in `GET /api/v1/session` (which
+   loses `user.theme`) and the same object in `localStorage["roedy.hub.prefs"]`
+   (a copy for the first paint and other tabs; after sign-out only theme,
+   language, font size and animations); time zone, region and formats in
+   the internal users endpoint and in `user.updated` (no new event, none
+   for appearance). `GET /api/v1/directory` (`id`, `name`, `email` of the
+   active users, for every signed-in user; `?app=` only those with access,
+   for callers with access). `@roedy/ui` applies everything
+   (`connectHub()`). Pages: Account › Appearance with "Text & animation"
+   and "Layout", Account › Language & region, Account › General. The hub's
+   mails use the recipient's zone and formats (snapshots in three zones);
+   the example app shows the user's zone and formats from the users
+   endpoint. No new dependency.
 10. [ ] **Notifications**
     1. [ ] **Bell** – notifications with topics from the apps' manifests,
        an internal endpoint to send them, channels per topic, retention, the

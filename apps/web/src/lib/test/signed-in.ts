@@ -103,6 +103,8 @@ export function resetSignedIn(): void {
   session.current = null;
   session.status = 'idle';
   session.failure = null;
+  // The shared preferences would keep colour scheme, language, font size and animations for the next test.
+  localStorage.clear();
   prefs.reset();
   ui.reset();
   page.url = new URL('http://localhost/');

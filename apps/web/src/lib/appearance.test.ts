@@ -1,4 +1,4 @@
-// Taken over from Roedy Mail (`apps/web/src/lib/appearance.test.ts`), trimmed to colour scheme and accent.
+// Taken over from Roedy Mail (`apps/web/src/lib/appearance.test.ts`) without the sidebar and the mailbox design.
 import { describe, expect, it, vi } from 'vitest';
 import { appearanceValues, type AppearanceContext, type AppearanceInput } from '#lib/appearance.ts';
 import { RESET0 } from '#lib/state/prefs.svelte.ts';
@@ -87,8 +87,31 @@ describe('Appearance', () => {
 
   it('scrolls to the sections via the tabs', () => {
     const { v, ctx } = setup();
-    expect(v.tabs.map((t) => t.label)).toEqual(['Color scheme', 'Accent color']);
+    expect(v.tabs.map((t) => t.label)).toEqual(['Color scheme', 'Accent color', 'Text & animation', 'Layout']);
     v.tabs.forEach((t) => t.onClick());
-    expect(vi.mocked(ctx.scrollTo).mock.calls.flat()).toEqual(['mode', 'accent']);
+    expect(vi.mocked(ctx.scrollTo).mock.calls.flat()).toEqual(['mode', 'accent', 'text', 'layout']);
+  });
+
+  it('offers font size, density and animations and saves a choice', () => {
+    const { v, ctx } = setup();
+    expect(v.fontOpts.map((o) => [o.label, o.on])).toEqual([
+      ['Small', false],
+      ['Medium', true],
+      ['Large', false],
+    ]);
+    expect(v.densityOpts.map((o) => [o.value, o.on])).toEqual([
+      ['compact', false],
+      ['normal', true],
+      ['comfortable', false],
+    ]);
+    expect(v.tgAnim.on).toBe(true);
+    v.fontOpts[0]!.onClick();
+    v.densityOpts[2]!.onClick();
+    v.tgAnim.onClick();
+    expect(vi.mocked(ctx.set).mock.calls).toEqual([
+      [{ font_size: 'small' }],
+      [{ density: 'comfortable' }],
+      [{ animations: false }],
+    ]);
   });
 });

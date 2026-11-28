@@ -40,11 +40,10 @@ pub struct Page {
     limit: Option<usize>,
 }
 
-/// A member as the contract lists it, in their language.
+/// A member as the contract lists it, in their language, with their
+/// time zone and formats.
 fn user(conn: &Connection, member: Member) -> anyhow::Result<User> {
-    let locale = settings::lang_of(conn, &member.profile.id)?
-        .code()
-        .to_owned();
+    let stored = settings::load(conn, &member.profile.id)?;
     let p = member.profile;
     Ok(User {
         sub: p.id,
@@ -53,8 +52,9 @@ fn user(conn: &Connection, member: Member) -> anyhow::Result<User> {
         name: p.display_name,
         role: p.role.as_str().to_owned(),
         app_role: member.app_role,
-        locale,
+        locale: stored.lang.code().to_owned(),
         status: if member.active { "active" } else { "locked" }.to_owned(),
+        prefs: stored.app_prefs(),
     })
 }
 

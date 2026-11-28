@@ -1,4 +1,4 @@
-// Account › Language: a language chosen, "System" with the note on mails, and the page in German.
+// Account › Language & region: a language chosen, "System" with the note on mails, and the page in German.
 export default ({ mock }) => {
   const settings = (lang) => ({
     'GET settings': { body: { version: 1, settings: { lang, mode: null, accent: null } } },
@@ -15,7 +15,7 @@ export default ({ mock }) => {
       id: 'language german',
       path: '/account/language',
       opts: mock({ signedIn: true, routes: settings('de') }),
-      prepare: (page) => page.getByRole('heading', { name: 'Sprache', level: 1 }).first().waitFor(),
+      prepare: (page) => page.getByRole('heading', { name: 'Sprache & Region', level: 1 }).first().waitFor(),
     },
   ];
 };

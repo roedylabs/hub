@@ -298,12 +298,19 @@ async fn completion_creates_and_signs_in_the_administrator() {
     let me = s.env.as_user(&token, Method::GET, "/session", None).await;
     assert_eq!(me.status, StatusCode::OK, "{}", me.body);
     assert_eq!(me.json()["user"]["locale"], "de");
-    assert_eq!(me.json()["user"]["theme"], "dark");
+    assert_eq!(me.json()["prefs"]["theme"], "dark");
+    assert_eq!(me.json()["prefs"]["accent"], "sage");
     assert_eq!(me.json()["hub"]["admin"], "/admin");
     let settings = s.env.as_user(&token, Method::GET, "/settings", None).await;
     assert_eq!(
         settings.json(),
-        json!({ "version": 1, "settings": { "lang": "de", "mode": "dark", "accent": "sage" } })
+        json!({ "version": 1, "settings": {
+            "lang": "de", "mode": "dark", "accent": "sage", "font_size": "medium",
+            "density": "normal", "animations": true, "region": null, "time_zone_auto": true,
+            "time_zone": "Europe/Berlin", "date_format": null, "time_format": null,
+            "week_start": null, "number_format": null, "confirm_delete": true, "undo_delay": 5,
+            "shortcuts": true, "developer": false,
+        } })
     );
     let devices = s
         .env

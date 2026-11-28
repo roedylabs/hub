@@ -1,67 +1,89 @@
 /**
  * Shared preferences in `localStorage["roedy.hub.prefs"]` (docs/app-contract.md
- * › Namespaces in the browser): `{"theme": "system"|"light"|"dark", "locale":
- * "en"|"de"}`. The hub writes them whenever language or color scheme change
- * (also for guests), so that its own pages without sign-in and the apps can
- * apply both before their first request. Apps only read them.
+ * › Namespaces in the browser): the user's shared settings as the apps get
+ * them in `GET /api/v1/session` (`prefs`, `HubPrefs` of `@roedy/ui`). The hub
+ * writes the whole object whenever a setting changes (also for guests), so
+ * that the apps apply them before their first request and follow them in
+ * other tabs (`storage` events, `connectHub()`); its own pages without
+ * sign-in read colour scheme, language, font size and animations from it. On
+ * sign-out only these four stay. Apps only read it.
  */
-import { isLocale, type Locale } from '#lib/paraglide/runtime.js';
+import {
+  accentOf,
+  type Branding,
+  browserStorage,
+  type HubPrefs,
+  PREFS_KEY,
+  readHubPrefs,
+  resolveFormats,
+} from '@roedy/ui';
+import type { Lang } from '#lib/locale.ts';
+import type { Settings } from '#lib/state/prefs.svelte.ts';
 
-export const SHARED_PREFS_KEY = 'roedy.hub.prefs';
+export const SHARED_PREFS_KEY = PREFS_KEY;
 
-export type SharedTheme = 'system' | 'light' | 'dark';
-
-export interface SharedPrefs {
-  theme?: SharedTheme;
-  locale?: Locale;
-}
-
-const THEMES: readonly string[] = ['system', 'light', 'dark'];
-
-/** The browser's `localStorage`; `undefined` where the getter throws (storage blocked by a policy). */
-function browserStorage(): Storage | undefined {
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return undefined;
-  }
-}
+/** What the pages without sign-in keep after sign-out. */
+const GUEST_KEYS = ['theme', 'language', 'font_size', 'animations'] as const;
 
 /** The stored preferences; unknown or broken values are left out. */
-export function readSharedPrefs(storage: Pick<Storage, 'getItem'> | undefined = browserStorage()): SharedPrefs {
-  let raw: string | null = null;
-  try {
-    raw = storage?.getItem(SHARED_PREFS_KEY) ?? null;
-  } catch {
-    // No storage (private window, blocked).
-  }
-  if (!raw) return {};
-  let data: unknown;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return {};
-  }
-  if (typeof data !== 'object' || data === null) return {};
-  const { theme, locale } = data as Record<string, unknown>;
-  const prefs: SharedPrefs = {};
-  if (typeof theme === 'string' && THEMES.includes(theme)) prefs.theme = theme as SharedTheme;
-  if (typeof locale === 'string' && isLocale(locale)) prefs.locale = locale;
-  return prefs;
+export function readSharedPrefs(storage: Pick<Storage, 'getItem'> | undefined = browserStorage()): Partial<HubPrefs> {
+  return readHubPrefs(storage);
 }
 
-/** Merges `patch` into the stored preferences; `locale: null` forgets the language (it follows the browser). */
-export function writeSharedPrefs(
-  patch: { theme?: SharedTheme; locale?: Locale | null },
-  storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = browserStorage(),
-): void {
-  const next: SharedPrefs = { ...readSharedPrefs(storage) };
-  if (patch.theme) next.theme = patch.theme;
-  if (patch.locale === null) delete next.locale;
-  else if (patch.locale) next.locale = patch.locale;
+/**
+ * The shared settings of `values` as the apps get them: formats resolved with the UI language `lang`, the accent
+ * only if the branding lets users choose it.
+ */
+export function sharedPrefsOf(values: Settings, lang: Lang, brand: Pick<Branding, 'userAccent' | 'color'>): HubPrefs {
+  const auto = resolveFormats(values.region, lang);
+  return {
+    theme: values.mode ?? 'system',
+    accent: brand.userAccent && values.accent !== null ? accentOf(values, brand) : null,
+    font_size: values.font_size,
+    density: values.density,
+    animations: values.animations,
+    language: values.lang,
+    region: values.region,
+    time_zone: values.time_zone,
+    time_zone_auto: values.time_zone_auto,
+    date_format: values.date_format ?? auto.date_format,
+    time_format: values.time_format ?? auto.time_format,
+    week_start: values.week_start ?? auto.week_start,
+    number_format: values.number_format ?? auto.number_format,
+    confirm_delete: values.confirm_delete,
+    undo_delay: values.undo_delay,
+    shortcuts: values.shortcuts,
+    developer: values.developer,
+  };
+}
+
+function store(prefs: Partial<HubPrefs>, storage: Pick<Storage, 'setItem'> | undefined): void {
   try {
-    storage?.setItem(SHARED_PREFS_KEY, JSON.stringify(next));
+    storage?.setItem(SHARED_PREFS_KEY, JSON.stringify(prefs));
   } catch {
     // Without storage the defaults apply next time.
   }
+}
+
+/** Stores `prefs` as the shared preferences (the whole object). */
+export function writeSharedPrefs(
+  prefs: HubPrefs,
+  storage: Pick<Storage, 'setItem'> | undefined = browserStorage(),
+): void {
+  store(prefs, storage);
+}
+
+/** After sign-out: keeps only colour scheme, language, font size and animations for the pages without sign-in. */
+export function trimSharedPrefs(storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = browserStorage()): void {
+  try {
+    if (storage?.getItem(SHARED_PREFS_KEY) == null) return;
+  } catch {
+    return;
+  }
+  const current = readSharedPrefs(storage);
+  const kept: Partial<HubPrefs> = {};
+  for (const key of GUEST_KEYS) {
+    if (key in current) (kept as Record<string, unknown>)[key] = current[key];
+  }
+  store(kept, storage);
 }
