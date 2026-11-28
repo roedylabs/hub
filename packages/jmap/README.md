@@ -5,6 +5,14 @@ apps talk to Stalwart directly with an access token from the hub
 (`docs/plan.md` § 9.3). The package holds what every app needs; each app adds
 its own data types on top.
 
+```sh
+npm install @roedy/jmap
+```
+
+Published with every hub release under the hub's version (`0.x` until the
+first release), as JavaScript (ES modules) with type declarations
+(CONTRIBUTING.md › Packages and crates).
+
 ## Contents
 
 | Module        | What it does                                                                                                                         |

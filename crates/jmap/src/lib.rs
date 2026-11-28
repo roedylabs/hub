@@ -3,9 +3,10 @@
 //! (`Identity/get`, `Mailbox/get`, `Email/set` and `EmailSubmission/set` with
 //! references to created objects).
 //!
-//! The caller passes the HTTP client; it follows no redirects. Credentials
-//! only go to the server's origin: redirects of the session and the
-//! `apiUrl` must stay there. Responses are read up to 256 KiB at most.
+//! The caller passes the HTTP client, which must not follow redirects itself
+//! (`.redirect(reqwest::redirect::Policy::none())`): the crate follows them,
+//! only on the server's origin, so that credentials only go there –
+//! redirects of the session and the `apiUrl` must stay on it. Responses are read up to 256 KiB at most.
 //! Errors ([`Error`]) and `Debug` never contain passwords or tokens.
 //!
 //! Copied from Roedy Mail (`crates/jmap`) without the storage query

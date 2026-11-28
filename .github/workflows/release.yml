@@ -6,13 +6,19 @@ name: Release
 #   and static musl binaries (`just dist`) → amd64 image → size, smoke test,
 #   Trivy → version not yet on ghcr.io → multi-arch push with SBOM and
 #   provenance → cosign signature and build attestations → check the published
-#   image → GitHub release with notes (git-cliff, cliff.toml) and binaries.
+#   image → GitHub release with notes (git-cliff, cliff.toml) and binaries →
+#   the shared packages (scripts/packages.sh): @roedy/tokens, @roedy/jmap and
+#   @roedy/ui on npm with provenance, roedy-hub-contract and roedy-jmap on
+#   crates.io.
 # - Manually (workflow_dispatch): build and check only, publish nothing – a
 #   dry run of the release build for both platforms, also when started on a
 #   tag. Pull requests check the amd64 image in ci.yml (job "Image").
 #
 # Jobs: "Build and check" (read-only) → "Publish" (pushed tags only; the only
-# job with write permissions; one at a time across all tags).
+# job with write permissions on the repository; one at a time across all
+# tags) → "Packages" (pushed tags only; read-only, with an OIDC token for npm;
+# one at a time across all tags). What the maintainer sets up before the first
+# release: CONTRIBUTING.md › Releases.
 
 on:
   push:
@@ -55,6 +61,13 @@ jobs:
             echo "::error::Version in package.json ($version) and Cargo.toml ($cargo_version) differ"
             exit 1
           fi
+          for file in packages/*/package.json; do
+            package_version=$(node -p "require('./$file').version")
+            if [ "$package_version" != "$version" ]; then
+              echo "::error::Version in $file ($package_version) and package.json ($version) differ"
+              exit 1
+            fi
+          done
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
               echo "::error::Tag $GITHUB_REF_NAME does not match version $version (tags are set by just release-tag)"
@@ -363,3 +376,58 @@ jobs:
           if [ "$PRERELEASE" = true ]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md "${prerelease[@]}" dist/assets/*
+
+  # The shared packages under the release's version, once the image and the
+  # GitHub release are out. Packed and checked again from the tag (as in CI's
+  # job "Packages"), then published; what a registry already has is skipped,
+  # so a rerun continues where a failed run stopped and never overwrites.
+  packages:
+    name: Packages
+    needs: [build, publish]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    concurrency:
+      group: release-packages
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # npm provenance (Sigstore) and npm trusted publishing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: ./.github/actions/setup-node
+      # No build cache, as in "Build and check".
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+
+      - name: Pack the npm packages
+        run: scripts/packages.sh pack "$RUNNER_TEMP/packages"
+      - name: Use them in an app outside the workspace
+        run: scripts/packages.sh verify "$RUNNER_TEMP/packages"
+      - name: cargo package
+        run: scripts/packages.sh crates
+
+      # npm: trusted publishing (OIDC) once it is set up for the packages,
+      # otherwise the NPM_TOKEN secret (CONTRIBUTING.md › Releases).
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            # npm reads the token from the environment, it is not written down.
+            # shellcheck disable=SC2016 # expanded by npm
+            printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' >"$RUNNER_TEMP/.npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
+          fi
+          scripts/packages.sh publish-npm "$RUNNER_TEMP/packages"
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: scripts/packages.sh publish-crates

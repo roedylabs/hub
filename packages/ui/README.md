@@ -3,8 +3,18 @@
 Svelte 5 components, actions and helpers that every Roedy app (the hub, Mail,
 Calendar, Contacts …) shares, so that they look and behave the same. The
 package brings its own English and German texts: apps need no message keys
-for it. The hub's web app uses it from the workspace; the apps will get it as a
-published package (`docs/plan.md` § 9.4, publishing is milestone 7.3).
+for it. The hub's web app uses it from the workspace; the apps get it from npm,
+published with every hub release under the hub's version (`docs/plan.md` § 9.4).
+
+```sh
+npm install @roedy/ui @roedy/tokens
+```
+
+The package is published as Svelte source with type declarations
+(`svelte-package`): the app's Svelte compiles the components. It needs
+`svelte` 5 as a peer dependency; `@roedy/ui/testing` needs `axe-core` for
+`violations()`. Tests in jsdom need `matchMedia` and `ResizeObserver` stubs
+(see `vitest-setup.ts`).
 
 What an app does not get here: the hub's frame (the app switcher and later the
 notification bell and notice bar) comes at run time from the hub
@@ -61,9 +71,12 @@ type). A text reads the language on every call, so templates follow a change.
 
 ## Development
 
-Imports inside the package are relative, with the file extension. Checks:
-`pnpm --filter @roedy/ui check` and `pnpm --filter @roedy/ui test` (Vitest
-with jsdom and Testing Library; component tests include axe).
+Imports inside the package are relative, with the file extension (`.ts`; the
+published build rewrites it to `.js`). Checks: `pnpm --filter @roedy/ui check`
+and `pnpm --filter @roedy/ui test` (Vitest with jsdom and Testing Library;
+component tests include axe). `pnpm pack` builds `dist/` and the published
+exports; how the packages are versioned, checked and released is in
+CONTRIBUTING.md › Packages and crates.
 
 ## Origin
 

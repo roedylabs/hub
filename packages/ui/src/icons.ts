@@ -10,6 +10,7 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/icons.ts`), trimmed to the
  * icons the hub uses.
  */
+import type { Icon } from '@tabler/icons-svelte-runes';
 import IconAddressBook from '@tabler/icons-svelte-runes/icons/address-book';
 import IconAdjustmentsHorizontal from '@tabler/icons-svelte-runes/icons/adjustments-horizontal';
 import IconAlertCircle from '@tabler/icons-svelte-runes/icons/alert-circle';
@@ -258,14 +259,23 @@ import IconWorldOff from '@tabler/icons-svelte-runes/icons/world-off';
 import IconWorldWww from '@tabler/icons-svelte-runes/icons/world-www';
 import IconX from '@tabler/icons-svelte-runes/icons/x';
 
-/** A Tabler icon component (`@tabler/icons-svelte-runes/icons/…`). */
-export type TablerIcon = typeof IconBug;
+/**
+ * A Tabler icon component (`@tabler/icons-svelte-runes/icons/…`). Named by the
+ * package's own type, so that the published declarations can name it (the
+ * icons' `Props` are private to each component's module).
+ */
+export type TablerIcon = Icon;
+
+/** Keeps the registry's names as literal keys with a type the declarations can name. */
+function registry<const K extends `ti-${string}`>(map: Record<K, TablerIcon>): Readonly<Record<K, TablerIcon>> {
+  return map;
+}
 
 /**
  * Tabler icons under their webfont class names (`ti-…`). Only registered
  * icons end up in the bundle; add new icons here (one import per icon).
  */
-export const icons = {
+export const icons = registry({
   // "123" is called "number-123" in @tabler/icons-svelte-runes.
   'ti-123': IconNumber123,
   'ti-address-book': IconAddressBook,
@@ -516,7 +526,7 @@ export const icons = {
   'ti-world-off': IconWorldOff,
   'ti-world-www': IconWorldWww,
   'ti-x': IconX,
-} as const satisfies Record<`ti-${string}`, TablerIcon>;
+});
 
 export type IconName = keyof typeof icons;
 

@@ -35,6 +35,7 @@ Common tasks are in the [`justfile`](justfile) (`pnpm exec just …` if [just](h
 | `just dist-example`, `just image-example`, `just smoke-compose` | The example app's image and the smoke test of `deploy/compose.yml` (the smoke tests need curl, openssl and, for Compose, jq) |
 | `just e2e` / `just e2e-host` | The [end-to-end suite](#end-to-end-suite) against the Compose test setup or against debug binaries on the host |
 | `just release <version>` / `just release-tag <version>` | Release PR, then the tag on `main` ([`release.yml`](.github/workflows/release.yml)) |
+| `just packages [<dir>]` | The npm packages and crates as the release publishes them, without publishing ([Packages and crates](#packages-and-crates); needs npm and crates.io) |
 
 ## Checks
 
@@ -93,16 +94,50 @@ the example above for the sign-out).
 ## Releases
 
 Releases need the [GitHub CLI](https://cli.github.com), signed in with push access (`gh auth status`); `just release`
-checks that before it changes anything. `just release <version>` opens the release PR (version, `CHANGELOG.md` with
-git-cliff); after the maintainer merged it,
+checks that before it changes anything. `just release <version>` opens the release PR (the version in `package.json`, the packages and
+`Cargo.toml`, `CHANGELOG.md` with git-cliff); after the maintainer merged it,
 `just release-tag <version>` sets the tag on `main`, and [`release.yml`](.github/workflows/release.yml) builds, checks,
-signs and publishes `ghcr.io/roedylabs/hub`. Only a pushed tag publishes; a manual run of the workflow is a dry run.
+signs and publishes `ghcr.io/roedylabs/hub`, then the [packages and crates](#packages-and-crates). Only a pushed tag publishes; a manual run of the workflow is a dry run.
 `x.y` and `latest` move only to the newest stable version, whatever order releases publish in.
 
 **After the first release:** GitHub creates the package `hub` as private, and the workflow cannot change that. A
 maintainer makes it public once (the package's settings › Danger Zone › Change visibility), so that `docker compose
 pull` works without login as `docs/ops.md` describes; until then the workflow's step "Image pullable without login"
 warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibility`.
+
+### Packages and crates
+
+The hub publishes what the Roedy apps share (`docs/plan.md` § 9.4) with every release, after the image and the GitHub
+release (job "Packages" of `release.yml`): `@roedy/tokens`, `@roedy/jmap` and `@roedy/ui` on npm with provenance,
+`roedy-hub-contract` and `roedy-jmap` on crates.io.
+
+- **One version:** everything carries the hub's version. The root `package.json` is the source; `just release` writes
+  it to `Cargo.toml` (and with it the crates) and to `packages/*/package.json`, and `scripts/versions.test.mjs` fails
+  on a copy that differs. Never change a package's version by hand. Until the first release the versions are `0.x`
+  (pre-releases such as `0.2.0-rc.1` go to the npm tag `next`, not `latest`); there are no compatibility promises
+  before it.
+- **Packing:** in the workspace the packages export their TypeScript sources; `pnpm pack` builds `dist/` (`prepack`:
+  `svelte-package` for `@roedy/ui`, which keeps the components as Svelte source with declarations, `tsc` for the
+  others), switches the exports to it (`publishConfig.exports`), turns `workspace:*` into the exact version and adds
+  the licence. Relative imports keep their `.ts` extension in the sources; the build rewrites them to `.js`.
+- **Checks:** the CI job "Packages" packs them on every pull request, installs the tarballs with npm into a throwaway
+  SvelteKit app outside the workspace (`scripts/packages/consumer`: type check against the published declarations,
+  build, a rendered component, Node), runs `npm publish --dry-run` and `cargo package` (which builds the crates from
+  the packed sources). `just packages` does the same locally (`scripts/packages.sh`).
+- **Publishing:** only a pushed release tag publishes. What a registry already has is skipped, so rerunning a failed
+  job continues where it stopped; a published version is never overwritten.
+
+**Before the first release** a maintainer sets up, once (nothing of this is created by the workflow):
+
+1. **npm:** the organization `roedy` (scope `@roedy`) with the maintainers as owners, and a granular access token with
+   read and write access to the scope's packages as the repository secret `NPM_TOKEN`. The first publication creates
+   the packages publicly. Afterwards configure each package's trusted publisher on npmjs.com (repository
+   `roedylabs/hub`, workflow `release.yml`) and remove the secret: the job then publishes with GitHub's OIDC token
+   (`id-token: write`), which also signs the provenance.
+2. **crates.io:** an account with the crate names `roedy-hub-contract` and `roedy-jmap` free, and an API token with the
+   scopes `publish-new` and `publish-update` for these two crates as the repository secret `CARGO_REGISTRY_TOKEN`. After
+   the first publication add the other maintainers as owners (`cargo owner --add`) and narrow the token to
+   `publish-update`, or switch to crates.io's trusted publishing.
 
 ## Project layout
 
@@ -119,7 +154,7 @@ warns. Check it with `gh api orgs/roedylabs/packages/container/hub --jq .visibil
 | `docs/` | App contract, plan, operator documentation ([`ops.md`](docs/ops.md)) |
 | `deploy/` | Docker Compose setup (`compose.yml`, `.env.example`; the hub with built-in TLS, no proxy), `restore.sh` for backups, the test override with the example app and TLS from a test certificate |
 | `Dockerfile` | The image: packages `dist/<arch>/roedy-hub` on `scratch` |
-| `scripts/` | Git hooks, smoke tests of the image and the Compose setup, release script and developer tooling |
+| `scripts/` | Git hooks, smoke tests of the image and the Compose setup, release and package scripts (`packages/consumer`: the app that checks the packed packages) and developer tooling |
 
 ## Conventions
 

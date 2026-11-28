@@ -2,8 +2,8 @@
 
 | Workflow | Runs on | What it does |
 | --- | --- | --- |
-| [CI](ci.yml) | PR, merge queue, main, weekly | Lint (ESLint, Prettier, ShellCheck, actionlint), web app (types, tests, build), server (rustfmt, Clippy, tests), dependencies (cargo deny, licenses), image (amd64 build, size ≤ 25 MB, smoke test with idle memory ≤ 40 MB, Compose setup), end-to-end (Playwright with axe against that image on the Compose test setup) |
-| [Release](release.yml) | tag `v*`, manually | Both platforms, size, smoke test, Trivy; on tags: push to ghcr.io with SBOM and provenance, cosign, attestations, GitHub release |
+| [CI](ci.yml) | PR, merge queue, main, weekly | Lint (ESLint, Prettier, ShellCheck, actionlint), web app (types, tests, build), server (rustfmt, Clippy, tests), dependencies (cargo deny, licenses), packages (the npm tarballs in an app outside the workspace, `npm publish --dry-run`, `cargo package`), image (amd64 build, size ≤ 25 MB, smoke test with idle memory ≤ 40 MB, Compose setup), end-to-end (Playwright with axe against that image on the Compose test setup) |
+| [Release](release.yml) | tag `v*`, manually | Both platforms, size, smoke test, Trivy; on tags: push to ghcr.io with SBOM and provenance, cosign, attestations, GitHub release, then the npm packages (with provenance) and the crates |
 | [Pull request](pr.yml) | PR | Conventional Commit title, dependency review |
 | [CodeQL](codeql.yml) | PR, main, weekly | Code scanning of workflows, TypeScript and Rust |
 | [Scorecard](scorecard.yml) | main, weekly | OpenSSF Scorecard |

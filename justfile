@@ -83,3 +83,10 @@ release version:
 # After merging the release PR: set tag v<version> on main and push it
 release-tag version:
     scripts/release.sh tag {{ version }}
+
+# The npm packages and crates as the release publishes them, without publishing: pack, install into an app outside the workspace, `npm publish --dry-run`, `cargo package` (CI job "Packages"; npm and crates.io must be reachable)
+packages dir="target/packages":
+    scripts/packages.sh pack {{ dir }}
+    scripts/packages.sh verify {{ dir }}
+    scripts/packages.sh publish-npm {{ dir }} --dry-run
+    scripts/packages.sh crates

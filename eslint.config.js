@@ -29,7 +29,9 @@ const ignoreFiles = [resolve(import.meta.dirname, '.gitignore'), ...localExclude
 
 export default defineConfig(
   ...ignoreFiles.map((path) => includeIgnoreFile(path)),
-  globalIgnores(['crates/', 'apps/web/project.inlang/']),
+  // The package consumer only resolves its imports once scripts/packages.sh
+  // installs it outside the workspace; it is type checked there.
+  globalIgnores(['crates/', 'apps/web/project.inlang/', 'scripts/packages/consumer/']),
   js.configs.recommended,
   ts.configs.recommendedTypeChecked,
   svelte.configs.recommended,

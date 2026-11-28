@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
+readme = "README.md"
+keywords = ["roedy", "jws", "ed25519", "identity", "webhooks"]
+categories = ["authentication", "cryptography", "web-programming"]
+# Published on crates.io with the hub's release (scripts/packages.sh); the
+# test vectors stay in the repository (docs/app-contract/vectors.json).
+publish = true
+include = ["/src", "/README.md"]
 
 # No JWT library: the JWS is small on top of these, which keeps `alg`
 # handling strict (docs/plan.md › New dependencies).

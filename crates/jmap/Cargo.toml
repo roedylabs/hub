@@ -1,11 +1,16 @@
 [package]
 name = "roedy-jmap"
-description = "Minimal JMAP client for sending the Roedy Hub's system mails"
+description = "Minimal JMAP client for servers (RFC 8620, RFC 8621), shared by the Roedy apps"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
+readme = "README.md"
+keywords = ["roedy", "jmap", "email", "rfc8620", "rfc8621"]
+categories = ["email", "api-bindings", "network-programming"]
+# Published on crates.io with the hub's release (scripts/packages.sh).
+publish = true
+include = ["/src", "/README.md"]
 
 # Copy of Roedy Mail's `crates/jmap` (same versions), trimmed to sending.
 [dependencies]
