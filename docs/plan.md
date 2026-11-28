@@ -155,6 +155,9 @@ New:
 | `event_delivery` | `app_id`, `last_seq`, `delivered_seq`, `attempts`, `retry_at`, `failing_since`, `last_error` |
 | `acme_accounts` | `directory`, `key_enc`, `url`, `created_at`: one ACME account per CA |
 | `tls_certificates` | `domain`, `key_enc`, `chain_pem`, `not_before`, `not_after`, `directory`, `created_at` |
+| `stalwart_servers` | Mail's `servers`: `id`, `label`, `base_url` (unique origin), `domains_json`, `oauth_client_id`, `oauth_client_secret_enc`, `reach`, `cors`, `oauth`, `tested_at`, `created_at`; the policy for custom servers in `app_settings.stalwart_policy` |
+| `stalwart_accounts` | Mail's `mail_accounts`: `user_id`, `base_url`, `email`, `account_id`, `username`, `auth_kind` (`oauth`, `token`), `client_id`, `secret_enc`, `access_token_enc`, `access_expires_at`, `session_url`, `session_json`, `state` (`ok`, `needs_sign_in`), `color`, `is_default` (one per user), storage and job times; unique (user, origin, account ID) |
+| `stalwart_sign_ins` | Sign-ins at a server under way: `state_hash`, `user_id`, `session_id`, `server_id`, `base_url`, `client_id`, `account_id` (sign in again), `verifier_enc` (PKCE), `login_hint`, `return_to`, `expires_at` (10 minutes) |
 
 ### New dependencies (to be justified in the PRs)
 
@@ -876,10 +879,10 @@ its milestone. **Mail:** stays in the app.
 | Design tokens | `packages/tokens` | Shared, 7 (`@roedy/tokens`, the hub's copy becomes the source) |
 | JMAP for the browser: client, session, token, batching, sync, EventSource stream, push, errors; contact cards | `packages/jmap/src/{client,core,session,token,methods,sync,stream,push,errors,contacts}.ts` | Shared, 7 (`@roedy/jmap`) |
 | JMAP for servers | `crates/jmap` (session, requests, quota) | Shared, 7 (`roedy-jmap`, already in the hub for sending) |
-| Stalwart server registry, policy for custom servers, diagnosis, OAuth client by DCR | `api/servers`, `broker/{probe,dcr,outbound}`, `jobs/server_probe`, `db/repo/servers`, `admin/mail-servers`, `ServerDialog` | Shared, 8 |
-| Users' Stalwart accounts: several per user, default account, colour, "Sign in again", removal | `api/mail_accounts`, `broker/account`, `db/repo/mail_accounts`, `routes/{account/mail-accounts,oauth/callback,no-account}`, `lib/auth/*` | Shared, 8 |
-| Token broker with strict rotation, early refresh, revocation | `broker/{token,oauth,crypto}`, `jobs/token_refresh` | Shared, 8 |
-| Storage per account | `jobs/quota_check`, `crates/jmap/src/quota.rs` | Shared, 8 |
+| Stalwart server registry, policy for custom servers, diagnosis, OAuth client by DCR | `api/servers`, `broker/{probe,dcr,outbound}`, `jobs/server_probe`, `db/repo/servers`, `admin/mail-servers`, `ServerDialog` | Shared, 8 (API done) |
+| Users' Stalwart accounts: several per user, default account, colour, "Sign in again", removal | `api/mail_accounts`, `broker/account`, `db/repo/mail_accounts`, `routes/{account/mail-accounts,oauth/callback,no-account}`, `lib/auth/*` | Shared, 8 (API done) |
+| Token broker with strict rotation, early refresh, revocation | `broker/{token,oauth,crypto}`, `jobs/token_refresh` | Shared, 8 (done) |
+| Storage per account | `jobs/quota_check`, `crates/jmap/src/quota.rs` | Shared, 8 (done) |
 | Shared settings: region, time zone, date, time and number formats, week start, font size, density, animations, keyboard shortcuts on or off, confirmations and undo delay, developer mode | `settings`, `routes/settings/{appearance,language,general}`, `lib/{timezone,locale,date}.ts` | Shared, 9 |
 | Directory of the instance's users | `api/directory` | Shared, 9 |
 | Notifications: catalogue, bell, channels per topic, retention | `events/{mod,texts}`, `api/notifications`, `jobs/notification_cleanup`, `NotificationsMenu`, `routes/settings/notifications` | Shared, 10 |
@@ -1049,10 +1052,28 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
       crates.io ownership are the maintainer's to set up before the first
       release (CONTRIBUTING.md › Packages and crates).
 8. [ ] **Stalwart servers, accounts and tokens**
-   1. [ ] **API** – registry and policy, diagnosis and its daily job, DCR,
+   1. [x] **API** – registry and policy, diagnosis and its daily job, DCR,
       accounts with OAuth and PKCE, the token broker with early refresh and
       revocation, storage, the system mail's server from the registry, the
       browser and internal endpoints, events, the manifest field.
+      Done: `stalwart` (Mail's `broker`: probe, DCR, OAuth, SSRF guard,
+      token broker with strict rotation) and `api::stalwart` – the registry
+      for administrators (DCR for a saved server, the secret straight into
+      it), the sign-in started by the hub with `state` and the PKCE verifier
+      kept in `stalwart_sign_ins` and the code exchanged by the hub (Mail's
+      browser did both), accounts with an access token on custom servers,
+      default account and colour, check, removal and deletion of the user
+      with revocation; jobs `server_probe`, `token_refresh`, `quota_check`
+      (without "storage almost full", which comes with notifications). For
+      the apps (contract § 6.1, § 7.1, § 8, § 10.2): `GET
+      /api/v1/stalwart/accounts`, `POST …/<id>/token`, the internal
+      endpoints for the servers' origins, a user's accounts and tokens
+      (`"stalwart": {"backend": true}`), the events `stalwart.account.added`,
+      `.removed`, `.needs_sign_in`, `.signed_in` and
+      `stalwart.servers.changed`; the example app reads them. The system
+      mail names a registry server (`server_id`); Administration › Email picks
+      it from the registry. Scopes for every app (mail, contacts,
+      calendars). No new dependency.
    2. [ ] **Pages** – Administration › Stalwart servers, Account › Accounts,
       the sign-in at Stalwart and its return, "No account yet".
 9. [ ] **Shared settings and directory** – the settings of § 9.2 with their

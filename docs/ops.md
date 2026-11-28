@@ -30,8 +30,9 @@ own still works with `ROEDY_TLS=off` ([Behind your own proxy](#behind-your-own-p
   and port 443 open to the internet – port 80 as well for the redirect from `http://` and as a fallback for the
   certificate ([TLS](#tls)). Nothing else may use these ports on the host. The hub needs the root `/` of its origin;
   the apps live under `/<slug>/` of the same origin, a sub-path for the hub does not work.
-- **Outgoing connections:** HTTPS to the JMAP server for the hub's system mails (Administration › Email) and whatever
-  the apps need (Roedy Mail: its Stalwart servers).
+- **Outgoing connections:** HTTPS to the Stalwart servers of the registry ([Stalwart servers](#stalwart-servers): the
+  system mails, users' accounts and tokens, the daily diagnosis), to other Stalwart servers when users may connect
+  accounts there, and whatever the apps need.
 - **Time:** an accurate clock (NTP); authenticator app codes, sessions and the identities for the apps depend on it.
 
 ## Installation
@@ -185,6 +186,28 @@ Another app: add a service like `roedy-mail` in the network `apps` only (never w
 `ROEDY_PUBLIC_URL=<hub public URL>/<slug>`, `ROEDY_TRUST_PROXY` the hub's value plus one, the hub's internal address
 `http://roedy-hub:8081` and the code, and choose the same slug in the hub. "New pairing code" pairs an app again, for
 example after its data was lost.
+
+## Stalwart servers
+
+The hub keeps the Stalwart servers the apps (Mail, Calendar, Contacts) work with, and every user's accounts on them:
+a user signs in at a server once, and every app uses that account. The browser talks JMAP directly to Stalwart, so
+the servers must be reachable from the users' browsers at their public address.
+
+- **Registry:** an administrator adds a server with its address (`https://mail.example.com`, the origin only) and the
+  domains of its addresses. The system mail's sending account (Administration › Email) is on one of them.
+- **OAuth client:** the hub signs users in with an OAuth client of its own per server, a confidential client whose
+  secret stays in the hub, encrypted with the instance key. Easiest by registration (DCR) with the user name and an
+  app password of a Stalwart administrator that may create OAuth clients; they are used for this one request and not
+  stored. By hand: create a client in Stalwart with the redirect URI `<ROEDY_PUBLIC_URL>/oauth/callback`, the scopes
+  Mail, Contacts and Calendars, and the grant types Authorization Code and Refresh Token, and enter its ID (and secret).
+- **Diagnosis:** the hub checks every server daily and on "Test connection": the JMAP session, CORS for the hub's
+  origin (Stalwart's "Permissive CORS", or at least the hub's origin with `Authorization` and `Content-Type`) and the
+  OAuth metadata of Stalwart v1.
+- **Custom servers:** off by default. When an administrator allows them, users can connect accounts on other servers
+  with an access token (API key) they created there; the hub then connects only to public addresses.
+- **Tokens:** refresh tokens never leave the hub; browsers and the apps' backends get access tokens with Stalwart's
+  lifetime. Removing an account or a user revokes the grant at Stalwart. A new instance key makes the stored tokens
+  and client secrets unreadable: register each server's client again, and users sign in to their accounts again.
 
 ## Configuration
 

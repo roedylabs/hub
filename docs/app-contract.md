@@ -58,6 +58,11 @@ MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
   never published.
 - **The hub decides who may use an app; the app decides what they may do in
   it,** based on `app_role` ([§ 11](#11-access-and-roles)).
+- **Stalwart access tokens are reachable from every app's pages.** Script in
+  any app on the origin can fetch an access token for the signed-in user's
+  Stalwart accounts ([§ 6.1](#61-stalwart-accounts)) and read and change
+  their mail, calendars and contacts with it, as long as the token lives.
+  Refresh tokens and client secrets never leave the hub.
 
 ## 3. Routing
 
@@ -497,6 +502,91 @@ charset=utf-8`, `Cache-Control: no-cache` with an `ETag`,
 
 See [§ 5.3](#53-signing-out).
 
+### 6.1 Stalwart accounts
+
+All Roedy apps talk JMAP (RFC 8620, RFC 8621, RFC 9610) to the same Stalwart
+servers. The hub owns the servers (a registry kept by its administrators),
+each user's accounts on them and the OAuth grants: a user connects an account
+once under Account › Accounts, and every app uses it. The browser talks JMAP
+**directly to the Stalwart server** with a short-lived access token it gets
+from the hub; there is no proxy. The app adds the servers' origins to its
+own `connect-src` (`GET /internal/v1/stalwart/servers`, [§ 7.1](#71-stalwart-accounts-for-the-apps-backend))
+and keeps everything above the JMAP session – its data types, its push
+subscriptions at Stalwart, its own per-account settings.
+
+A user signs in at a server with the hub's OAuth client (authorization code
+with PKCE, exchanged by the hub), or, on a server the registry allows it for,
+connects an access token they created there (an API key). An account is
+identified by the server's origin and the primary mail account of its JMAP
+session; a user can have several, exactly one of which is the **default
+account**, and each has a **colour** (0–5, an index into `MA_COLORS` of
+`@roedy/tokens`). The hub's own pages add, sign in again, recolour and remove
+accounts; apps only read them.
+
+#### `GET /api/v1/stalwart/accounts`
+
+The signed-in user's accounts, oldest first; `401 {"error": "unauthorized"}`
+when signed out:
+
+```json
+{
+  "accounts": [
+    { "id": "01JDX6…", "email": "alex@example.com", "username": "alex@example.com",
+      "url": "https://mail.example.com",
+      "server": { "id": "01JDX5…", "label": "Mail" },
+      "auth": "oauth",
+      "session_url": "https://mail.example.com/jmap/session",
+      "capabilities": ["urn:ietf:params:jmap:calendars", "urn:ietf:params:jmap:contacts",
+                       "urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+      "default": true, "color": 0, "state": "ok",
+      "quota": { "used": 2048, "total": 104857600, "checked_at": "2026-11-28T09:00:00.000Z" },
+      "created_at": "2026-11-28T08:00:00.000Z" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | The account's ID in the hub (ULID); use it for the token. |
+| `email`, `username` | The account's address (lower case) and the `username` of its JMAP session. |
+| `url` | Origin of the Stalwart server. |
+| `server` | The registry server with this origin, `null` for a custom server. |
+| `auth` | `oauth` (signed in at the server) or `token` (an access token the user entered). |
+| `session_url` | The JMAP session resource as found at the last sign-in. Fetch it with an access token; it names `apiUrl`, `downloadUrl`, `uploadUrl` and `eventSourceUrl`, all on `url`'s origin. |
+| `capabilities` | The capabilities of that session, sorted. A new sign-in updates them. |
+| `default`, `color` | The default account (exactly one while there are accounts) and the colour. |
+| `state` | `ok`; `needs_sign_in` (the server rejected the refresh token – the app links to `/account/accounts`, the hub's page signs it in again); `blocked` (a custom server while the administrator does not allow custom servers – no tokens). |
+| `quota` | Storage as of the hub's last check (daily), `null` before the first; `used` and `total` in bytes, both `null` without a limit. |
+
+#### `POST /api/v1/stalwart/accounts/<id>/token`
+
+An access token for one of the user's accounts, from the hub's token broker.
+The body is optional: `{"refresh": true}` renews the token although it has
+not expired – send it once when Stalwart rejected the token with `401` (for
+example after a new password). Requires `X-Requested-With` like every
+modifying request.
+
+```json
+{ "access_token": "…", "expires_at": "2026-11-28T10:00:00.000Z" }
+```
+
+The response carries `Cache-Control: no-store`. `expires_at` is when Stalwart
+lets the token expire (Stalwart's lifetime, an hour by default); the hub
+hands out a token with at least five minutes left and renews tokens of
+accounts used in the last hour before that. `expires_at` is `null` for
+`auth: "token"`: the token is the one the user entered and lives as long as
+it does at Stalwart. Keep the token in memory only, fetch a new one when it
+expires or the server rejects it, and send it as `Authorization: Bearer` to
+the session's URLs and nowhere else.
+
+| Error | Meaning |
+|---|---|
+| `404 not_found` | No account with this ID for the signed-in user |
+| `409 needs_sign_in` | The account needs a new sign-in (see `state`) |
+| `409 blocked` | Custom server while custom servers are not allowed |
+| `429 rate_limited` | More than 60 tokens a minute, or more than 10 refreshes in 10 minutes; `retry_after` in seconds |
+| `502 refresh_failed` | Stalwart could not be reached or refused for now, and no token is valid any more; `reason` names why. Try again later. |
+
 ## 7. Internal API
 
 The hub serves the internal API on its own listener (`ROEDY_INTERNAL_LISTEN`,
@@ -524,6 +614,9 @@ logs and its admin area.
 | `GET /internal/v1/events?after=<seq>&limit=<n>` | secret | Read missed events ([§ 10.3](#103-catching-up)) |
 | `GET /internal/v1/users?cursor=<c>&limit=<n>` | secret | Users with access to this app |
 | `GET /internal/v1/users/<sub>` | secret | One user: with access, without access or deleted |
+| `GET /internal/v1/stalwart/servers` | secret | The Stalwart servers' origins ([§ 7.1](#71-stalwart-accounts-for-the-apps-backend)) |
+| `GET /internal/v1/users/<sub>/stalwart-accounts` | secret | A user's Stalwart accounts |
+| `POST /internal/v1/users/<sub>/stalwart-accounts/<id>/token` | secret | An access token for a user's account, without a request from the user |
 
 ### `PUT /internal/v1/manifest`
 
@@ -575,6 +668,37 @@ The authoritative answer for one user:
 
 An unknown `sub` (never issued by this hub) also gets `404 no_access`.
 
+### 7.1 Stalwart accounts for the app's backend
+
+Only for apps whose manifest has `stalwart` ([§ 8](#8-manifest)); others get
+`403 {"error": "not_requested"}`.
+
+**`GET /internal/v1/stalwart/servers`** – what the app's
+`Content-Security-Policy` needs so that its pages may talk to the servers:
+
+```json
+{ "origins": ["https://mail.example.com"], "custom": false }
+```
+
+`origins` are the registry's servers; with `custom: true` users may also
+connect accounts on other servers (any public `https:` origin), so the app's
+`connect-src` needs `https:`. The app reads this at start and again after
+`stalwart.servers.changed` ([§ 10.2](#102-event-types)).
+
+**`GET /internal/v1/users/<sub>/stalwart-accounts`** – the user's accounts,
+`{"accounts": [...]}` exactly as in [§ 6.1](#61-stalwart-accounts); `404
+no_access` for users without access to the app (also unknown ones).
+
+**`POST /internal/v1/users/<sub>/stalwart-accounts/<id>/token`** – an access
+token for work without a request from the user (scheduled sending, push
+handling), only if the manifest has `"stalwart": {"backend": true}` (otherwise
+`403 not_requested`). Optional body `{"refresh": true}` as in the browser API;
+response and errors as there, plus `404 no_access` (no access to the app) and
+`403 user_locked` (the user is locked). At most 60 tokens a minute and 10
+refreshes in 10 minutes per user. A token fetched here does not count as use
+by a browser: the hub does not renew it early, so fetch it when needed rather
+than keeping one around.
+
 ## 8. Manifest
 
 The app describes itself with a manifest. It sends it when pairing and on every
@@ -597,7 +721,8 @@ hub stay current.
     { "id": "admin", "name": { "en": "Administrator", "de": "Administrator" },
       "description": { "en": "Also manages mail servers", "de": "Verwaltet auch die Mailserver" },
       "admin": true }
-  ]
+  ],
+  "stalwart": { "backend": true }
 }
 ```
 
@@ -610,6 +735,7 @@ hub stay current.
 | `icon` | SVG document as a string, up to 64 KiB, square `viewBox`. The hub sanitizes it (no scripts, no event handlers, no external references, no `foreignObject`) and only ever shows it as an image. An SVG it cannot sanitize is rejected. |
 | `home` | Start path relative to the prefix, default `/`. The tile links to `/<slug><home>`. |
 | `roles` | 1–16 roles. `id` `^[a-z][a-z0-9_-]{0,31}$`, unique; `name` and `description` as above. Exactly one role has `"default": true`; at most one has `"admin": true` (the role that gives full control of the app). |
+| `stalwart` | Optional object: the app uses the users' Stalwart accounts. With it the app gets the `stalwart.*` events ([§ 10.2](#102-event-types)) and may call the internal endpoints of [§ 7.1](#71-stalwart-accounts-for-the-apps-backend). `backend` (boolean, default `false`): the app's backend fetches access tokens without a request from the user. The browser API ([§ 6.1](#61-stalwart-accounts)) needs no manifest field. |
 
 Unknown fields are ignored; names starting with `x-` are reserved for
 experiments.
@@ -626,7 +752,8 @@ default role), `admin_role` (more than one admin role); for `icon` also
 `too_large` (over 64 KiB, or too complex to draw), `not_square` (no square
 `viewBox`), `svg_text` (text elements: the hub draws icons without fonts)
 and `unreadable` (not an SVG the hub can sanitize, or nothing left to draw
-after sanitizing, such as only external images). The hub stores the icon
+after sanitizing, such as only external images); `stalwart` and
+`stalwart.backend` get `invalid` when they are not an object or a boolean. The hub stores the icon
 as it sanitized it.
 
 **Changed roles:** when a manifest no longer contains a role, users who had it
@@ -793,6 +920,11 @@ it: the app may hold data from earlier access.
 | `user.deleted` | `{"sub"}` | delete the user's data (or anonymize it, as the app documents) |
 | `session.revoked` | `{"sub", "sid", "reason"}`; `reason`: `logout`, `revoked`, `expired`, `password_changed`, `locked` | end server-side state bound to this session (push subscriptions, streams) |
 | `access.changed` | `{"sub", "access": true\|false, "app_role": "<id>"\|null}` – for this app only | apply the new role; on `false` treat the user like a locked one in this app, on `true` lift that again |
+| `stalwart.account.added` | `{"sub", "account"}` – the account as in [§ 6.1](#61-stalwart-accounts) | set up what the app keeps per account, if anything |
+| `stalwart.account.removed` | `{"sub", "account_id"}` | delete what it keeps for the account and stop work for it (push subscriptions at Stalwart, scheduled sending) |
+| `stalwart.account.needs_sign_in` | `{"sub", "account_id"}` | pause background work for the account; tokens come again after a new sign-in |
+| `stalwart.account.signed_in` | `{"sub", "account_id"}` | the account was signed in again after `needs_sign_in`; resume |
+| `stalwart.servers.changed` | `{}` | a registry origin was added, changed or removed, or the policy for custom servers changed: read `GET /internal/v1/stalwart/servers` and renew the CSP |
 
 - Events start with pairing: the first ones are `access.changed` for the
   access granted then ([§ 11](#11-access-and-roles)). A pending app gets none.
@@ -809,7 +941,13 @@ it: the app may hold data from earlier access.
   expired sessions, up to an hour after the expiry; `revoked` also covers the
   least recently used session of a user who signs in with 20 sessions open.
 - After `user.deleted` nothing more follows for the `sub`: the end of the
-  user's sessions and access is part of it.
+  user's sessions and access is part of it – and of their Stalwart accounts,
+  whose grants the hub revokes; there is no `stalwart.account.removed` for
+  them.
+- The `stalwart.*` events go only to apps whose manifest has `stalwart`
+  ([§ 8](#8-manifest)), to each of them whether or not the user has access
+  (like the user events). A colour or default account that changes gives no
+  event; the app reads them with the accounts.
 
 **Requests racing with events.** A request can check its identity before a
 `session.revoked`, `user.locked` or `user.deleted` event is processed and try
@@ -968,7 +1106,10 @@ It SHOULD:
 - [ ] catch up on events at start;
 - [ ] send keep-alives at least every 30 s on long-lived streams;
 - [ ] log `X-Roedy-Request-Id`;
-- [ ] send a CSP with `frame-ancestors 'self'` or stricter.
+- [ ] send a CSP with `frame-ancestors 'self'` or stricter;
+- [ ] if it uses Stalwart accounts: name `stalwart` in its manifest, take the
+  servers' origins into its `connect-src` and keep access tokens in memory
+  only ([§ 6.1](#61-stalwart-accounts), [§ 7.1](#71-stalwart-accounts-for-the-apps-backend)).
 
 ## 14. Versioning and extensions
 
@@ -984,10 +1125,9 @@ It SHOULD:
   the hub then supports both versions for at least one minor release.
 - **Planned platform services:** the hub is becoming the shared platform for
   all Roedy apps ([`plan.md`](plan.md) § 9): what several apps need is built
-  in the hub, and an app should not build its own. Planned as compatible
-  additions: Stalwart servers, accounts and access tokens for the browser and
-  for the app's backend (an optional manifest field, endpoints in the browser
-  and internal API, events); shared settings such as time zone and formats;
+  in the hub, and an app should not build its own. Stalwart servers, accounts
+  and access tokens are part of this document ([§ 6.1](#61-stalwart-accounts)).
+  Planned as compatible additions: shared settings such as time zone and formats;
   notifications with topics from the manifest; a frame of web components
   served by the hub (app switcher, notification bell, notice bar); switching
   an app off in the administration. Until each is in this document, nothing
