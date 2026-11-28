@@ -18,6 +18,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { resolve } from '$app/paths';
   import { DirtyBar, FirstLoad, Icon, scrollbar, tooltip, ui } from '@roedy/ui';
   import { m } from '#lib/paraglide/messages.js';
   import { scrollToSection } from '#lib/sections.ts';
@@ -210,7 +211,10 @@
             {#if v.mailSrvHas}
               {@render select(v.selMailSrv, v.mailErr.srv)}
             {:else}
-              <p class="srv-none"><Icon name="ti-info-circle" />{m.email_srv_none()}</p>
+              <div class="srv-none">
+                <p><Icon name="ti-info-circle" />{m.email_srv_none()}</p>
+                <a class="srv-add" href={resolve('/admin/stalwart')}><Icon name="ti-plus" />{m.email_srv_add()}</a>
+              </div>
             {/if}
           </div>
           {#if v.mailErr.srv.bad && isMobile}{@render fieldError('srv', v.mailErr.srv)}{/if}
@@ -797,6 +801,13 @@
   }
 
   .srv-none {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .srv-none p {
     margin: 0;
     display: flex;
     align-items: flex-start;
@@ -806,7 +817,7 @@
     color: var(--mfg);
   }
 
-  .srv-none :global(svg) {
+  .srv-none p :global(svg) {
     flex-shrink: 0;
     margin-top: 1px;
     font-size: 18px;
@@ -814,12 +825,45 @@
 
   .mobile .srv-none {
     margin-top: 10px;
+  }
+
+  .mobile .srv-none p {
     gap: 8px;
     font-size: 13.5px;
   }
 
-  .mobile .srv-none :global(svg) {
+  .mobile .srv-none p :global(svg) {
     font-size: 17px;
+  }
+
+  .srv-add {
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 16px 0 12px;
+    border-radius: 9999px;
+    background: var(--surface);
+    box-shadow: var(--sh1);
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--fg);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .srv-add :global(svg) {
+    font-size: 17px;
+  }
+
+  .srv-add:hover {
+    background: var(--hov);
+  }
+
+  .mobile .srv-add {
+    align-self: stretch;
+    justify-content: center;
+    height: 44px;
   }
 
   .pick {

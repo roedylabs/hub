@@ -17,6 +17,7 @@ describe('settings navigation', () => {
         [
           ['Profile', '/account/profile', 'ti-user'],
           ['Security', '/account/security', 'ti-shield'],
+          ['Accounts', '/account/accounts', 'ti-at'],
         ],
       ],
       [
@@ -29,13 +30,14 @@ describe('settings navigation', () => {
     ]);
     expect(panelGroups('admin').map((g) => [g.label, g.pages.map((p) => p.id)])).toEqual([
       [null, ['users', 'apps', 'organization', 'branding']],
-      ['System', ['email', 'audit-log']],
+      ['System', ['stalwart', 'email', 'audit-log']],
     ]);
     expect(panelGroups('admin').flatMap((g) => g.pages.map((p) => p.icon))).toEqual([
       'ti-users',
       'ti-apps',
       'ti-building',
       'ti-brush',
+      'ti-server-2',
       'ti-mail',
       'ti-list-details',
     ]);
@@ -54,6 +56,10 @@ describe('settings navigation', () => {
     expect(sectionOf('/admin/audit-log')).toBe('admin');
     // The guest page "Confirm email" has no shell.
     expect(sectionOf('/account/confirm-email/tok')).toBeNull();
+    // "No account yet" neither; the accounts' subpages belong to Account › Accounts.
+    expect(sectionOf('/account/no-account')).toBeNull();
+    expect(pageOf('/account/accounts/new')).toMatchObject({ id: 'accounts' });
+    expect(pageOf('/account/accounts/01JACCT')).toMatchObject({ id: 'accounts' });
     expect(sectionOf('/')).toBeNull();
     expect(sectionOf('/accounts')).toBeNull();
     expect(sectionOf('/administration')).toBeNull();

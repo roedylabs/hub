@@ -10,7 +10,9 @@
 //! - `POST admin/stalwart/servers/:id/test`: diagnosis ([`probe`]).
 //! - `POST admin/stalwart/servers/:id/register-client`: the hub's OAuth
 //!   client via DCR ([`dcr`]) with an administrator's credentials at the
-//!   server; client ID and secret go straight into the saved server.
+//!   server; client ID and secret go straight into the saved server. The
+//!   request names the address the administrator saw (`url`): the
+//!   credentials only go there.
 //!
 //! Every change ends up in the audit log; a new, moved or removed origin and
 //! a change of the policy give `stalwart.servers.changed` to the apps, whose
@@ -651,6 +653,10 @@ async fn test(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RegisterBody {
+    /// The server's address as the administrator saw it: the credentials
+    /// only go to that address (409 `server_changed` if another
+    /// administrator moved the server meanwhile).
+    url: String,
     username: String,
     password: String,
 }
@@ -682,6 +688,11 @@ async fn register_client(
     let server = db::call(&state.db, move |conn| servers::get(conn, &lookup))
         .await?
         .ok_or(ApiError::NotFound)?;
+    // Before the credentials leave the hub: the address the administrator saw.
+    let seen = normalize_url(&body.url).map(|url| url.origin().ascii_serialization());
+    if seen.as_deref() != Ok(server.base_url.as_str()) {
+        return Err(ApiError::rejected(StatusCode::CONFLICT, "server_changed"));
+    }
     let base_url = Url::parse(&server.base_url).map_err(anyhow::Error::from)?;
     let redirect_uri = redirect_uri(&state.public_url);
     let client_uri = state.public_url.origin().ascii_serialization();

@@ -17,8 +17,8 @@ export const SETUP_PATH = '/setup';
 /** Guest pages: setup, sign-in and the links from mails. They stay reachable when signed in. */
 const GUEST_PREFIXES = ['/setup', '/login', '/invite/', '/account/confirm-email/'];
 
-/** Pages that need a signed-in user (the sign-in comes first, with `next`). */
-const USER_PREFIXES = ['/account', '/admin'];
+/** Pages that need a signed-in user (the sign-in comes first, with `next`); the return from Stalwart's sign-in too. */
+const USER_PREFIXES = ['/account', '/admin', '/oauth/callback'];
 
 function matches(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`);

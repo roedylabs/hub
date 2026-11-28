@@ -5,8 +5,8 @@
  * subtitle from here (`pageOf(path)`).
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/settings-nav.ts`), trimmed to
- * the hub's pages: no mail accounts, no app settings, no "Advanced settings"
- * and no filter.
+ * the hub's pages: Stalwart accounts and servers in place of mail accounts and
+ * servers, no app settings, no "Advanced settings" and no filter.
  */
 import type { IconName, LogoValues } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
@@ -18,12 +18,14 @@ export type PanelSection = 'account' | 'admin';
 export type PanelRoute =
   | '/account/profile'
   | '/account/security'
+  | '/account/accounts'
   | '/account/appearance'
   | '/account/language'
   | '/admin/users'
   | '/admin/apps'
   | '/admin/organization'
   | '/admin/branding'
+  | '/admin/stalwart'
   | '/admin/email'
   | '/admin/audit-log';
 
@@ -60,6 +62,7 @@ function accountGroups(): PanelGroup[] {
       pages: [
         page('profile', '/account/profile', m.nav_profile(), 'ti-user', m.nav_profile_desc()),
         page('security', '/account/security', m.nav_security(), 'ti-shield', m.nav_security_desc()),
+        page('accounts', '/account/accounts', m.nav_accounts(), 'ti-at', m.nav_accounts_desc()),
       ],
     },
     {
@@ -87,6 +90,7 @@ function adminGroups(): PanelGroup[] {
     {
       label: m.nav_group_system(),
       pages: [
+        page('stalwart', '/admin/stalwart', m.nav_stalwart(), 'ti-server-2', m.nav_stalwart_desc()),
         page('email', '/admin/email', m.nav_email(), 'ti-mail', m.nav_email_desc()),
         page('audit-log', '/admin/audit-log', m.nav_audit(), 'ti-list-details', m.nav_audit_desc()),
       ],
@@ -115,13 +119,17 @@ function within(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
 
+/** "No account yet" (`/account/no-account`): a page of its own without the shell, like the home page. */
+export const NO_ACCOUNT_PATH = '/account/no-account';
+
 /**
  * Area of an address with the shell: `/admin` and below, `/account` and below except the guest page
- * "Confirm email" (`/account/confirm-email/…`); otherwise `null`.
+ * "Confirm email" (`/account/confirm-email/…`) and "No account yet"; otherwise `null`.
  */
 export function sectionOf(path: string): PanelSection | null {
   if (within(path, '/admin')) return 'admin';
-  if (within(path, '/account') && !within(path, '/account/confirm-email')) return 'account';
+  if (within(path, '/account') && !within(path, '/account/confirm-email') && !within(path, NO_ACCOUNT_PATH))
+    return 'account';
   return null;
 }
 

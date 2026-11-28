@@ -879,8 +879,8 @@ its milestone. **Mail:** stays in the app.
 | Design tokens | `packages/tokens` | Shared, 7 (`@roedy/tokens`, the hub's copy becomes the source) |
 | JMAP for the browser: client, session, token, batching, sync, EventSource stream, push, errors; contact cards | `packages/jmap/src/{client,core,session,token,methods,sync,stream,push,errors,contacts}.ts` | Shared, 7 (`@roedy/jmap`) |
 | JMAP for servers | `crates/jmap` (session, requests, quota) | Shared, 7 (`roedy-jmap`, already in the hub for sending) |
-| Stalwart server registry, policy for custom servers, diagnosis, OAuth client by DCR | `api/servers`, `broker/{probe,dcr,outbound}`, `jobs/server_probe`, `db/repo/servers`, `admin/mail-servers`, `ServerDialog` | Shared, 8 (API done) |
-| Users' Stalwart accounts: several per user, default account, colour, "Sign in again", removal | `api/mail_accounts`, `broker/account`, `db/repo/mail_accounts`, `routes/{account/mail-accounts,oauth/callback,no-account}`, `lib/auth/*` | Shared, 8 (API done) |
+| Stalwart server registry, policy for custom servers, diagnosis, OAuth client by DCR | `api/servers`, `broker/{probe,dcr,outbound}`, `jobs/server_probe`, `db/repo/servers`, `admin/mail-servers`, `ServerDialog` | Shared, 8 (done) |
+| Users' Stalwart accounts: several per user, default account, colour, "Sign in again", removal | `api/mail_accounts`, `broker/account`, `db/repo/mail_accounts`, `routes/{account/mail-accounts,oauth/callback,no-account}`, `lib/auth/*` | Shared, 8 (done) |
 | Token broker with strict rotation, early refresh, revocation | `broker/{token,oauth,crypto}`, `jobs/token_refresh` | Shared, 8 (done) |
 | Storage per account | `jobs/quota_check`, `crates/jmap/src/quota.rs` | Shared, 8 (done) |
 | Shared settings: region, time zone, date, time and number formats, week start, font size, density, animations, keyboard shortcuts on or off, confirmations and undo delay, developer mode | `settings`, `routes/settings/{appearance,language,general}`, `lib/{timezone,locale,date}.ts` | Shared, 9 |
@@ -1051,7 +1051,7 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
       `CARGO_REGISTRY_TOKEN`). The npm scope `@roedy`, the tokens and the
       crates.io ownership are the maintainer's to set up before the first
       release (CONTRIBUTING.md › Packages and crates).
-8. [ ] **Stalwart servers, accounts and tokens**
+8. [x] **Stalwart servers, accounts and tokens**
    1. [x] **API** – registry and policy, diagnosis and its daily job, DCR,
       accounts with OAuth and PKCE, the token broker with early refresh and
       revocation, storage, the system mail's server from the registry, the
@@ -1074,8 +1074,28 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
       mail names a registry server (`server_id`); Administration › Email picks
       it from the registry. Scopes for every app (mail, contacts,
       calendars). No new dependency.
-   2. [ ] **Pages** – Administration › Stalwart servers, Account › Accounts,
+   2. [x] **Pages** – Administration › Stalwart servers, Account › Accounts,
       the sign-in at Stalwart and its return, "No account yet".
+      Done: `/admin/stalwart` (Mail's mail servers page and server dialog:
+      list with the diagnosis per row, add, edit, remove, the policy for
+      custom servers, the redirect URI; the OAuth client registered by DCR
+      after saving, a failed registration keeps the server and the dialog
+      open), `/account/accounts` with `/new` and `/<id>` (accounts with
+      colour, default, state and storage; adding by sign-in at the server or
+      with an access token, custom servers per policy; sign in again, check,
+      colour, default account, removal), `/oauth/callback` (code and `state`
+      leave the address, `POST stalwart/sign-in/complete`, then `return_to`
+      checked like `next`; every error with its text, "Try again" and
+      "Back") and `/account/no-account?next=…` for the apps (contract § 5.4).
+      Administration › Email links to the registry. In `@roedy/ui` for the
+      apps: `StalwartAccount`, account colours, storage texts and
+      `AccountTile`. API: `register-client` names the address the
+      administrator saw (`url`) and refuses before the credentials leave
+      when the server moved meanwhile. The sign-in round trip through a real
+      server stays in `tests/stalwart.rs`; the end-to-end suite has no
+      Stalwart and covers the pages, an unreachable server and an unknown
+      return. Left for later: a token client for the apps' browsers in
+      `@roedy/jmap`.
 9. [ ] **Shared settings and directory** – the settings of § 9.2 with their
    pages under Account, handed to the apps (browser API, the users endpoint,
    `roedy.hub.prefs`), the recipient's time zone and formats in the hub's

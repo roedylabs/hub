@@ -3,10 +3,13 @@
 // with password and code → pairing the example app from Administration › Apps
 // → its tile on the home page opens it through the gateway with the identity
 // → SSE and WebSocket through the browser → a user without access gets the
-// 403 page → switching the example off (503 page) and on again → every page
-// state in desktop and mobile, light and dark → sign-out
-// closes the streams and clears the site data. axe checks every page state.
-// The tests build on each other (serial) and share the run's hub.
+// 403 page → switching the example off (503 page) and on again → Stalwart
+// servers, accounts, the return from the sign-in and "No account yet" (without
+// a reachable Stalwart: the sign-in round trip itself is covered by
+// crates/server/tests/stalwart.rs and the callback page's tests) → every page
+// state in desktop and mobile, light and dark → sign-out closes the streams
+// and clears the site data. axe checks every page state. The tests build on
+// each other (serial) and share the run's hub.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { env } from '../env.ts';
 import {
@@ -415,6 +418,61 @@ test('switching the example off answers 503, on again it is back', async ({ brow
   await state(page, 'Example', 'example app switched on again');
 });
 
+test('Stalwart servers, accounts, the return from the sign-in and “No account yet”', async ({ browser }) => {
+  const page = await newPage(
+    await newContext(browser, { view: 'desktop', theme: 'light' }, need(admin.state, 'session')),
+  );
+  // Administration › Stalwart servers: the empty registry, then a server without an OAuth client. The address
+  // does not resolve, so the diagnosis after saving finds it unreachable.
+  await page.goto('/admin/stalwart');
+  await state(page, 'Stalwart servers', 'registry without servers');
+  await expect(page.getByText('No Stalwart server yet')).toBeVisible();
+  await button(page, 'Add your first server').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expectAccessible(page, 'dialog for adding a server');
+  await dialog.getByPlaceholder('e.g. Main server').fill('Mail');
+  await dialog.getByPlaceholder('https://mail.example.com').fill('https://stalwart.invalid');
+  await dialog.getByRole('textbox', { name: 'Add domain' }).fill('example.com');
+  await dialog.getByRole('textbox', { name: 'Add domain' }).press('Enter');
+  await dialog.getByRole('button', { name: 'Add and test' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('https://stalwart.invalid', { exact: false }).first()).toBeVisible();
+  await expect(page.getByText('example.com', { exact: true }).first()).toBeVisible();
+  await state(page, 'Stalwart servers', 'registry with a server');
+  // Custom servers on.
+  const own = page.getByRole('switch', { name: 'Users can connect accounts on other servers' });
+  await expect(own).toHaveAttribute('aria-checked', 'false');
+  await own.click();
+  await expect(own).toHaveAttribute('aria-checked', 'true');
+
+  // Account › Accounts: no account yet; the form suggests the server by the address's domain, which offers
+  // only an access token (no OAuth client), and the hub cannot reach it.
+  await page.goto('/account/accounts');
+  await state(page, 'Accounts', 'accounts without any');
+  await expect(page.getByText('No account connected yet.')).toBeVisible();
+  await page.goto('/account/accounts/new');
+  await page.getByLabel('Email address').fill('alex@example.com');
+  await expect(page.getByText('Server: stalwart.invalid')).toBeVisible();
+  await page.getByLabel('Access token', { exact: true }).fill('api-key-example');
+  await expectAccessible(page, 'form for adding an account');
+  await button(page, 'Connect').click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Server unreachable' })).toBeVisible();
+
+  // A return from a sign-in this hub did not start: the code leaves the address, the page explains it.
+  await page.goto('/oauth/callback?state=not-started-here&code=example-code');
+  await state(page, 'Sign-in not recognized', 'return from an unknown sign-in');
+  await expect(page).toHaveURL(`${env.url}/oauth/callback`);
+  await button(page, 'Back').click();
+  await expect(page).toHaveURL(`${env.url}/account/accounts`);
+
+  // "No account yet" for the example app leads to the form with the same `next`.
+  await page.goto('/account/no-account?next=%2Fexample%2F');
+  await state(page, 'Connect your first email account', 'no account yet');
+  await button(page, /Add account/).click();
+  await expect(page).toHaveURL(`${env.url}/account/accounts/new?next=%2Fexample%2F`);
+});
+
 // Each page state once more in every view and theme (the flows above run in one each).
 for (const look of LOOKS) {
   test(`page states on ${look.view} in ${look.theme}`, async ({ browser }) => {
@@ -428,6 +486,9 @@ for (const look of LOOKS) {
       ['/admin/apps', 'Apps'],
       ['/admin/apps/example', 'Example'],
       ['/admin/users', 'Users'],
+      ['/admin/stalwart', 'Stalwart servers'],
+      ['/account/accounts', 'Accounts'],
+      ['/account/no-account', 'Connect your first email account'],
       ['/example/', 'Example'],
     ] as const) {
       await page.goto(path);
