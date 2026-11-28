@@ -59,6 +59,13 @@ describe('clockLabel (clockText)', () => {
 });
 
 describe('parseTime', () => {
+  it('rejects long runs of spaces quickly (no backtracking)', () => {
+    const started = performance.now();
+    expect(parseTime(`7${' '.repeat(50_000)}x`)).toBeNull();
+    expect(parseTime(`${' '.repeat(50_000)}7 pm`)).toBe('19:00');
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
   it('reads times with colon, dot, without separator and hours only', () => {
     expect(parseTime('22:30')).toBe('22:30');
     expect(parseTime('7.5')).toBe('07:05');

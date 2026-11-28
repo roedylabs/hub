@@ -42,9 +42,11 @@ export function clockLabel(value: string, h12: boolean): string {
  * with AM/PM ("10:30 pm", "7a"); `null` if it is not a valid time.
  */
 export function parseTime(text: string): string | null {
-  const suffix = /\s*([ap])\.?\s*m?\.?$/i;
-  const ap = suffix.exec(text)?.[1];
-  const t = ap ? text.replace(suffix, '') : text;
+  // Anchored at both ends with disjoint parts, so it runs in linear time on any input.
+  const whole = /^([\d:.]+)\s*(?:([ap])\.?\s*m?\.?)?$/i.exec(text.trim());
+  if (!whole) return null;
+  const t = whole[1]!;
+  const ap = whole[2];
   const parts = /^(\d{1,2})[:.](\d{1,2})$/.exec(t);
   let h: number;
   let mi: number;
