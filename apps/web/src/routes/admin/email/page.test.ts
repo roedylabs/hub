@@ -422,6 +422,33 @@ describe('Administration › Email page', () => {
     expect(view.getByText('Connected')).toBeInTheDocument();
   });
 
+  it('drops an entered secret when the reloaded account names another server', async () => {
+    const moved = [{ ...SERVERS[0], url: 'https://mail.example.net', host: 'mail.example.net' }, SERVERS[1]];
+    let reloaded: (reply: { body: unknown }) => void = () => {};
+    renderPage(STORED, {
+      'GET admin/system-mail': [{ body: STORED }, () => new Promise((resolve) => (reloaded = resolve))],
+      'GET admin/stalwart/servers': [
+        { body: { ...REGISTRY.body, servers: SERVERS } },
+        { body: { ...REGISTRY.body, servers: moved } },
+      ],
+      'PUT admin/system-mail': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+        },
+      ],
+    });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'new-pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() => expect(screen.getByText('JMAP session via mail.example.net')).toBeInTheDocument());
+    // Typed for the first server; meanwhile another administrator chose the other one.
+    await fireEvent.input(field('Password'), { target: { value: 'for-the-first' } });
+    reloaded({ body: { ...STORED, server_id: 's2', has_secret: false, status: 'unchecked', checked_at: null } });
+    await vi.waitFor(() => expect(server('Other mail')).toBeInTheDocument());
+    expect(field('Password')).toHaveValue('');
+  });
+
   it('a late refusal for a server no longer chosen keeps the secret entered for the new one', async () => {
     let refuse: (reply: { status: number; body: unknown }) => void = () => {};
     renderPage(STORED, {

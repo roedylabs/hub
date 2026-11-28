@@ -587,7 +587,11 @@ export class SystemMailPage {
 
   /** Take over the stored state with its status and identities (also none: they describe the stored connection). */
   #adopt(view: SystemMail): void {
+    const before = this.draft.srv;
     this.saved = view;
+    // The stored account names another server than the draft did (another administrator chose it): a secret entered
+    // for the previous one goes, as with `set` (the first load, without a server before, keeps nothing to drop).
+    if (before !== '' && this.draft.srv !== before) this.edits = { ...this.edits, pass: '', token: '' };
     const k = connOf(draftOf(view));
     this.tested = k;
     this.result = view.status === 'none' ? 'new' : view.status;
