@@ -1022,11 +1022,13 @@ which it cannot get back, and **reconciles**, in this order:
    and acts on the answer as described there.
    If its manifest has `stalwart` ([§ 8](#8-manifest)), it also asks
    `GET /internal/v1/users/<sub>/stalwart-accounts` for every user with
-   access that it holds account data for: it deletes what it keeps for
-   accounts no longer listed (missed `stalwart.account.removed`) and takes
-   each listed account's `state` as current – resuming background work for
-   accounts back at `ok` (missed `stalwart.account.signed_in`) and pausing
-   it for the others. It reads `GET /internal/v1/stalwart/servers` again as
+   access (`GET /internal/v1/users`), also those it holds no account data
+   for yet: it sets up what it keeps for accounts it did not know (missed
+   `stalwart.account.added`), deletes what it keeps for accounts no longer
+   listed (missed `stalwart.account.removed`) and takes each listed
+   account's `state` as current – resuming background work for accounts
+   back at `ok` (missed `stalwart.account.signed_in`) and pausing it for the
+   others. It reads `GET /internal/v1/stalwart/servers` again as
    well (missed `stalwart.servers.changed`).
 4. It stores `resume_after` as the highest `seq` processed.
 5. It processes deliveries again; the hub sends every event it still keeps,

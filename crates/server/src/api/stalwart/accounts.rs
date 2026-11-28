@@ -780,6 +780,7 @@ async fn complete(
     let discarded = token::Discarded {
         server: server.clone(),
         client_id: sign_in.client_id.clone(),
+        client_secret: secret.clone(),
         refresh_token: refresh.clone(),
     };
     let account = match verify_session(

@@ -269,6 +269,9 @@ pub fn revoke(state: &AppState, creds: Credentials, server: Option<Server>) {
 pub struct Discarded {
     pub server: Server,
     pub client_id: String,
+    /// The client secret the exchange used, if any: the revocation uses the
+    /// same, even if the administrator removed or changed the server since.
+    pub client_secret: Option<String>,
     pub refresh_token: String,
 }
 
@@ -283,22 +286,15 @@ pub fn revoke_discarded(state: &AppState, user_id: &str, discarded: Discarded) {
         let Discarded {
             server,
             client_id,
+            client_secret,
             refresh_token,
         } = discarded;
         let result = async {
-            let secret = client_secret(&state, &server, &client_id).await?;
-            // The registry entry changed since the sign-in (address or
-            // client): its secret is not for this grant, and without it the
-            // server would only count a rejected client.
-            if secret.is_none()
-                && server.has_secret
-                && server.client_id.as_deref() == Some(client_id.as_str())
-            {
-                return Ok(Err("server changed"));
-            }
+            // The address and the secret of the exchange: the grant belongs
+            // to them, whatever the registry says now.
             let as_client = AsClient {
                 http: &state.stalwart.http,
-                secret,
+                secret: client_secret,
                 client_id: &client_id,
                 refresh_token,
             };

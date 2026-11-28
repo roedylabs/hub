@@ -20,11 +20,17 @@ use roedy_hub_example::Example;
 use roedy_hub_server::{
     app::internal_router,
     auth::session,
-    db::repo::users::Role,
+    db::{
+        self,
+        repo::{stalwart_servers, users::Role},
+    },
     jobs::{quota_check, server_probe, token_refresh},
     rate_limit::Key,
     signing,
-    stalwart::token::REFRESH_FAILED_LIMIT,
+    stalwart::{
+        oauth,
+        token::{self, REFRESH_FAILED_LIMIT},
+    },
 };
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -986,6 +992,67 @@ async fn the_system_mail_sends_from_a_registry_server() {
     );
     let shown = hub.admin(Method::GET, "/admin/system-mail", None).await;
     assert_eq!(shown.json()["has_secret"], false);
+}
+
+#[tokio::test]
+async fn a_discarded_grant_is_revoked_even_after_its_server_is_removed() {
+    let hub = hub().await;
+    let fake = Server::start(confidential()).await;
+    let id = hub.registered(&fake).await;
+    let lookup = id.clone();
+    let server = db::call(&hub.env.state.db, move |conn| {
+        stalwart_servers::get(conn, &lookup)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    // A grant from an exchange the hub then does not keep …
+    let base = Url::parse(&fake.url).unwrap();
+    let tokens = oauth::request(
+        &hub.env.state.stalwart.http,
+        &base,
+        oauth::Client {
+            id: CLIENT_ID,
+            secret: Some(CLIENT_SECRET),
+        },
+        oauth::Grant::Code {
+            code: fake_stalwart::CODE,
+            verifier: fake_stalwart::VERIFIER,
+            redirect_uri: "https://app.example.com/oauth/callback",
+        },
+    )
+    .await
+    .unwrap();
+    let refresh = tokens.refresh_token.unwrap();
+    // … while the administrator removes the server: the secret of the
+    // exchange still revokes it.
+    let removed = hub
+        .admin(
+            Method::DELETE,
+            &format!("/admin/stalwart/servers/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    token::revoke_discarded(
+        &hub.env.state,
+        "someone",
+        token::Discarded {
+            server,
+            client_id: CLIENT_ID.into(),
+            client_secret: Some(CLIENT_SECRET.into()),
+            refresh_token: refresh.clone(),
+        },
+    );
+    wait_for(|| !fake.grant_exists(&refresh)).await;
+    let revocation = &fake.revocations()[0];
+    assert!(
+        revocation
+            .authorization
+            .as_deref()
+            .unwrap()
+            .starts_with("Basic ")
+    );
 }
 
 /// Waits up to 5 s for `done` (revocations run in their own task).
