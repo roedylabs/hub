@@ -165,13 +165,16 @@ export class AccountDetailPage {
     } catch (error) {
       this.#colorSaves--;
       if (this.#disposed) return;
-      if (this.account?.color === color) this.account = { ...this.account, color: this.#savedColor };
+      // The failed colour on screen, or the last save settled: back to what the server confirmed.
+      if (this.account && (this.account.color === color || this.#colorSaves === 0))
+        this.account = { ...this.account, color: this.#savedColor };
       ui.toasts.error(failText(error, m.acct_save_failed()));
       return;
     }
     this.#colorSaves--;
     if (this.#disposed) return;
-    if (this.account?.color === color) this.#replace(saved);
+    // Once no save is pending, the screen shows the colour the server holds.
+    if (this.account?.color === color || this.#colorSaves === 0) this.#replace(saved);
     else this.#savedColor = saved.color;
   }
 

@@ -241,9 +241,11 @@ export class ServersPage {
       this.rows = list.servers.filter((s) => !this.#removed.has(s.id));
       this.redirectUri = list.redirect_uri;
       this.systemServer = list.system_mail_server;
-      this.#policyConfirmed = policy.allow_custom_servers;
-      // A toggle during loading applies, not the older state.
-      if (policySeq === this.#policySeq) this.allowOwn = policy.allow_custom_servers;
+      // A toggle during loading applies, not the older state (nor as the confirmed one).
+      if (policySeq === this.#policySeq) {
+        this.#policyConfirmed = policy.allow_custom_servers;
+        this.allowOwn = policy.allow_custom_servers;
+      }
       this.status = 'ready';
       const ids = list.servers.map((s) => s.id);
       for (const id of this.diag) if (!ids.includes(id) || this.#removed.has(id)) this.diag.delete(id);

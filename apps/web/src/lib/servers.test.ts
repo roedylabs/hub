@@ -282,6 +282,25 @@ describe('removal and policy', () => {
     expect(p.allowOwn).toBe(true);
   });
 
+  it('does not take an older policy read as confirmed after a toggle during loading', async () => {
+    let release = (): void => {};
+    const pending = new Promise<{ body: unknown }>((resolve) => (release = () => resolve({ body: LIST })));
+    const { p } = await loaded({
+      'GET admin/stalwart/servers': [{ body: LIST }, () => pending],
+      'PUT admin/stalwart/policy': [{ body: { allow_custom_servers: true } }, { status: 500 }],
+    });
+    const reload = p.load();
+    p.toggleOwn();
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Other servers allowed'));
+    release();
+    await reload;
+    expect(p.allowOwn).toBe(true);
+    // The failed "off" goes back to the confirmed "on", not to the older read "off".
+    p.toggleOwn();
+    await vi.waitFor(() => expect(ui.toast?.error).toBe(true));
+    expect(p.allowOwn).toBe(true);
+  });
+
   it('returns to the confirmed policy after two failed toggles', async () => {
     const { p } = await loaded({ 'PUT admin/stalwart/policy': [{ status: 403 }, { status: 403 }] });
     p.toggleOwn();

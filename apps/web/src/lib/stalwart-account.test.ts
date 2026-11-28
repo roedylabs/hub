@@ -161,6 +161,21 @@ describe('One Stalwart account', () => {
     expect(p.account?.color).toBe(0);
   });
 
+  it('shows the colour a later-settling save confirmed once no save is pending', async () => {
+    const { p } = await page(accountOf({ color: 0 }));
+    const first = later<{ status: number; body: unknown }>();
+    const second = later<{ status: number; body: unknown }>();
+    mockApi({ 'PATCH stalwart/accounts/01JACCT1': [() => first.promise, () => second.promise] });
+    const one = p.setColor(1);
+    const two = p.setColor(2);
+    second.resolve({ status: 500, body: {} });
+    await two;
+    expect(p.account?.color).toBe(0);
+    first.resolve({ status: 200, body: accountOf({ color: 1 }) });
+    await one;
+    expect(p.account?.color).toBe(1);
+  });
+
   it('a check that finds a new sign-in needed keeps a colour saved meanwhile', async () => {
     const { p } = await page(accountOf({ color: 0 }));
     const checked = later<{ status: number; body: unknown }>();
