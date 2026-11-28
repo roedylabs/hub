@@ -46,8 +46,10 @@ case $cmd in
 pack)
   dir=${2:?usage: scripts/packages.sh pack <dir>}
   # The directory is emptied first: only one that holds nothing but tarballs.
-  if [[ -d $dir ]] && find "$dir" -mindepth 1 ! -name '*.tgz' | grep -q .; then
-    die "$dir holds more than tarballs – pick an empty directory"
+  if [[ -d $dir ]]; then
+    # Fails closed: an unreadable directory stops here as well.
+    other=$(find "$dir" -mindepth 1 ! -name '*.tgz' -print -quit) || die "cannot read $dir"
+    [[ -z $other ]] || die "$dir holds more than tarballs ($other) – pick an empty directory"
   fi
   rm -rf "$dir"
   mkdir -p "$dir"

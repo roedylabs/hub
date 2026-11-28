@@ -6,10 +6,13 @@ sending a message (`Identity/get`, `Mailbox/get`, `Email/set` and
 `EmailSubmission/set` with references to created objects). Roedy Hub sends
 its system mails with it.
 
-- The caller passes the HTTP client (`reqwest`, without default features);
-  the crate follows no redirects.
-- Credentials only go to the server's origin: redirects of the session and
-  the `apiUrl` must stay there.
+- The caller passes the HTTP client (`reqwest`, without default features).
+  It must not follow redirects itself
+  (`.redirect(reqwest::redirect::Policy::none())`): the crate follows them,
+  only on the server's origin (three at most), so that credentials only go
+  there – redirects of the session and the `apiUrl` must stay on it. With
+  reqwest's default policy a redirect to another origin would be followed
+  before the crate could check it.
 - Responses are read up to 256 KiB at most.
 - Errors and `Debug` never contain passwords or tokens.
 
