@@ -390,6 +390,38 @@ describe('Administration › Email page', () => {
     await vi.waitFor(() => expect(view.queryByText('Connected')).toBeNull());
   });
 
+  it('a save that starts during the account reload wins over the reload', async () => {
+    const moved = [{ ...SERVERS[0], url: 'https://mail.example.net', host: 'mail.example.net' }];
+    let reloaded: (reply: { body: unknown }) => void = () => {};
+    const view = renderPage(STORED, {
+      'GET admin/system-mail': [{ body: STORED }, () => new Promise((resolve) => (reloaded = resolve))],
+      'GET admin/stalwart/servers': [
+        { body: { ...REGISTRY.body, servers: SERVERS } },
+        { body: { ...REGISTRY.body, servers: moved } },
+      ],
+      'PUT admin/system-mail': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+        },
+        { body: { ...STORED, sender_name: 'Example' } },
+      ],
+    });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'new-pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() => expect(view.getByText('JMAP session via mail.example.net')).toBeInTheDocument());
+    // The password for the new address and a saved sender name, while the account reload is still under way.
+    await fireEvent.input(field('Password'), { target: { value: 'pw-2' } });
+    await fireEvent.input(field('Sender name'), { target: { value: 'Example' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Changes saved'));
+    // The older reload arrives last and changes nothing.
+    reloaded({ body: { ...STORED, has_secret: false, status: 'unchecked', checked_at: null } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(view.getByText('Connected')).toBeInTheDocument();
+  });
+
   it('a late refusal for a server no longer chosen keeps the secret entered for the new one', async () => {
     let refuse: (reply: { status: number; body: unknown }) => void = () => {};
     renderPage(STORED, {

@@ -867,11 +867,13 @@ export class SystemMailPage {
           this.errText = '';
           this.identities = [];
         }
-        return api<SystemMail>('GET', 'admin/system-mail');
+        // A save that starts meanwhile answers with a newer account than this request.
+        const saveId = this.#saveId;
+        return api<SystemMail>('GET', 'admin/system-mail').then((view) => ({ view, saveId }));
       })
-      .then((view) => {
-        // "Connected" and the identities were of the previous address.
-        if (view && !this.#disposed && !this.saving) this.#adopt(view);
+      .then((reloaded) => {
+        if (!reloaded || this.#disposed || this.saving || this.#saveId !== reloaded.saveId) return;
+        this.#adopt(reloaded.view);
       })
       .catch(() => {});
   }
