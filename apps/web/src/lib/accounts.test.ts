@@ -152,4 +152,22 @@ describe('Account › Accounts', () => {
     expect(p.status).toBe('failed');
     expect(p.failure).not.toBe('');
   });
+
+  it('does not leave for the server once the page is gone, and keeps no attempt', async () => {
+    const { p } = await page(true);
+    const open = vi.spyOn(signInNav, 'open').mockImplementation(() => {});
+    let started!: (answer: { body: unknown }) => void;
+    mockApi({ 'POST stalwart/sign-in': [() => new Promise((resolve) => (started = resolve))] });
+    p.update({ email: 'sam@example.com' });
+    const submit = p.submit();
+    expect(p.form?.busy).toBe('open');
+    // Inputs while the request runs are not taken (the view makes the fields read-only meanwhile).
+    p.update({ email: 'other@example.com' });
+    expect(p.form?.email).toBe('sam@example.com');
+    p.dispose();
+    started({ body: { authorize_url: 'https://mail.example.com/authorize' } });
+    await submit;
+    expect(open).not.toHaveBeenCalled();
+    expect(lastAttempt()).toBeNull();
+  });
 });

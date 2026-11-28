@@ -47,6 +47,9 @@ const RETRY = new Set([
   'check_failed',
 ]);
 
+/** Temporary failures, also of starting the sign-in again: "Try again" later can help. */
+const TEMPORARY = new Set(['offline', 'rate_limited', 'sign_in_unavailable']);
+
 /** The parameters of the return, as the server sent them. */
 export interface Returned {
   state: string;
@@ -75,6 +78,7 @@ export class CallbackFlow {
   /** Where "Back" leads. */
   returnTo = $state(ACCOUNTS_PATH);
   readonly attempt: SignInAttempt | null;
+  #disposed = false;
 
   constructor(nav: CallbackNav, attempt: SignInAttempt | null = lastAttempt()) {
     this.nav = nav;
@@ -89,7 +93,12 @@ export class CallbackFlow {
 
   /** "Try again" is offered. */
   get canRetry(): boolean {
-    return !!this.attempt && (RETRY.has(this.code) || this.code === 'offline');
+    return !!this.attempt && (RETRY.has(this.code) || TEMPORARY.has(this.code));
+  }
+
+  /** The page is gone: an answer that arrives later neither shows a toast nor navigates. */
+  dispose(): void {
+    this.#disposed = true;
   }
 
   async run(url: URL): Promise<void> {
@@ -108,6 +117,7 @@ export class CallbackFlow {
     try {
       const done = await api<SignInComplete>('POST', 'stalwart/sign-in/complete', body);
       forgetAttempt();
+      if (this.#disposed) return;
       const to = safeNext(done.return_to) ?? ACCOUNTS_PATH;
       ui.toasts.show(
         this.attempt?.account_id
@@ -121,6 +131,7 @@ export class CallbackFlow {
   }
 
   #fail(error: unknown): void {
+    if (this.#disposed) return;
     if (error instanceof ApiError) {
       const back = safeNext(typeof error.body.return_to === 'string' ? error.body.return_to : null);
       if (back) this.returnTo = back;
@@ -147,8 +158,9 @@ export class CallbackFlow {
     if (!attempt || this.retrying) return;
     this.retrying = true;
     try {
-      await startSignIn(attempt);
+      await startSignIn(attempt, () => !this.#disposed);
     } catch (error) {
+      if (this.#disposed) return;
       this.retrying = false;
       this.code = error instanceof ApiError ? error.code : 'offline';
       this.error = accountError(error, { host: this.host, email: attempt.email ?? '' });

@@ -66,7 +66,10 @@
       : undefined,
   );
 
-  onMount(() => void flow.run(new URL(location.href)));
+  onMount(() => {
+    void flow.run(new URL(location.href));
+    return () => flow.dispose();
+  });
 </script>
 
 {#snippet text()}

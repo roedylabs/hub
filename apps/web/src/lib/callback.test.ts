@@ -144,4 +144,37 @@ describe('Return from the sign-in page', () => {
     expect(f.error?.title).toBe('No connection');
     expect(f.canRetry).toBe(true);
   });
+
+  it('"Try again" stays after a temporary failure to start the sign-in', async () => {
+    const { f } = flow();
+    mockApi({
+      'POST stalwart/sign-in/complete': [{ status: 410, body: { error: 'sign_in_expired', return_to: '/mail/' } }],
+    });
+    await f.run(at('state=s&code=c'));
+    mockApi({
+      'POST stalwart/sign-in': [
+        { status: 429, body: { error: 'rate_limited', retry_after: 5 } },
+        { status: 502, body: { error: 'sign_in_unavailable', reason: 'unreachable' } },
+        { status: 409, body: { error: 'blocked' } },
+      ],
+    });
+    await f.retry();
+    expect(f.canRetry).toBe(true);
+    await f.retry();
+    expect(f.canRetry).toBe(true);
+    await f.retry();
+    expect(f.canRetry).toBe(false);
+  });
+
+  it('a page that is gone neither shows the toast nor navigates', async () => {
+    const { f, nav } = flow();
+    let done!: (answer: { status?: number; body: unknown }) => void;
+    mockApi({ 'POST stalwart/sign-in/complete': [() => new Promise((resolve) => (done = resolve))] });
+    const run = f.run(at('state=s&code=c'));
+    f.dispose();
+    done({ body: { account: accountOf(), return_to: '/mail/' } });
+    await run;
+    expect(nav.leave).not.toHaveBeenCalled();
+    expect(ui.toast).toBeNull();
+  });
 });

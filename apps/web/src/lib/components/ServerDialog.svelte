@@ -8,12 +8,15 @@
 
   "Automatic" shows the administrator's credentials while the server has no
   client, after "Register again" or with a new address; saving then registers
-  the client. With a stored client it shows "OAuth client set up".
+  the client. With a stored client it shows "OAuth client set up". "Register
+  again" puts the focus on the admin user, "Keep client" back on "Register
+  again". While saving the fields are read-only (the request carries them).
 
   Taken over from Roedy Mail (`apps/web/src/lib/components/ServerDialog.svelte`)
   with the registration on saving instead of its own button before saving.
 -->
 <script lang="ts">
+  import { tick } from 'svelte';
   import { dialogDrag, focustrap, Icon, radiogroup, scrollbar, tooltip, type KeyInput } from '@roedy/ui';
   import { m } from '#lib/paraglide/messages.js';
   import { MAX_LABEL, type ServerDialogValues } from '#lib/servers.svelte.ts';
@@ -27,6 +30,20 @@
 
   const uid = $props.id();
   let labelInput: HTMLInputElement | undefined = $state();
+  let userInput: HTMLInputElement | undefined = $state();
+  let againButton: HTMLButtonElement | undefined = $state();
+
+  /** "Register again": into the credentials that replace the button. */
+  function again(): void {
+    sd.regAgain();
+    void tick().then(() => userInput?.focus());
+  }
+
+  /** "Keep client": back to "Register again" in the box that replaces the credentials. */
+  function keep(): void {
+    sd.keep();
+    void tick().then(() => againButton?.focus());
+  }
 
   // On desktop straight into the label; on close back to where focus was.
   $effect(() => {
@@ -59,10 +76,13 @@
   <div class="doms" class:bad={sd.hasEDom}>
     {#each sd.doms as d (d.d)}
       <span class="dom">
-        {d.d}<button type="button" aria-label={d.rmLabel} onclick={d.rm}><Icon name="ti-x" /></button>
+        {d.d}<button type="button" aria-label={d.rmLabel} aria-disabled={sd.saving} onclick={d.rm}>
+          <Icon name="ti-x" />
+        </button>
       </span>
     {/each}
     <input
+      readonly={sd.saving}
       bind:value={() => sd.domIn, sd.onDomIn}
       onkeydown={key(sd.domKey)}
       onblur={sd.domBlur}
@@ -93,11 +113,20 @@
             <div class="done-sub">{sd.aDoneSub}</div>
           </div>
           {#if isMobile}
-            <button type="button" class="again-icon" aria-label={m.srv_oa_again()} onclick={sd.regAgain}>
+            <button
+              bind:this={againButton}
+              type="button"
+              class="again-icon"
+              aria-label={m.srv_oa_again()}
+              aria-disabled={sd.saving}
+              onclick={again}
+            >
               <Icon name="ti-refresh" />
             </button>
           {:else}
-            <button type="button" class="again" onclick={sd.regAgain}>{m.srv_oa_again()}</button>
+            <button bind:this={againButton} type="button" class="again" aria-disabled={sd.saving} onclick={again}>
+              {m.srv_oa_again()}
+            </button>
           {/if}
         </div>
       {/if}
@@ -106,7 +135,9 @@
         {#if sd.moved}{@render note(m.srv_oa_moved())}{/if}
         <div class="pair">
           <input
+            bind:this={userInput}
             class="pill-input"
+            readonly={sd.saving}
             bind:value={() => sd.au, sd.onAu}
             placeholder={m.srv_oa_user()}
             aria-label={m.srv_oa_user_label()}
@@ -118,6 +149,7 @@
           <input
             class="pill-input"
             type="password"
+            readonly={sd.saving}
             bind:value={() => sd.ap, sd.onAp}
             placeholder={m.srv_oa_password()}
             aria-label={m.srv_oa_password_label()}
@@ -141,7 +173,7 @@
         {#if sd.regFailed}{@render note(m.srv_reg_saved())}{/if}
         {#if sd.hasLinkHint}{@render note(sd.linkHint)}{/if}
         {#if sd.canKeep}
-          <button type="button" class="keep" onclick={sd.keep}>{m.srv_oa_keep()}</button>
+          <button type="button" class="keep" aria-disabled={sd.saving} onclick={keep}>{m.srv_oa_keep()}</button>
         {/if}
       {/if}
     {/if}
@@ -149,6 +181,7 @@
       <div class="pair">
         <input
           class="pill-input"
+          readonly={sd.saving}
           bind:value={() => sd.cid, sd.onCid}
           placeholder={m.srv_cid()}
           aria-label={m.srv_cid()}
@@ -162,6 +195,7 @@
         <div class="secret">
           <input
             class="pill-input"
+            readonly={sd.saving}
             type={sd.showSec ? 'text' : 'password'}
             bind:value={() => sd.csec, sd.onCsec}
             placeholder={m.srv_secret()}
@@ -206,7 +240,16 @@
 {#snippet oaSwitch()}
   <div role="radiogroup" use:radiogroup aria-labelledby="{uid}-oa" class="seg">
     {#each sd.oaOpts as o (o.label)}
-      <button type="button" role="radio" aria-checked={o.on} class:on={o.on} onclick={o.onClick}>{o.label}</button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={o.on}
+        aria-disabled={sd.saving}
+        class:on={o.on}
+        onclick={o.onClick}
+      >
+        {o.label}
+      </button>
     {/each}
   </div>
 {/snippet}
@@ -246,6 +289,7 @@
               bind:this={labelInput}
               class="box-input"
               class:bad={sd.hasELabel}
+              readonly={sd.saving}
               bind:value={() => sd.label, sd.onLabel}
               onkeydown={key(sd.key)}
               placeholder={m.srv_label_placeholder()}
@@ -260,6 +304,7 @@
               class="box-input url"
               class:bad={sd.hasEUrl}
               type="url"
+              readonly={sd.saving}
               bind:value={() => sd.url, sd.onUrl}
               onkeydown={key(sd.key)}
               placeholder={m.srv_url_placeholder()}
@@ -301,6 +346,7 @@
       <input
         class="box-input m"
         class:bad={sd.hasELabel}
+        readonly={sd.saving}
         bind:value={() => sd.label, sd.onLabel}
         placeholder={m.srv_label_placeholder()}
         maxlength={MAX_LABEL}
@@ -315,6 +361,7 @@
         class="box-input m url"
         class:bad={sd.hasEUrl}
         type="url"
+        readonly={sd.saving}
         bind:value={() => sd.url, sd.onUrl}
         placeholder={m.srv_url_placeholder()}
         aria-invalid={sd.hasEUrl}
@@ -694,6 +741,12 @@
   .m-body .dom button:hover {
     background: none;
     color: var(--mfg);
+  }
+
+  /* The field inside has no ring of its own: the box shows the focus. */
+  .doms:focus-within {
+    border-color: var(--acc);
+    box-shadow: 0 0 0 3px var(--accsoft);
   }
 
   .doms input {

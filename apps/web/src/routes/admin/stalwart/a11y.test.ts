@@ -6,7 +6,7 @@
  * it next to the page. Colour contrast is left to the browser audit
  * (scripts/a11y/audit.mjs).
  */
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ui } from '@roedy/ui';
 import ServerDialog from '#lib/components/ServerDialog.svelte';
@@ -85,7 +85,12 @@ const STATES: Record<string, { api: () => ApiRoutes; prepare?: () => Promise<unk
     prepare: async () => {
       await ready();
       await fireEvent.click(screen.getAllByRole('button', { name: 'Test connection' })[0] as HTMLElement);
-      await vi.waitFor(() => expect(screen.getByRole('region')).toBeInTheDocument());
+      // The finished diagnosis, not its "Testing …" state.
+      await vi.waitFor(() => {
+        const region = screen.getByRole('region');
+        expect(within(region).queryByRole('status')).toBeNull();
+        expect(within(region).getAllByText(/./).length).toBeGreaterThan(1);
+      });
     },
   },
   empty: { api: () => routes([]), prepare: ready },
@@ -130,14 +135,17 @@ describe('Stalwart server dialog – axe', () => {
     manual: [DEV, (p) => p.setOa('manual')],
   };
   for (const mobile of [false, true])
-    for (const [name, [server, change]] of Object.entries(CASES))
-      it(`${name}, ${mobile ? 'mobile' : 'desktop'}`, async () => {
-        signIn('admin');
-        setPhone(mobile);
-        const p = dialog(server);
-        await change(p);
-        const view = render(ServerDialog, { sd: dialogValues(p) as ServerDialogValues, isMobile: mobile });
-        expect(await violations(view)).toEqual([]);
-        expect(ui.toast).toBeNull();
-      });
+    for (const mode of ['light', 'dark'] as const)
+      for (const [name, [server, change]] of Object.entries(CASES))
+        it(`${name}, ${mobile ? 'mobile' : 'desktop'}, ${mode}`, async () => {
+          signIn('admin');
+          document.documentElement.dataset.mode = mode;
+          prefs.set({ mode });
+          setPhone(mobile);
+          const p = dialog(server);
+          await change(p);
+          const view = render(ServerDialog, { sd: dialogValues(p) as ServerDialogValues, isMobile: mobile });
+          expect(await violations(view)).toEqual([]);
+          expect(ui.toast).toBeNull();
+        });
 });

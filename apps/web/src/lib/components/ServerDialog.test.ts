@@ -120,8 +120,7 @@ describe('ServerDialog', () => {
     const { p, view, sync } = open(S2, false, true);
     p.setAdminUser('admin');
     p.setAdminPassword('pw');
-    p.regThrottled = null;
-    p.regLock.start('reg', 30);
+    p.regLock.start('hub', 30);
     p.dialog = { ...(p.dialog as NonNullable<typeof p.dialog>), regFailed: true, aErr: 'Rejected.' };
     await sync();
     expect(view.getByText('Too many attempts.')).toBeInTheDocument();

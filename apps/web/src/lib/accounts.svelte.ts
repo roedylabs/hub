@@ -282,12 +282,15 @@ export class AccountsPage {
     if (this.method === 'signin' && target.server) {
       this.form = { ...form, busy: 'open', error: null };
       try {
-        await startSignIn({
-          server_id: target.server.id,
-          email,
-          return_to: this.next ?? '/account/accounts',
-          host: this.host,
-        });
+        await startSignIn(
+          {
+            server_id: target.server.id,
+            email,
+            return_to: this.next ?? '/account/accounts',
+            host: this.host,
+          },
+          () => !this.#disposed,
+        );
         // The browser leaves for the sign-in page; the form stays busy until then.
       } catch (error) {
         this.#failed(error, c, false);

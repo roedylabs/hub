@@ -75,6 +75,10 @@ export class AccountDetailPage {
   signIn = $state<{ busy: boolean; error: AccountError | null } | null>(null);
   readonly clock = new Countdown<'rate'>();
   #disposed = false;
+  /** Colour the server last confirmed; the one on screen differs while a save runs. */
+  #savedColor = 0;
+  /** Colour saves in flight. */
+  #colorSaves = 0;
 
   constructor(id: string, nav: AccountNav) {
     this.id = id;
@@ -92,6 +96,7 @@ export class AccountDetailPage {
       if (this.#disposed) return;
       this.servers = registry.servers;
       this.account = list.accounts.find((a) => a.id === this.id) ?? null;
+      if (this.account) this.#savedColor = this.account.color;
       this.status = this.account ? 'ready' : 'missing';
     } catch (error) {
       if (this.#disposed) return;
@@ -139,23 +144,35 @@ export class AccountDetailPage {
     return CAPABILITIES.filter(([urn]) => caps.includes(urn)).map(([, kind]) => kind);
   }
 
+  /** The account as the server answered; a colour still being saved stays on screen. */
   #replace(account: StalwartAccount): void {
-    this.account = account;
+    this.#savedColor = account.color;
+    this.account = this.#colorSaves > 0 && this.account ? { ...account, color: this.account.color } : account;
   }
 
-  /** Colour of the account (index into `MA_COLORS`). */
+  /**
+   * Colour of the account (index into `MA_COLORS`). A failed save goes back to the colour the server confirmed
+   * last – not to the one before the click, which may itself not have been saved.
+   */
   async setColor(color: number): Promise<void> {
     const before = this.account;
     if (!before || before.color === color) return;
     this.account = { ...before, color };
+    this.#colorSaves++;
+    let saved: StalwartAccount;
     try {
-      const saved = await api<StalwartAccount>('PATCH', `stalwart/accounts/${this.id}`, { color });
-      if (!this.#disposed && this.account?.color === color) this.#replace(saved);
+      saved = await api<StalwartAccount>('PATCH', `stalwart/accounts/${this.id}`, { color });
     } catch (error) {
+      this.#colorSaves--;
       if (this.#disposed) return;
-      if (this.account?.color === color) this.account = { ...this.account, color: before.color };
+      if (this.account?.color === color) this.account = { ...this.account, color: this.#savedColor };
       ui.toasts.error(failText(error, m.acct_save_failed()));
+      return;
     }
+    this.#colorSaves--;
+    if (this.#disposed) return;
+    if (this.account?.color === color) this.#replace(saved);
+    else this.#savedColor = saved.color;
   }
 
   /** "Make default". */
@@ -194,8 +211,10 @@ export class AccountDetailPage {
         return;
       }
       // The broker found the account needs a new sign-in: the list says so too.
-      if (isApiError(error, 409, 'needs_sign_in')) this.account = { ...a, state: 'needs_sign_in' };
-      if (isApiError(error, 409, 'blocked')) this.account = { ...a, state: 'blocked' };
+      // Only the state: colour or default may have changed meanwhile.
+      if (this.account && isApiError(error, 409, 'needs_sign_in'))
+        this.account = { ...this.account, state: 'needs_sign_in' };
+      if (this.account && isApiError(error, 409, 'blocked')) this.account = { ...this.account, state: 'blocked' };
       this.checked = accountError(error, { host: this.host, email: a.email }, { token: a.auth === 'token' });
     } finally {
       if (!this.#disposed) this.checking = false;
@@ -210,10 +229,13 @@ export class AccountDetailPage {
       this.reauth ??= { token: '', showToken: false, busy: false, error: null };
       return;
     }
-    if (this.again !== 'signin' || this.signIn?.busy) return;
+    if (this.again !== 'signin' || this.signIn?.busy || this.clock.left('rate') > 0) return;
     this.signIn = { busy: true, error: null };
     try {
-      await startSignIn({ account_id: a.id, return_to: `/account/accounts/${a.id}`, host: this.host });
+      await startSignIn(
+        { account_id: a.id, return_to: `/account/accounts/${a.id}`, host: this.host },
+        () => !this.#disposed,
+      );
     } catch (error) {
       if (this.#disposed) return;
       const failure = accountError(error, { host: this.host, email: a.email });

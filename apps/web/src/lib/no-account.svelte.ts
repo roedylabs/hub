@@ -54,10 +54,12 @@ export class NoAccountPage {
     } catch {
       // Unknown: the page offers adding one.
     }
+    if (this.#disposed) return;
+    // The page shows at once; the app's name follows when it is there (it only refines the text).
+    this.ready = true;
     const list = await apps;
     if (this.#disposed) return;
     this.app = list?.apps.find((a) => a.slug === slug)?.name ?? null;
-    this.ready = true;
   }
 
   dispose(): void {

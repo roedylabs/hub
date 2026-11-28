@@ -96,7 +96,7 @@ impl Hub {
             .admin(
                 Method::POST,
                 &format!("/admin/stalwart/servers/{id}/register-client"),
-                Some(json!({ "username": ADMIN, "password": ADMIN_PASSWORD })),
+                Some(json!({ "url": fake.url, "username": ADMIN, "password": ADMIN_PASSWORD })),
             )
             .await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -225,11 +225,24 @@ async fn administrators_keep_the_registry() {
         .admin(
             Method::POST,
             &format!("/admin/stalwart/servers/{id}/register-client"),
-            Some(json!({ "username": ADMIN, "password": "wrong" })),
+            Some(json!({ "url": fake.url, "username": ADMIN, "password": "wrong" })),
         )
         .await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(reply.json()["reason"], "auth_failed");
+    // Credentials only go to the address the administrator saw: a server
+    // moved meanwhile gets nothing.
+    let before = fake.registrations().len();
+    let reply = hub
+        .admin(
+            Method::POST,
+            &format!("/admin/stalwart/servers/{id}/register-client"),
+            Some(json!({ "url": "https://elsewhere.example.com", "username": ADMIN, "password": ADMIN_PASSWORD })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert_eq!(reply.json()["error"], "server_changed");
+    assert_eq!(fake.registrations().len(), before);
 
     // Diagnosis: session, CORS for the hub's origin and OAuth.
     let tested = hub

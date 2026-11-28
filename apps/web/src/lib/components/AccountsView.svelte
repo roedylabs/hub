@@ -312,6 +312,7 @@
                   class:bad={err?.field === 'email'}
                   type="email"
                   value={form.email}
+                  readonly={!!form.busy}
                   oninput={(e: FieldEvent) => p.update({ email: e.currentTarget.value })}
                   onkeydown={key}
                   placeholder={m.acct_email_placeholder()}
@@ -349,6 +350,7 @@
                     class:bad={err?.field === 'url'}
                     type="url"
                     value={form.url}
+                    readonly={!!form.busy}
                     oninput={(e: FieldEvent) => p.update({ url: e.currentTarget.value })}
                     onkeydown={key}
                     placeholder={m.acct_url_placeholder()}
@@ -365,7 +367,14 @@
                   <span class="f-label" id="{uid}-method">{m.acct_method()}</span>
                   <div role="radiogroup" use:radiogroup aria-labelledby="{uid}-method" class="seg">
                     {#each methods as o (o.value)}
-                      <button type="button" role="radio" aria-checked={o.on} class:on={o.on} onclick={o.onClick}>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={o.on}
+                        class:on={o.on}
+                        disabled={!!form.busy}
+                        onclick={o.onClick}
+                      >
                         {o.label}
                       </button>
                     {/each}
@@ -381,6 +390,7 @@
                       class:bad={err?.field === 'token'}
                       type={form.showToken ? 'text' : 'password'}
                       value={form.token}
+                      readonly={!!form.busy}
                       oninput={(e: FieldEvent) => p.update({ token: e.currentTarget.value })}
                       onkeydown={key}
                       aria-invalid={err?.field === 'token' ? 'true' : undefined}
@@ -392,6 +402,7 @@
                     <button
                       type="button"
                       class="eye"
+                      disabled={!!form.busy}
                       onclick={() => p.update({ showToken: !form.showToken })}
                       aria-label={form.showToken ? m.acct_hide() : m.acct_show()}
                       aria-pressed={form.showToken}
@@ -836,6 +847,12 @@
     transition:
       background-color var(--dur, 220ms),
       color var(--dur, 220ms);
+  }
+
+  .eye:disabled,
+  .seg button:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .eye:hover {

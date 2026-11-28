@@ -145,6 +145,13 @@ describe('Stalwart servers page', () => {
     expect(view.getByText('Allow other servers')).toBeInTheDocument();
     expect(view.queryByText('2 servers')).toBeNull();
     expect(view.getAllByRole('button', { name: 'Add server' })).toHaveLength(1);
+    // The system mail's server and its stored diagnosis, as on the desktop.
+    expect(view.getByText('System emails')).toBeInTheDocument();
+    const show = view.getByRole('button', { name: 'Show diagnostics' });
+    expect(show).toHaveAttribute('aria-expanded', 'false');
+    await fireEvent.click(show);
+    expect(view.getByRole('button', { name: 'Hide diagnostics' })).toHaveAttribute('aria-expanded', 'true');
+    expect(view.getByRole('region')).toBeInTheDocument();
   });
 
   it('shows the skeleton until the first response, without list and policy', () => {

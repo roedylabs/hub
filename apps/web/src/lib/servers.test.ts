@@ -2,7 +2,7 @@
 // (`apps/web/src/lib/servers.test.ts`) where the flow is the same; the registration after saving is the hub's own.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ui } from '@roedy/ui';
-import { dialogValues, ServersPage, serversValues, type AdminServer } from '#lib/servers.svelte.ts';
+import { dialogValues, ServersPage, serversValues, testText, type AdminServer } from '#lib/servers.svelte.ts';
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 
@@ -157,7 +157,7 @@ describe('test connection', () => {
   it('reports a successful test and runs queued tests one after the other', async () => {
     const { p, calls } = await loaded({
       'POST admin/stalwart/servers/s1/test': [tested(S1)],
-      'POST admin/stalwart/servers/sdev/test': [tested(DEV, { reach: 'ok', cors: 'ok' })],
+      'POST admin/stalwart/servers/sdev/test': [tested(DEV, { reach: 'ok', cors: 'ok', oauth: 'ok' })],
     });
     const first = p.test('s1');
     void p.test('sdev', true);
@@ -175,6 +175,52 @@ describe('test connection', () => {
     await p.test('sdev');
     expect(p.diag.has('sdev')).toBe(false);
     expect(ui.toast?.error).toBe(true);
+  });
+
+  it('leaves a diagnosis the user toggled during a failed test as it is', async () => {
+    let fail: (reply: { status: number }) => void = () => {};
+    const { p } = await loaded({
+      'POST admin/stalwart/servers/sdev/test': [() => new Promise((resolve) => (fail = resolve))],
+    });
+    const test = p.test('sdev');
+    // Closed and opened again while the test runs.
+    p.toggleDiag('sdev');
+    p.toggleDiag('sdev');
+    fail({ status: 500 });
+    await test;
+    expect(p.diag.has('sdev')).toBe(true);
+  });
+
+  it('says "connection OK" only when every check passed', () => {
+    const at = { ...S1, reach: 'ok', cors: 'ok', oauth: 'ok' } as const;
+    expect(testText(at, {})).toBe('VPS 1: connection OK');
+    expect(testText({ ...at, oauth: 'unk' }, {})).toBe('VPS 1: not everything could be checked');
+    expect(testText({ ...at, cors: 'err' }, {})).toBe('VPS 1: test finished with warnings');
+    expect(testText(at, { oauth: 'throttled' })).toBe('VPS 1: test finished with warnings');
+  });
+
+  it('skips queued servers removed in the meantime', async () => {
+    const S3: AdminServer = { ...DEV, id: 's3', label: 'Third', url: 'https://mail.s3.test', host: 'mail.s3.test' };
+    let release: (reply: ReturnType<typeof tested>) => void = () => {};
+    const { p, calls } = await loaded({
+      'POST admin/stalwart/servers/s1/test': [() => new Promise((resolve) => (release = resolve))],
+      'POST admin/stalwart/servers/s3/test': [tested(S3)],
+    });
+    p.rows = [...p.rows, S3];
+    const first = p.test('s1');
+    void p.test('sdev', true);
+    void p.test('s3', true);
+    // Another server's test waits: its buttons say so.
+    const row = serversValues(p, ctx, NOW).srvRows.find((r) => r.id === 'sdev');
+    expect(row).toMatchObject({ busy: false, testDis: true });
+    p.rows = p.rows.filter((s) => s.id !== 'sdev');
+    release(tested(S1));
+    await first;
+    await vi.waitFor(() => expect(p.testing).toBeNull());
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.path)).toEqual([
+      'admin/stalwart/servers/s1/test',
+      'admin/stalwart/servers/s3/test',
+    ]);
   });
 });
 
@@ -212,6 +258,7 @@ describe('removal and policy', () => {
 
   it('toggles the policy at once and takes it back on errors, as the server knows it', async () => {
     const { p, calls } = await loaded({
+      'GET admin/stalwart/policy': [{ body: POLICY }, { body: { allow_custom_servers: true } }],
       'PUT admin/stalwart/policy': [{ body: { allow_custom_servers: true } }, { status: 500 }],
     });
     p.toggleOwn();
@@ -226,6 +273,36 @@ describe('removal and policy', () => {
       { allow_custom_servers: true },
       { allow_custom_servers: false },
     ]);
+    // Back to the confirmed "on", not to the opposite of the failed "off"; the reload confirms it.
+    expect(p.allowOwn).toBe(true);
+    await vi.waitFor(() =>
+      expect(calls.filter((c) => c.path === 'admin/stalwart/policy' && c.method === 'GET')).toHaveLength(2),
+    );
+    await vi.waitFor(() => expect(p.status).toBe('ready'));
+    expect(p.allowOwn).toBe(true);
+  });
+
+  it('returns to the confirmed policy after two failed toggles', async () => {
+    const { p } = await loaded({ 'PUT admin/stalwart/policy': [{ status: 403 }, { status: 403 }] });
+    p.toggleOwn();
+    p.toggleOwn();
+    await vi.waitFor(() => expect(ui.toast?.error).toBe(true));
+    await vi.waitFor(() => expect(p.allowOwn).toBe(false));
+  });
+
+  it('does not bring back a server removed while the list was loading', async () => {
+    let list: (reply: { body: typeof LIST }) => void = () => {};
+    const { p } = await loaded({
+      'GET admin/stalwart/servers': [{ body: LIST }, () => new Promise((resolve) => (list = resolve))],
+      'DELETE admin/stalwart/servers/sdev': [{ status: 204 }],
+    });
+    const reload = p.load();
+    p.remove(DEV);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(p.rows.map((s) => s.id)).toEqual(['s1']));
+    list({ body: LIST });
+    await reload;
+    expect(p.rows.map((s) => s.id)).toEqual(['s1']);
   });
 });
 
@@ -304,7 +381,9 @@ describe('dialog', () => {
     await p.save();
     const posts = calls.filter((c) => c.method === 'POST').map((c) => c.path);
     expect(posts.slice(0, 2)).toEqual(['admin/stalwart/servers', 'admin/stalwart/servers/n1/register-client']);
+    // With the address the dialog saved: the hub sends the credentials only there.
     expect(calls.find((c) => c.path.endsWith('register-client'))?.body).toEqual({
+      url: 'https://mail.new.test',
       username: 'admin',
       password: 'app pw',
     });
@@ -397,8 +476,77 @@ describe('dialog', () => {
     p.regLock.stop();
   });
 
+  it('keeps one server’s throttling while registering at another', async () => {
+    const { p } = await loaded({
+      'PATCH admin/stalwart/servers/sdev': [{ body: DEV }],
+      'PATCH admin/stalwart/servers/s1': [{ body: S1 }],
+      'POST admin/stalwart/servers/sdev/register-client': [
+        { status: 502, body: { error: 'registration_failed', reason: 'throttled', retry_after: 45 } },
+      ],
+      'POST admin/stalwart/servers/s1/register-client': [
+        { status: 422, body: { error: 'registration_failed', reason: 'auth_failed' } },
+      ],
+    });
+    p.openDialog(DEV);
+    p.setAdminUser('admin');
+    p.setAdminPassword('pw');
+    await p.save();
+    p.openDialog(S1, true);
+    p.setAdminUser('admin');
+    p.setAdminPassword('pw');
+    await p.save();
+    p.openDialog(DEV, true);
+    p.setAdminUser('admin');
+    p.setAdminPassword('pw');
+    expect(dialogValues(p)).toMatchObject({ aThr: true, saveLocked: true });
+    p.regLock.stop();
+  });
+
+  it('locks the registration after 429 of the hub also when the dialog closed meanwhile', async () => {
+    let reply: (r: { status: number; body: unknown }) => void = () => {};
+    const { p } = await loaded({
+      'PATCH admin/stalwart/servers/sdev': [{ body: DEV }],
+      'POST admin/stalwart/servers/sdev/register-client': [() => new Promise((resolve) => (reply = resolve))],
+    });
+    p.openDialog(DEV);
+    p.setAdminUser('admin');
+    p.setAdminPassword('pw');
+    const saving = p.save();
+    await vi.waitFor(() => expect(p.dialog?.registering).toBe(true));
+    p.closeDialog();
+    p.openDialog(S1, true);
+    reply({ status: 429, body: { error: 'rate_limited', retry_after: 60 } });
+    await saving;
+    expect(p.regBlocked('s1')).toBe(true);
+    // The other dialog's fields stay as they are.
+    expect(p.dialog).toMatchObject({ id: 's1', regFailed: false, aErr: null });
+    p.regLock.stop();
+  });
+
+  it('takes no input while saving', async () => {
+    let reply: (r: { body: AdminServer }) => void = () => {};
+    const { p } = await loaded({
+      'PATCH admin/stalwart/servers/sdev': [() => new Promise((resolve) => (reply = resolve))],
+      'POST admin/stalwart/servers/sdev/test': [tested(DEV)],
+    });
+    p.openDialog(DEV);
+    const saving = p.save();
+    expect(p.dialog?.saving).toBe(true);
+    p.setLabel('Changed');
+    p.setUrl('https://other.test');
+    p.domainInput('x.test,');
+    p.setOa('manual');
+    expect(p.dialog).toMatchObject({ label: 'Development', url: 'http://localhost:8080', domains: [], oa: 'auto' });
+    reply({ body: DEV });
+    await saving;
+    await vi.waitFor(() => expect(p.testing).toBeNull());
+  });
+
   it('shows the stored client under "Automatic" and keeps it without credentials', async () => {
-    const { p, calls } = await loaded({ 'PATCH admin/stalwart/servers/s1': [{ body: { ...S1, label: 'VPS one' } }] });
+    const { p, calls } = await loaded({
+      'PATCH admin/stalwart/servers/s1': [{ body: { ...S1, label: 'VPS one' } }],
+      'POST admin/stalwart/servers/s1/test': [tested(S1, { label: 'VPS one' })],
+    });
     p.openDialog(S1);
     expect(dialogValues(p)).toMatchObject({
       isAuto: true,
@@ -421,10 +569,15 @@ describe('dialog', () => {
       url: 'https://mail.s1.test',
       domains: ['s1.test'],
     });
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('VPS one: connection OK'));
+    expect(p.testing).toBeNull();
   });
 
   it('sends client ID and secret under "Manual" and checks them', async () => {
-    const { p, calls } = await loaded({ 'PATCH admin/stalwart/servers/sdev': [{ body: { ...DEV, client_id: 'c1' } }] });
+    const { p, calls } = await loaded({
+      'PATCH admin/stalwart/servers/sdev': [{ body: { ...DEV, client_id: 'c1' } }],
+      'POST admin/stalwart/servers/sdev/test': [tested(DEV, { client_id: 'c1' })],
+    });
     p.openDialog(DEV);
     p.setOa('manual');
     p.setSecret('s3cret');
@@ -442,6 +595,20 @@ describe('dialog', () => {
       client_id: 'c1',
       client_secret: 's3cret',
     });
+    await vi.waitFor(() => expect(calls.some((c) => c.path === 'admin/stalwart/servers/sdev/test')).toBe(true));
+    await vi.waitFor(() => expect(p.testing).toBeNull());
+    expect(ui.toast?.error).toBeFalsy();
+  });
+
+  it('asks for the secret again under "Manual" when the address changes', async () => {
+    const { p } = await loaded();
+    p.openDialog({ ...S1, has_secret: true });
+    p.setOa('manual');
+    expect(dialogValues(p)?.secPh).toBe('The secret is saved. Leave empty to keep it. It stays in the hub only.');
+    p.setUrl('https://mail.s1-new.test');
+    expect(dialogValues(p)?.secPh).toBe(
+      'The address changes, so the saved secret no longer applies. Enter the client secret again.',
+    );
   });
 
   it('shows the field errors of the server', async () => {

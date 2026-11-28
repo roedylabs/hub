@@ -59,9 +59,10 @@ export function forgetAttempt(): void {
 
 /**
  * Starts the sign-in and opens the server's sign-in page. Rejects with the API's error (field errors, `no_client`,
- * `blocked`, `sign_in_unavailable`, `rate_limited` …); then nothing is kept.
+ * `blocked`, `sign_in_unavailable`, `rate_limited` …); then nothing is kept. `active` is asked once the answer is
+ * there: a page that is gone by then (the user went elsewhere) neither keeps the attempt nor leaves for the server.
  */
-export async function startSignIn(attempt: SignInAttempt): Promise<void> {
+export async function startSignIn(attempt: SignInAttempt, active: () => boolean = () => true): Promise<void> {
   const body: Record<string, string> = { return_to: attempt.return_to };
   if (attempt.account_id) body.account_id = attempt.account_id;
   else {
@@ -69,6 +70,7 @@ export async function startSignIn(attempt: SignInAttempt): Promise<void> {
     body.email = attempt.email ?? '';
   }
   const { authorize_url } = await api<SignInStart>('POST', 'stalwart/sign-in', body);
+  if (!active()) return;
   try {
     sessionStorage.setItem(KEY, JSON.stringify(attempt));
   } catch {

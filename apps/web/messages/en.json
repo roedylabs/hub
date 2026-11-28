@@ -521,6 +521,8 @@
   "srv_err_taken_by": "This address is already used by “{server}”.",
   "srv_cid_needed": "A secret needs a client ID.",
   "srv_err_list": "Couldn’t update the list.",
+  "srv_test_unchecked": "{label}: not everything could be checked",
+  "srv_secret_moved": "The address changes, so the saved secret no longer applies. Enter the client secret again.",
   "nav_accounts": "Accounts",
   "nav_accounts_desc": "Your email accounts for Mail, Calendar, and Contacts.",
   "nav_stalwart": "Stalwart servers",

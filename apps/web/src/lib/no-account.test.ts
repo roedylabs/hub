@@ -48,4 +48,19 @@ describe('No account yet', () => {
     expect(p.ready).toBe(true);
     expect(p.app).toBeNull();
   });
+
+  it('shows the page before the app’s name is there', async () => {
+    let named!: (answer: { body: unknown }) => void;
+    mockApi({
+      'GET stalwart/accounts': [{ body: { accounts: [] } }],
+      'GET apps': [() => new Promise((resolve) => (named = resolve))],
+    });
+    const p = new NoAccountPage('/mail/', { leave: vi.fn() });
+    const load = p.load();
+    await vi.waitFor(() => expect(p.ready).toBe(true));
+    expect(p.app).toBeNull();
+    named({ body: { apps: [MAIL] } });
+    await load;
+    expect(p.app).toBe('Mail');
+  });
 });

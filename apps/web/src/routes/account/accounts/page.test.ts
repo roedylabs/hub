@@ -90,6 +90,27 @@ describe('Account › Accounts', () => {
     });
   });
 
+  it('the form is read-only while a request runs, and editable again after it failed', async () => {
+    let answer!: (reply: { status: number; body: unknown }) => void;
+    const view = renderSignedIn(NewPage, {
+      role: 'user',
+      path: '/account/accounts/new',
+      api: {
+        ...api([]),
+        'POST stalwart/sign-in': [() => new Promise((resolve) => (answer = resolve))],
+      },
+    });
+    const form = within(await view.findByRole('group', { name: 'New account' }));
+    const email = form.getByRole('textbox', { name: 'Email address' });
+    await fireEvent.input(email, { target: { value: 'sam@example.com' } });
+    await fireEvent.click(form.getByRole('button', { name: 'Continue to sign-in' }));
+    await waitFor(() => expect(email).toHaveAttribute('readonly'));
+    expect(form.getByRole('radio', { name: 'Access token' })).toBeDisabled();
+    answer({ status: 502, body: { error: 'sign_in_unavailable', reason: 'unreachable' } });
+    await waitFor(() => expect(email).not.toHaveAttribute('readonly'));
+    expect(form.getByRole('radio', { name: 'Access token' })).toBeEnabled();
+  });
+
   it('shows errors in the form and marks the field', async () => {
     const view = renderSignedIn(NewPage, {
       role: 'user',

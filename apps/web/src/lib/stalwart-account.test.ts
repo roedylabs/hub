@@ -23,6 +23,13 @@ async function page(account = accountOf(), servers = serversOf()) {
   return { p, nav };
 }
 
+/** An answer that comes when the test says so. */
+function later<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
 describe('One Stalwart account', () => {
   it('loads the account with its server; an unknown one is missing', async () => {
     const { p } = await page();
@@ -136,5 +143,59 @@ describe('One Stalwart account', () => {
     await vi.waitFor(() => expect(nav.list).toHaveBeenCalled());
     expect(api.calls[0]?.method).toBe('DELETE');
     expect(ui.toast?.text).toBe('alex@example.com removed');
+  });
+
+  it('after overlapping failed colour saves it shows the colour the server holds', async () => {
+    const { p } = await page(accountOf({ color: 0 }));
+    const first = later<{ status: number; body: unknown }>();
+    const second = later<{ status: number; body: unknown }>();
+    mockApi({ 'PATCH stalwart/accounts/01JACCT1': [() => first.promise, () => second.promise] });
+    const one = p.setColor(1);
+    const two = p.setColor(2);
+    expect(p.account?.color).toBe(2);
+    first.resolve({ status: 500, body: {} });
+    await one;
+    expect(p.account?.color).toBe(2);
+    second.resolve({ status: 500, body: {} });
+    await two;
+    expect(p.account?.color).toBe(0);
+  });
+
+  it('a check that finds a new sign-in needed keeps a colour saved meanwhile', async () => {
+    const { p } = await page(accountOf({ color: 0 }));
+    const checked = later<{ status: number; body: unknown }>();
+    mockApi({
+      'POST stalwart/accounts/01JACCT1/check': [() => checked.promise],
+      'PATCH stalwart/accounts/01JACCT1': [{ body: accountOf({ color: 1 }) }],
+    });
+    const check = p.check();
+    await p.setColor(1);
+    checked.resolve({ status: 409, body: { error: 'needs_sign_in' } });
+    await check;
+    expect(p.account?.state).toBe('needs_sign_in');
+    expect(p.account?.color).toBe(1);
+  });
+
+  it('"Sign in again" waits for the countdown and does not leave once the page is gone', async () => {
+    const { p } = await page();
+    const open = vi.spyOn(signInNav, 'open').mockImplementation(() => {});
+    const started = later<{ status?: number; body: unknown }>();
+    const api = mockApi({
+      'POST stalwart/sign-in': [
+        { status: 429, body: { error: 'rate_limited', retry_after: 30 } },
+        () => started.promise,
+      ],
+    });
+    await p.startAgain();
+    expect(p.clock.left('rate')).toBeGreaterThan(0);
+    await p.startAgain();
+    expect(api.calls).toHaveLength(1);
+    p.clock.clear('rate');
+    const again = p.startAgain();
+    p.dispose();
+    started.resolve({ body: { authorize_url: 'https://mail.example.com/authorize' } });
+    await again;
+    expect(open).not.toHaveBeenCalled();
+    expect(lastAttempt()).toBeNull();
   });
 });

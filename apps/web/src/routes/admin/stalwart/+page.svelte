@@ -58,7 +58,16 @@
 {/snippet}
 
 {#snippet testButton(r: ServerRow)}
-  <button type="button" class="test" class:busy={r.busy} onclick={r.test}>
+  <!-- One test at a time: while another server's runs, the button waits (`testDis`) and the page ignores it. -->
+  <button
+    type="button"
+    class="test"
+    class:busy={r.busy}
+    class:dis={r.testDis}
+    aria-busy={r.busy}
+    aria-disabled={r.busy || r.testDis}
+    onclick={r.test}
+  >
     {#if r.diagBusy}<span class="spin"><Icon name="ti-loader-2" /></span>{/if}{#if r.diagDone}<Icon
         name="ti-stethoscope"
       />{/if}{r.testLabel}
@@ -86,7 +95,7 @@
           {/if}
           <div class="dtext">{d.text}</div>
           {#if d.isErr}
-            <button type="button" class="dact" onclick={d.act}>
+            <button type="button" class="dact" class:dis={d.actDis} aria-disabled={d.actDis} onclick={d.act}>
               {#if !isMobile}<Icon name="ti-arrow-right" />{/if}{d.actLabel}
             </button>
           {/if}
@@ -205,7 +214,10 @@
                   <div class="row-top">
                     <span class="tile" class:warn={r.warn}><Icon name="ti-server-2" /></span>
                     <div class="row-main">
-                      <div class="row-label">{r.label}</div>
+                      <div class="row-title">
+                        <span class="row-label">{r.label}</span>
+                        {#if r.isSys}<span class="badge">{m.srv_system()}</span>{/if}
+                      </div>
                       <div class="row-sub">{r.host} · {r.accts}</div>
                       {#if r.plain}
                         <div class="m-plain"><Icon name="ti-lock-open" /><span>{m.srv_plain()}</span></div>
@@ -216,7 +228,14 @@
                     {#each r.doms as d (d.d)}<span class="dom"><Icon name="ti-at" />{d.d}</span>{/each}
                     {@render chips(r)}
                   </div>
-                  <div class="tested">{r.tested}</div>
+                  <div class="m-tested">
+                    <span class="tested">{r.tested}</span>
+                    {#if r.canDiag}
+                      <button type="button" class="diag-btn" aria-expanded={r.diagOpen} onclick={r.diagToggle}>
+                        {r.diagLabel}<span class="chev" class:open={r.diagOpen}><Icon name="ti-chevron-down" /></span>
+                      </button>
+                    {/if}
+                  </div>
                   {#if r.diagOpen}{@render diagnosis(r)}{/if}
                   <div class="m-actions">
                     {@render testButton(r)}
@@ -606,6 +625,16 @@
     cursor: progress;
   }
 
+  .test.dis,
+  .dact.dis {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .test.dis:hover {
+    background: var(--surface);
+  }
+
   .icon-btn {
     width: 40px;
     height: 40px;
@@ -904,7 +933,6 @@
   }
 
   .m-row .row-label {
-    display: block;
     font-size: 15px;
   }
 
@@ -941,10 +969,23 @@
     white-space: normal;
   }
 
-  .m-row .tested {
+  .m-tested {
     margin-top: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .m-row .tested {
     font-size: 12.5px;
     white-space: normal;
+  }
+
+  .m-row .diag-btn {
+    flex-shrink: 0;
+    height: 36px;
+    margin-right: -6px;
   }
 
   .m-actions {
