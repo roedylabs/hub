@@ -529,6 +529,9 @@ for (const look of LOOKS) {
       ['/admin/users', 'Users'],
       ['/admin/stalwart', 'Stalwart servers'],
       ['/account/accounts', 'Accounts'],
+      ['/account/appearance', 'Appearance'],
+      ['/account/language', 'Language & region'],
+      ['/account/general', 'General'],
       ['/account/no-account', 'Connect your first email account'],
       ['/example/', 'Example'],
     ] as const) {
