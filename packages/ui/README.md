@@ -34,10 +34,10 @@ fonts and motion, in light and dark.
 
 | Area | Modules |
 |---|---|
-| Components | `AccountMenu`, `ColorEditor`, `ConfirmDialog`, `DirtyBar`, `ErrorView`, `FirstLoad`, `Header`, `Icon`, `LoadCard`, `Logo`, `PickerList`, `SettingsNav`, `Sheet`, `Skeleton`, `Toast`, `Tooltip` |
+| Components | `AccountMenu`, `ColorEditor`, `CommandPalette`, `ConfirmDialog`, `DebugBar`, `DirtyBar`, `ErrorView`, `FirstLoad`, `Header`, `Icon`, `LicensesDialog`, `LoadCard`, `Logo`, `PickerList`, `SettingsNav`, `Sheet`, `ShortcutsDialog`, `Skeleton`, `TimePicker`, `Toast` (with "Undo" and swiping), `Tooltip` |
 | Actions | `focustrap`, `radiogroup`, `scrollbar`, `tablist`, `tooltip`, `dialogDrag` and the swipe gestures (`swipe.ts`) |
-| Shell state | `ui` (layout, dark theme and motion, menus, the page's dialog, confirmation, toasts, tooltip), `Loading` |
-| Helpers | `api` (the hub's browser API, `/api/v1`), `ago`, `waitText`/`clockText`, `theme` (`applyTheme`), `color` and the colour editor's values, `errors` (error pages, the gateway's codes), `keys`, `landmark`, `logo`, `branding`, `shell` (values of the shell components), `Reconnect` ("No connection" with retries), `icons` |
+| Shell state | `ui` (layout, dark theme and motion, menus, the page's dialog, confirmation, command palette and shortcuts help, toasts, tooltip), `Loading`, `network` (connection state, `appFetch`, `pollVisible`), `devLog` (developer log) |
+| Helpers | `api` (the hub's browser API, `/api/v1`), `ago`, `waitText`/`clockText`, `theme` (`applyTheme`), `color` and the colour editor's values, `errors` (error pages, the gateway's codes), `keys`, `landmark`, `logo`, `branding`, `shell` (values of the shell components, command palette, shortcuts), `Reconnect` ("No connection" with retries), `icons`, `undo` (`Toasts`: deferred actions with "Undo"), `date`, `time-picker`, `licenses` (the app's licence list), `developer` (debug bar), `AppWorker` (the app's service worker and new-build detection) |
 | Texts | `texts()` (the package's `en`/`de` tables), `connectSettings()` |
 | Testing (`@roedy/ui/testing`) | `pointer`/`swipe` gestures in jsdom, WCAG contrast, axe-core (`violations()`, needs `axe-core`) |
 
@@ -67,7 +67,10 @@ with jsdom and Testing Library; component tests include axe).
 
 ## Origin
 
-The modules come from the hub's web app (`apps/web/src/lib`), which took most of
-them over from Roedy Mail standalone (`roedylabs/mail`, archived as
-`mail-standalone`, same project and licence; commit `d5bdf14`, v0.5.0); each
-module names its origin in its comment.
+The modules come from the hub's web app (`apps/web/src/lib`), which took most
+of them over from Roedy Mail standalone, and from Roedy Mail standalone
+directly: the command palette, shortcuts, licences and debug dialogs, the time
+picker, undo, network state, developer log, app worker and date. Roedy Mail
+standalone is `roedylabs/mail` (archived as `mail-standalone`, same project
+and licence) at commit `d5bdf14` (v0.5.0); each module names its origin in its
+comment.
