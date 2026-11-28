@@ -13,7 +13,9 @@ import {
   typeahead,
   vertical,
 } from './app-switcher.ts';
+import { RoedyAppSwitcher as FromFrame } from './frame.ts';
 import { localeOf } from './messages.ts';
+import { CSS } from './styles.ts';
 
 const APPS = {
   apps: [
@@ -125,6 +127,24 @@ describe('parsing', () => {
     const keys = (messages: Record<string, string>) => Object.keys(messages).filter((k) => k.startsWith('switcher_'));
     expect(keys(de)).toEqual(keys(en));
     expect(keys(en).length).toBeGreaterThan(0);
+  });
+});
+
+describe('frame', () => {
+  it('defines the switcher when the frame is loaded', () => {
+    expect(FromFrame).toBe(RoedyAppSwitcher);
+    expect(customElements.get(TAG)).toBe(RoedyAppSwitcher);
+  });
+
+  it('takes the design tokens of the page where it sets them, else its own', () => {
+    // Light fallbacks on `.root`, dark ones on `.root.dark`.
+    expect(CSS).toContain('--_pop:var(--pop,#fffdfa)');
+    expect(CSS).toContain('--_pop:var(--pop,#322b25)');
+    expect(CSS).toContain('--_acc:var(--acc,#f5a06e)');
+    expect(CSS).toMatch(/--_accsoft:var\(--accsoft,color-mix\(in oklab, var\(--_acc\) 26%, var\(--_surface\)\)\)/);
+    // The rules use only the private names, never a page's token directly.
+    const rules = CSS.replace(/--_[a-z0-9]+:var\(--[a-z0-9-]+,/g, '');
+    expect(rules).not.toMatch(/var\(--(?!_)/);
   });
 });
 

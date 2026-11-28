@@ -203,7 +203,7 @@ test('the tile on the home page opens the app with the identity', async ({ brows
 });
 
 test('the app switcher in the example app, under its strict CSP', async ({ browser, request }) => {
-  const script = await request.get(`${env.url}/api/v1/app-switcher.js`);
+  const script = await request.get(`${env.url}/api/v1/frame.js`);
   expect(script.status()).toBe(200);
   expect(script.headers()['content-type']).toBe('text/javascript; charset=utf-8');
   expect(script.headers()['cache-control']).toBe('no-cache');

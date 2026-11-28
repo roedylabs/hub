@@ -647,7 +647,7 @@ async fn to_slash(State(example): State<Example>) -> Redirect {
 }
 
 /// The page: who is signed in, the link to the hub's home page and the
-/// hub's ready-made app switcher (contract § 5.4). Landmarks and a viewport,
+/// app switcher of the hub's frame (contract § 5.4, § 5.5). Landmarks and a viewport,
 /// so that the end-to-end suite's axe check passes on it as on the hub's
 /// pages. The policy is as strict as an app's can be: scripts and images only
 /// from the origin (the switcher and the apps' icons), no styles at all (the
@@ -663,7 +663,7 @@ async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>Example</title>\
-         <script type=\"module\" src=\"{SWITCHER}\"></script>\
+         <script type=\"module\" src=\"{FRAME}\"></script>\
          <header><nav aria-label=\"Hub\"><a href=\"/\">Home</a>\
          <roedy-app-switcher></roedy-app-switcher></nav></header>\
          <main><h1>Example</h1><p>{who}</p></main></html>"
@@ -671,8 +671,8 @@ async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
     ([(header::CONTENT_SECURITY_POLICY, CSP)], Html(page)).into_response()
 }
 
-/// The hub's app switcher (contract § 5.4).
-pub const SWITCHER: &str = "/api/v1/app-switcher.js";
+/// The hub's frame with the app switcher (contract § 5.5).
+pub const FRAME: &str = "/api/v1/frame.js";
 
 /// Policy of the page.
 pub const CSP: &str = "default-src 'none'; script-src 'self'; img-src 'self'; \

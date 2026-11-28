@@ -1,14 +1,14 @@
-//! `GET /api/v1/app-switcher.js`: the ready-made app switcher for the apps'
-//! pages (docs/app-contract.md › App switcher), a dependency-free ES module
-//! from the web app's build (`apps/web/src/switcher`, written to
-//! `_hub/app-switcher.js` by `pnpm build`).
+//! `GET /api/v1/frame.js`: the hub's frame, the web components every app
+//! shows the same way (docs/app-contract.md › The hub's frame; for now the app
+//! switcher), as a dependency-free ES module from the web app's build
+//! (`apps/web/src/frame`, written to `_hub/frame.js` by `pnpm build`).
 //!
 //! Public and outside the API's middleware: the browser loads it with
 //! `<script>` (which the API refuses as a subresource), also before sign-in.
 //! Apps include it at this fixed address, so it carries no version: the
 //! browser revalidates it via the ETag (`no-cache`, then mostly 304), and a
 //! new hub version reaches every app on its next load. Same origin only
-//! (`Cross-Origin-Resource-Policy`): the switcher reads the hub's session and
+//! (`Cross-Origin-Resource-Policy`): the frame reads the hub's session and
 //! has no use on other sites. Without a web app (development with `pnpm dev`)
 //! `404 {"error": "not_found"}`.
 
@@ -22,10 +22,10 @@ use super::static_files::{CACHE_REVALIDATE, cached};
 use crate::{api::ApiError, app::AppState};
 
 /// The path, for the router.
-pub const SCRIPT_PATH: &str = "/api/v1/app-switcher.js";
+pub const SCRIPT_PATH: &str = "/api/v1/frame.js";
 
-/// Where the build puts it (apps/web/vite.switcher.config.ts).
-const FILE: &str = "_hub/app-switcher.js";
+/// Where the build puts it (apps/web/vite.frame.config.ts).
+const FILE: &str = "_hub/frame.js";
 
 const CONTENT_TYPE: &str = "text/javascript; charset=utf-8";
 
@@ -135,8 +135,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn not_found_without_a_web_app_or_switcher() {
-        // A build from before the switcher.
+    async fn not_found_without_a_web_app_or_frame() {
+        // A build from before the frame.
         let old = tempfile::tempdir().unwrap();
         std::fs::write(old.path().join("index.html"), "<!doctype html>").unwrap();
         for web in [WebAssets::None, WebAssets::new(Some(old.path())).unwrap()] {

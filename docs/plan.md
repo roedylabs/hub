@@ -1013,7 +1013,7 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
 
 7. [ ] **Shared interface and packages**
    1. [x] **App switcher** – the first web component of the hub's frame.
-      Done: `<roedy-app-switcher>` from `GET /api/v1/frame.js` (contract
+      Done: `<roedy-app-switcher>` in `GET /api/v1/frame.js` (contract
       § 5.5), source in `apps/web/src/frame`, used by the example app.
    2. [ ] **Packages** – `packages/ui` from the hub's web app and Mail's
       shared components, actions and helpers (§ 9.2); `packages/jmap` from

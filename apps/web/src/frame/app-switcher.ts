@@ -1,10 +1,10 @@
 /**
- * Ready-made app switcher that the hub serves to its apps
- * (`GET /api/v1/app-switcher.js`, docs/app-contract.md › App switcher). Its
- * texts are the `switcher_*` keys of `messages/{en,de}.json`.
+ * The app switcher of the hub's frame (`frame.ts`, served as
+ * `GET /api/v1/frame.js`; docs/app-contract.md › App switcher). Its texts
+ * are the `switcher_*` keys of `messages/{en,de}.json`.
  *
  * ```html
- * <script type="module" src="/api/v1/app-switcher.js"></script>
+ * <script type="module" src="/api/v1/frame.js"></script>
  * <roedy-app-switcher></roedy-app-switcher>
  * ```
  *
