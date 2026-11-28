@@ -333,6 +333,33 @@ describe('Administration › Email page', () => {
     );
   });
 
+  it('drops an entered secret when another server is chosen, also during a delayed reload', async () => {
+    let reload: (reply: { body: unknown }) => void = () => {};
+    renderPage(STORED, {
+      'GET admin/stalwart/servers': [
+        { body: { ...REGISTRY.body, servers: SERVERS } },
+        () => new Promise((resolve) => (reload = resolve)),
+      ],
+      'PUT admin/system-mail': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+        },
+      ],
+    });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'new-pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await screen.findByRole('alert');
+    // Typed for the first server while the registry reloads, then the other server is chosen.
+    await fireEvent.input(field('Password'), { target: { value: 'for-the-first' } });
+    await fireEvent.click(server('Example mail'));
+    await fireEvent.click(within(screen.getByRole('listbox')).getByRole('option', { name: /Other mail/ }));
+    expect(field('Password')).toHaveValue('');
+    reload({ body: { ...REGISTRY.body, servers: SERVERS } });
+    await vi.waitFor(() => expect(field('Password')).toHaveValue(''));
+  });
+
   it('sends a test email', async () => {
     const view = renderPage(STORED, {
       'POST admin/system-mail/test': [{ body: { identities: IDS, sent: true } }],

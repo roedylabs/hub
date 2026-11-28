@@ -601,7 +601,10 @@ export class SystemMailPage {
   }
 
   set<K extends MailDraftKey>(key: K, value: MailDraft[K]): void {
-    this.edits = { ...this.edits, [key]: value };
+    // Like the backend: a secret belongs to the server it was entered for. Another server drops it (the first choice,
+    // without a server before, keeps it).
+    const other = key === 'srv' && this.draft.srv !== '' && value !== this.draft.srv;
+    this.edits = { ...this.edits, [key]: value, ...(other && { pass: '', token: '' }) };
     const field = key as MailField;
     // A secret entered after the server moved is for its new address: the server's `changed` error is answered.
     const moved = (key === 'pass' || key === 'token') && this.serverErrors.srv === 'changed';
