@@ -572,8 +572,9 @@ modifying request.
 
 The response carries `Cache-Control: no-store`. `expires_at` is when Stalwart
 lets the token expire (Stalwart's lifetime, an hour by default); the hub
-hands out a token with at least five minutes left and renews tokens of
-accounts used in the last hour before that. `expires_at` is `null` for
+renews a token with less than five minutes left before handing it out, and
+renews the tokens of accounts used in the last hour ten minutes before they
+expire. `expires_at` is `null` for
 `auth: "token"`: the token is the one the user entered and lives as long as
 it does at Stalwart. Keep the token in memory only, fetch a new one when it
 expires or the server rejects it, and send it as `Authorization: Bearer` to
