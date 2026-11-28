@@ -11,6 +11,7 @@ import {
   firstBadSection,
   liveErrors,
   mailErrorsOf,
+  mailErrorText,
   NO_MAIL,
   precheck,
   reasonText,
@@ -41,8 +42,8 @@ const STORED: SystemMail = {
 
 /** Servers of the Stalwart registry. */
 const SERVERS: MailServer[] = [
-  { id: 's1', label: 'Example mail', url: 'https://mail.example.com/', host: 'mail.example.com' },
-  { id: 's2', label: 'Other mail', url: 'https://other.example.com:8443/', host: 'other.example.com:8443' },
+  { id: 's1', label: 'Example mail', url: 'https://mail.example.com', host: 'mail.example.com' },
+  { id: 's2', label: 'Other mail', url: 'https://other.example.com:8443', host: 'other.example.com:8443' },
 ];
 /** `GET admin/stalwart/servers` with the fields the page does not use. */
 const registry = (servers: MailServer[] = SERVERS) => ({
@@ -143,6 +144,21 @@ describe('draft, connection and body', () => {
       app_password: ' pw ',
     });
     expect(changedBody({ ...base, auth: 'token', token: ' tok ' }, base)).toEqual({ auth: 'token', token: 'tok' });
+    // A new secret names the address of the server the page shows.
+    expect(changedBody({ ...base, pass: 'pw' }, base, SERVERS)).toEqual({
+      app_password: 'pw',
+      server_url: 'https://mail.example.com',
+    });
+    expect(changedBody({ ...base, name: 'Example' }, base, SERVERS)).toEqual({ sender_name: 'Example' });
+  });
+
+  it('a moved server is an error of the server field', () => {
+    const error = new ApiError(422, {
+      error: 'invalid',
+      fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } },
+    });
+    expect(mailErrorsOf(error)).toEqual({ srv: 'changed' });
+    expect(mailErrorText('srv', 'changed')).toContain('address has changed');
   });
 
   it('checks fields live like the backend', () => {

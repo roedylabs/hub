@@ -104,7 +104,7 @@ async fn administrators_set_and_test_the_sending_account() {
     // A wrong password is stored, but checked right away.
     let put = |body: Value| env.as_user(&admin, Method::PUT, "/admin/system-mail", Some(body));
     let reply = put(json!({
-        "server_id": server, "user": MAIL_USER, "app_password": "wrong",
+        "server_id": server, "server_url": fake.url, "user": MAIL_USER, "app_password": "wrong",
     }))
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -112,7 +112,7 @@ async fn administrators_set_and_test_the_sending_account() {
     assert_eq!(reply.json()["reason"], "auth_failed");
     assert!(!reply.body.contains("wrong"));
 
-    let reply = put(json!({ "app_password": MAIL_PASSWORD })).await;
+    let reply = put(json!({ "app_password": MAIL_PASSWORD, "server_url": fake.url })).await;
     let view = reply.json();
     assert_eq!(view["status"], "ok", "{view}");
     assert_eq!(view["server_id"], server);
@@ -138,7 +138,7 @@ async fn administrators_set_and_test_the_sending_account() {
     assert_eq!(reply.json()["sent"], true, "{}", reply.body);
     mail(&fake, "anna@example.com", "Test email from Roedy Hub").await;
     // A draft with a wrong password is reported, the stored one stays.
-    let reply = test(json!({ "app_password": "wrong" })).await;
+    let reply = test(json!({ "app_password": "wrong", "server_url": fake.url })).await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(reply.json()["reason"], "auth_failed");
     let shown = env

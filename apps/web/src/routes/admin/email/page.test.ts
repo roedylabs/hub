@@ -11,7 +11,7 @@ vi.mock('#lib/sections.ts', () => sections);
 
 const IDS = [{ id: 'i1', name: 'Example Org', email: 'noreply@example.com' }];
 const SERVERS: MailServer[] = [
-  { id: 's1', label: 'Example mail', url: 'https://mail.example.com/', host: 'mail.example.com' },
+  { id: 's1', label: 'Example mail', url: 'https://mail.example.com', host: 'mail.example.com' },
   { id: 's2', label: 'Other mail', url: 'https://other.example.com/', host: 'other.example.com' },
 ];
 /** `GET admin/stalwart/servers` (the page reads only `servers`). */
@@ -252,13 +252,36 @@ describe('Administration › Email page', () => {
     await vi.waitFor(() => expect(view.getByText('Checking …')).toBeInTheDocument());
     expect(within(bar() as HTMLElement).getByRole('button', { name: /Saving/ })).toHaveAttribute('aria-busy', 'true');
     expect(view.calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([
-      { app_password: 'new-pw', reply_to: 'help@example.com' },
+      { app_password: 'new-pw', server_url: 'https://mail.example.com', reply_to: 'help@example.com' },
     ]);
     answer({ body: { ...STORED, reply_to: 'help@example.com' } });
     await vi.waitFor(() => expect(bar()).toBeNull());
     expect(view.getByText('Connected')).toBeInTheDocument();
     expect(field('Password')).toHaveValue('');
     expect(ui.toast?.text).toBe('Changes saved');
+  });
+
+  it('a server moved meanwhile refuses the password and shows the current address', async () => {
+    const moved = [{ ...SERVERS[0], url: 'https://mail.example.net', host: 'mail.example.net' }];
+    const view = renderPage(STORED, {
+      'GET admin/stalwart/servers': [
+        { body: { ...REGISTRY.body, servers: SERVERS } },
+        { body: { ...REGISTRY.body, servers: moved } },
+      ],
+      'PUT admin/system-mail': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+        },
+      ],
+    });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'new-pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    const alert = await view.findByRole('alert');
+    expect(alert).toHaveTextContent('The server’s address has changed.');
+    expect(server('Example mail')).toHaveAttribute('aria-describedby', alert.id);
+    await vi.waitFor(() => expect(view.getByText(/mail\.example\.net/)).toBeInTheDocument());
   });
 
   it('sends a test email', async () => {

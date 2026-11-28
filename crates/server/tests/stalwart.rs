@@ -946,7 +946,7 @@ async fn the_system_mail_sends_from_a_registry_server() {
             Method::PUT,
             "/admin/system-mail",
             Some(json!({
-                "server_id": server, "user": MAIL_USER,
+                "server_id": server, "server_url": fake.url, "user": MAIL_USER,
                 "app_password": fake_stalwart::MAIL_PASSWORD,
             })),
         )
@@ -965,6 +965,27 @@ async fn the_system_mail_sends_from_a_registry_server() {
     .await;
     let shown = hub.admin(Method::GET, "/admin/system-mail", None).await;
     assert_eq!(shown.json()["has_secret"], false, "{}", shown.body);
+    // A password typed while the form still showed the old address is not
+    // stored for the new one.
+    let stale = hub
+        .admin(
+            Method::PUT,
+            "/admin/system-mail",
+            Some(json!({ "app_password": "new", "server_url": fake.url })),
+        )
+        .await;
+    assert_eq!(
+        stale.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        stale.body
+    );
+    assert_eq!(
+        stale.json()["fields"]["server_id"],
+        json!({ "code": "changed", "url": "https://mail.example.com" })
+    );
+    let shown = hub.admin(Method::GET, "/admin/system-mail", None).await;
+    assert_eq!(shown.json()["has_secret"], false);
 }
 
 /// Waits up to 5 s for `done` (revocations run in their own task).

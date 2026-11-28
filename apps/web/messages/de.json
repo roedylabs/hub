@@ -723,6 +723,7 @@
   "email_srv_choose": "Server wählen",
   "email_srv_none": "Noch kein Stalwart-Server. Fügen Sie unter Administration › Stalwart-Server einen hinzu.",
   "email_err_srv_required": "Wählen Sie den Mailserver.",
+  "email_err_srv_changed": "Die Adresse des Servers hat sich geändert. Prüfen Sie sie und geben Sie Passwort oder Token erneut ein.",
   "email_err_srv_gone": "Der Server ist nicht mehr in der Serverliste. Wählen Sie einen anderen.",
   "email_err_user_required": "Geben Sie den Benutzernamen ein.",
   "email_err_user": "Geben Sie einen Benutzernamen ohne Leerzeichen ein, höchstens 254 Zeichen.",

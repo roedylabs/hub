@@ -11,7 +11,9 @@
 //!
 //! The server is one of the Stalwart registry (`server_id`); another server
 //! drops the stored secret, which never goes to an address it was not
-//! entered for.
+//! entered for. A new secret comes with the address the form showed
+//! (`server_url`): if an administrator moved the server meanwhile, 422 with
+//! `server_id` `changed` and the current `url` – the secret is not stored.
 //!
 //! Secrets appear in no response, no log and no audit entry.
 //!
@@ -168,6 +170,9 @@ async fn show(State(state): State<AppState>, _: AdminUser) -> Result<Json<View>,
 #[serde(deny_unknown_fields)]
 struct Body {
     server_id: Option<String>,
+    /// The server's address as the form showed it; required with a new
+    /// `app_password` or `token`.
+    server_url: Option<String>,
     auth: Option<String>,
     user: Option<String>,
     /// Empty or missing: the stored one stays (like `client_secret`).
@@ -189,6 +194,8 @@ struct Body {
 struct Changes {
     /// Registry server; [`apply`] checks that it exists.
     server_id: Option<String>,
+    /// The address the form showed, without a trailing `/`.
+    server_url: Option<String>,
     auth: Option<Auth>,
     user: Option<String>,
     app_password: Option<String>,
@@ -287,8 +294,11 @@ impl Body {
         if !errors.is_empty() {
             return Err(errors.into_error());
         }
+        let server_url =
+            clean_optional(self.server_url).map(|url| url.trim_end_matches('/').to_owned());
         let changes = Changes {
             server_id,
+            server_url,
             auth: auth.flatten(),
             user,
             app_password,
@@ -350,6 +360,20 @@ fn apply(
         Auth::Password => changes.app_password,
         Auth::Token => changes.token,
     };
+    // A new secret only for the address the person saw: another
+    // administrator may have moved the server since the form loaded.
+    if secret.is_some()
+        && let Some(base_url) = &base_url
+    {
+        let current = base_url.origin().ascii_serialization();
+        match changes.server_url {
+            None => errors.code("server_url", "required"),
+            Some(shown) if shown != current => {
+                errors.add("server_id", json!({ "code": "changed", "url": current }));
+            }
+            Some(_) => {}
+        }
+    }
     // The same secret again changes nothing (the values are compared); an
     // unreadable stored one counts as different.
     if let Some(secret) = secret
@@ -611,9 +635,13 @@ mod tests {
             "server_id": " s1 ", "auth": "token", "user": " noreply@example.org ",
             "app_password": "", "token": " abc ", "identity_id": "",
             "sender_name": "  ", "reply_to": null, "keep_sent": false,
-            "to": " max@example.com ",
+            "to": " max@example.com ", "server_url": " https://mail.example.com/ ",
         }))
         .unwrap();
+        assert_eq!(
+            changes.server_url.as_deref(),
+            Some("https://mail.example.com")
+        );
         assert_eq!(changes.server_id.as_deref(), Some("s1"));
         assert_eq!(changes.auth, Some(Auth::Token));
         assert_eq!(changes.user.as_deref(), Some("noreply@example.org"));
@@ -708,6 +736,41 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(errors.into_value()["server_id"]["code"], "not_found");
+
+        // A new secret needs the address the form showed, and it must still
+        // be the server's.
+        let password = |url: Option<&str>| Changes {
+            app_password: Some("new".into()),
+            server_url: url.map(str::to_owned),
+            ..Changes::default()
+        };
+        let errors = apply(&conn, &secrets, Some(&stored), password(None))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(
+            errors.into_value(),
+            json!({ "server_url": { "code": "required" } })
+        );
+        let moved = password(Some("https://mail.s2.test"));
+        let errors = apply(&conn, &secrets, Some(&stored), moved)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(
+            errors.into_value(),
+            json!({ "server_id": { "code": "changed", "url": "https://mail.s1.test" } })
+        );
+        let applied = apply(
+            &conn,
+            &secrets,
+            Some(&stored),
+            password(Some("https://mail.s1.test")),
+        )
+        .unwrap()
+        .ok()
+        .unwrap();
+        assert_eq!(applied.changed, ["app_password"]);
     }
 
     /// The page names the missing mailbox; other reasons without `role`.

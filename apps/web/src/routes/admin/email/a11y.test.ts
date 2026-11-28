@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 const SERVERS: MailServer[] = [
-  { id: 's1', label: 'Example mail', url: 'https://mail.example.com/', host: 'mail.example.com' },
+  { id: 's1', label: 'Example mail', url: 'https://mail.example.com', host: 'mail.example.com' },
   { id: 's2', label: 'Other mail', url: 'https://other.example.com/', host: 'other.example.com' },
 ];
 const STORED: SystemMail = {

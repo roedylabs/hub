@@ -121,7 +121,7 @@ const DRAFT_KEYS: readonly MailDraftKey[] = ['srv', 'auth', 'user', 'pass', 'tok
 /** Fields that can carry an error. */
 export type MailField = 'srv' | 'user' | 'pass' | 'token' | 'name' | 'replyTo';
 /** `not_found`: the chosen server is no longer in the registry. */
-export type MailFieldError = 'required' | 'invalid' | 'too_long' | 'not_found';
+export type MailFieldError = 'required' | 'invalid' | 'too_long' | 'not_found' | 'changed';
 export type MailErrors = Partial<Record<MailField, MailFieldError>>;
 
 /** Request fields of the backend per field of the draft. */
@@ -222,37 +222,53 @@ export function connOf(d: MailDraft): string {
   return JSON.stringify([d.srv, d.auth, d.auth === 'password' ? trimWs(d.user) : '', secretOf(d)]);
 }
 
-/** Fields of the connection for `test` and `PUT`. */
-function connBody(d: MailDraft): Record<string, unknown> {
+/**
+ * A new secret goes with the address of the server the page shows (`server_url`): if another administrator moved the
+ * server meanwhile, the backend refuses it (`server_id` `changed`) instead of storing it for the new address.
+ */
+function secretBody(d: MailDraft, servers: readonly MailServer[]): Record<string, unknown> {
   const secret = secretOf(d);
+  if (secret === '') return {};
+  const url = servers.find((s) => s.id === d.srv)?.url;
+  return {
+    ...(d.auth === 'token' ? { token: secret } : { app_password: secret }),
+    ...(url !== undefined && { server_url: url }),
+  };
+}
+
+/** Fields of the connection for `test` and `PUT`. */
+function connBody(d: MailDraft, servers: readonly MailServer[]): Record<string, unknown> {
   return {
     server_id: d.srv,
     auth: d.auth,
     // With a token the field is hidden; the backend keeps the stored user.
     ...(d.auth === 'password' && { user: trimWs(d.user) }),
-    ...(secret !== '' && (d.auth === 'token' ? { token: secret } : { app_password: secret })),
+    ...secretBody(d, servers),
   };
 }
 
 /** The whole draft for the test email (sender and sending already apply to it). */
-function draftBody(d: MailDraft): Record<string, unknown> {
+function draftBody(d: MailDraft, servers: readonly MailServer[]): Record<string, unknown> {
   return {
-    ...connBody(d),
+    ...connBody(d, servers),
     sender_name: trimWs(d.name) || null,
     reply_to: trimWs(d.replyTo) || null,
     keep_sent: d.keepSent,
   };
 }
 
-/** Only the changed fields for `PUT`; the secret only if entered. */
-export function changedBody(d: MailDraft, base: MailDraft): Record<string, unknown> {
-  const conn = connBody(d);
+/** Only the changed fields for `PUT`; the secret only if entered, with the server's address. */
+export function changedBody(
+  d: MailDraft,
+  base: MailDraft,
+  servers: readonly MailServer[] = [],
+): Record<string, unknown> {
+  const conn = connBody(d, servers);
   const body: Record<string, unknown> = {};
   if (d.srv !== base.srv) body.server_id = conn.server_id;
   if (d.auth !== base.auth) body.auth = d.auth;
   if ('user' in conn && conn.user !== base.user) body.user = conn.user;
-  if ('app_password' in conn) body.app_password = conn.app_password;
-  if ('token' in conn) body.token = conn.token;
+  Object.assign(body, secretBody(d, servers));
   const name = trimWs(d.name);
   const reply = trimWs(d.replyTo);
   if (name !== base.name) body.sender_name = name || null;
@@ -313,6 +329,7 @@ export function requiredErrors(d: MailDraft, saved: SystemMail, servers: readonl
 export function mailErrorText(field: MailField, code: MailFieldError): string {
   switch (field) {
     case 'srv':
+      if (code === 'changed') return m.email_err_srv_changed();
       return code === 'not_found' ? m.email_err_srv_gone() : m.email_err_srv_required();
     case 'user':
       return code === 'required' ? m.email_err_user_required() : m.email_err_user();
@@ -334,7 +351,8 @@ export function mailErrorsOf(error: unknown): MailErrors {
   const out: MailErrors = {};
   for (const field of FIELD_ORDER) {
     const code = fields[API_FIELD[field]]?.code;
-    if (code === 'required' || code === 'invalid' || code === 'too_long' || code === 'not_found') out[field] = code;
+    if (code === 'required' || code === 'invalid' || code === 'too_long' || code === 'not_found' || code === 'changed')
+      out[field] = code;
   }
   return out;
 }
@@ -637,7 +655,7 @@ export class SystemMailPage {
     this.rot += 720;
     try {
       const res = await api<{ identities: MailIdentity[] }>('POST', 'admin/system-mail/test', {
-        ...connBody(d),
+        ...connBody(d, this.servers),
         ...this.#identityOf(d),
       });
       // A save changed the connection meanwhile: its own check applies, this result is older.
@@ -659,6 +677,7 @@ export class SystemMailPage {
         if (!quiet || error instanceof ApiError) ui.toasts.error(toastText(error));
         return;
       }
+      this.#refreshIfMoved(error);
       this.#fail(conn, errorText(error, d));
     } finally {
       this.checks--;
@@ -701,7 +720,7 @@ export class SystemMailPage {
       d = this.draft;
       cred = this.#credSeq;
       if (this.key !== 'ok' || this.#disposed) return;
-      await api('POST', 'admin/system-mail/test', { ...draftBody(d), ...this.#identityOf(d), to });
+      await api('POST', 'admin/system-mail/test', { ...draftBody(d, this.servers), ...this.#identityOf(d), to });
       if (!this.#disposed) ui.toasts.show(m.email_sent({ to }));
     } catch (error) {
       if (this.#disposed) return;
@@ -756,7 +775,7 @@ export class SystemMailPage {
       this.#scrollTo(bad);
       return;
     }
-    const body: Record<string, unknown> = { ...changedBody(d, this.base), ...this.#identityOf(d) };
+    const body: Record<string, unknown> = { ...changedBody(d, this.base, this.servers), ...this.#identityOf(d) };
     // Only whitespace changed: nothing to send.
     if (Object.keys(body).length === 0) {
       this.edits = {};
@@ -804,11 +823,25 @@ export class SystemMailPage {
       if (this.#disposed) return;
       if (lostAccess(error)) return;
       const errors = mailErrorsOf(error);
+      this.#refreshIfMoved(error);
       if (Object.keys(errors).length > 0) this.#showErrors(errors, d);
       else ui.toasts.error(isApiError(error, 429) ? toastText(error) : failText(error, m.error_act()));
     } finally {
       if (check) this.checks--;
     }
+  }
+
+  /**
+   * The server's address changed since the page loaded (`server_id` `changed`): load the registry again, so that the
+   * pick list shows the current address before the secret is entered again.
+   */
+  #refreshIfMoved(error: unknown): void {
+    if (mailErrorsOf(error).srv !== 'changed') return;
+    void api<{ servers: MailServer[] }>('GET', 'admin/stalwart/servers')
+      .then((list) => {
+        if (!this.#disposed) this.servers = list.servers.map(({ id, label, url, host }) => ({ id, label, url, host }));
+      })
+      .catch(() => {});
   }
 
   dispose(): void {
