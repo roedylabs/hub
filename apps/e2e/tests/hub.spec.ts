@@ -206,6 +206,47 @@ test('the tile on the home page opens the app with the identity', async ({ brows
   await state(page, 'Hello, Alex', 'home page after the app');
 });
 
+test('shared settings reach the example app and its backend', async ({ browser }) => {
+  const page = await newPage(
+    await newContext(browser, { view: 'desktop', theme: 'light' }, need(admin.state, 'session')),
+  );
+  await page.goto('/example/');
+  await expect(page.locator('#prefs')).toBeVisible();
+  // Time zone and clock changed in the hub (as Account › Language & region does) …
+  const put = await page.evaluate(async () => {
+    const headers = { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' };
+    const { version } = (await (await fetch('/api/v1/settings')).json()) as { version: number };
+    const settings = { time_zone_auto: false, time_zone: 'America/New_York', time_format: '12h' };
+    const reply = await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ version, settings }),
+    });
+    return reply.status;
+  });
+  expect(put).toBe(200);
+  // … reach the browser with the session and the app's backend with the users endpoint.
+  const prefs = await page.evaluate(
+    async () => ((await (await fetch('/api/v1/session')).json()) as { prefs: Record<string, unknown> }).prefs,
+  );
+  expect(prefs).toMatchObject({ time_zone: 'America/New_York', time_zone_auto: false, time_format: '12h' });
+  await page.reload();
+  await expect(page.locator('#prefs')).toContainText('Time zone America/New_York');
+  await expect(page.locator('#prefs')).toContainText('time 12h');
+  // The directory lists the users with access to the app.
+  const directory = await page.evaluate(
+    async () => ((await (await fetch('/api/v1/directory?app=example')).json()) as { users: { email: string }[] }).users,
+  );
+  expect(directory.map((user) => user.email)).toContain(admin.email);
+  // Back to following the device, for the tests after this one.
+  await page.evaluate(async () => {
+    const headers = { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' };
+    const { version } = (await (await fetch('/api/v1/settings')).json()) as { version: number };
+    const settings = { time_zone_auto: true, time_format: null };
+    await fetch('/api/v1/settings', { method: 'PUT', headers, body: JSON.stringify({ version, settings }) });
+  });
+});
+
 test('the app switcher in the example app, under its strict CSP', async ({ browser, request }) => {
   const script = await request.get(`${env.url}/api/v1/frame.js`);
   expect(script.status()).toBe(200);

@@ -23,6 +23,7 @@
 
 use std::time::Duration;
 
+use roedy_hub_contract::pairing::UserPrefs;
 use rusqlite::{Connection, OptionalExtension as _};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -248,6 +249,8 @@ pub struct UserData {
     pub role: String,
     /// `en` or `de`, as in the identity.
     pub locale: String,
+    /// Time zone, region and formats (contract § 7).
+    pub prefs: UserPrefs,
 }
 
 /// The user's values as an app sees them; `None` for an unknown user.
@@ -255,7 +258,7 @@ pub fn user_data(conn: &Connection, id: &str) -> rusqlite::Result<Option<UserDat
     let Some(found) = users::credentials_by_id(conn, id)? else {
         return Ok(None);
     };
-    let locale = settings::lang_of(conn, id).map_err(foreign)?;
+    let stored = settings::load(conn, id).map_err(foreign)?;
     let user = found.user;
     Ok(Some(UserData {
         sub: user.id,
@@ -263,7 +266,8 @@ pub fn user_data(conn: &Connection, id: &str) -> rusqlite::Result<Option<UserDat
         email: user.email,
         name: user.display_name,
         role: user.role.as_str().to_owned(),
-        locale: locale.code().to_owned(),
+        locale: stored.lang.code().to_owned(),
+        prefs: stored.app_prefs(),
     }))
 }
 

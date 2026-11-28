@@ -290,9 +290,81 @@ fn updated(sub: &str, username: &str, name: &str, role: &str, locale: &str) -> (
         "user.updated".into(),
         json!({
             "sub": sub, "username": username, "email": format!("{username}@example.com"),
-            "name": name, "role": role, "locale": locale,
+            "name": name, "role": role, "locale": locale, "prefs": auto_prefs(locale),
         }),
     )
+}
+
+/// `prefs` without a region and own formats: those of the language.
+fn auto_prefs(locale: &str) -> Value {
+    let (date, number) = if locale == "de" {
+        ("de", "1.234,56")
+    } else {
+        ("iso", "1,234.56")
+    };
+    json!({
+        "time_zone": "Europe/Berlin", "region": null, "date_format": date, "time_format": "24h",
+        "week_start": "monday", "number_format": number,
+    })
+}
+
+#[tokio::test]
+async fn shared_settings_reach_the_apps_backends() {
+    let hub = hub().await;
+    let max = hub.user_id("max").await;
+    let example = &hub.example;
+    arrived(example, 0, 3).await;
+    let session = hub.env.session_for("max").await;
+    let put = async |version: i64, settings: Value| {
+        let reply = hub
+            .env
+            .as_user(
+                &session,
+                Method::PUT,
+                "/settings",
+                Some(json!({ "version": version, "settings": settings })),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    };
+
+    // Appearance and behaviour stay in the browser: no event.
+    put(
+        0,
+        json!({ "font_size": "large", "density": "compact", "undo_delay": 10, "developer": true }),
+    )
+    .await;
+    // Region, time zone and a format: `user.updated` with the new `prefs`.
+    put(
+        1,
+        json!({ "region": "US", "time_zone": "America/New_York", "time_format": "24h" }),
+    )
+    .await;
+    let events = arrived(example, 3, 1).await;
+    assert_eq!(events[0].0, "user.updated");
+    assert_eq!(
+        events[0].1["prefs"],
+        json!({
+            "time_zone": "America/New_York", "region": "US", "date_format": "us",
+            "time_format": "24h", "week_start": "sunday", "number_format": "1,234.56",
+        })
+    );
+    assert_eq!(events[0].1["sub"], json!(max));
+    // The same values once more: nothing new.
+    put(
+        2,
+        json!({ "time_zone": "america/new_york", "font_size": "small" }),
+    )
+    .await;
+    // The internal API answers with the same values.
+    let user = example.user(&max).await.unwrap();
+    assert_eq!(user.prefs.time_zone, "America/New_York");
+    assert_eq!(user.prefs.week_start, "sunday");
+    put(3, json!({ "region": "DE" })).await;
+    let events = arrived(example, 4, 1).await;
+    assert_eq!(events[0].1["prefs"]["time_format"], "24h");
+    assert_eq!(events[0].1["prefs"]["date_format"], "de");
+    assert_eq!(hub.stored(&hub.app_id).await.len(), 5);
 }
 
 #[tokio::test]

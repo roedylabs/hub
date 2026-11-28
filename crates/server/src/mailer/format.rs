@@ -1,49 +1,57 @@
-//! Details in mails – dates, times and names – in the recipient's time zone,
-//! with the words of their language (month names, "Today") from the locale
-//! files.
+//! Details in mails – dates, times and names – in the recipient's time zone
+//! and formats (`time_zone`, `date_format`, `time_format` of their settings,
+//! `crate::settings`), with the words of their language (month names,
+//! "Today") from the locale files. For recipients without an account
+//! (invitations) the default formats apply in the inviter's language.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/mailer/format.rs`) without
-//! the date and time formats of Mail's settings, sizes and intervals: the hub
-//! writes dates spelled out ("30 October 2026") and times on the 24-hour
-//! clock, in the default time zone until the settings offer one.
+//! sizes and intervals, plus the date format `dmy`.
 
 use jiff::{Timestamp, tz::TimeZone};
 
 pub use crate::api::sessions::short_ip;
 use crate::{
     i18n::{t, tf},
-    settings::Language,
+    settings::{DateFormat, Language, TimeFormat},
 };
 
 /// Default time zone, as in Roedy Mail.
 pub const DEFAULT_TZ: &str = "Europe/Berlin";
 
-/// Time zone and language of a recipient.
+/// Time zone, formats and language of a recipient.
 #[derive(Debug, Clone)]
 pub struct Format {
     tz: TimeZone,
+    date: DateFormat,
+    time: TimeFormat,
     lang: Language,
 }
 
 impl Default for Format {
+    /// The default zone, the date spelled out and the 24-hour clock, in
+    /// English.
     fn default() -> Self {
         Self {
             tz: named_zone(DEFAULT_TZ),
+            date: DateFormat::De,
+            time: TimeFormat::H24,
             lang: Language::default(),
         }
     }
 }
 
 impl Format {
-    /// Time zone as IANA name (unknown → default) and language.
-    pub fn new(tz: &str, lang: Language) -> Self {
+    /// Time zone as IANA name (unknown → default), formats and language.
+    pub fn new(tz: &str, date: DateFormat, time: TimeFormat, lang: Language) -> Self {
         Self {
             tz: named_zone(tz),
+            date,
+            time,
             lang,
         }
     }
 
-    /// The same time zone in `lang`: for recipients without settings
+    /// The same formats in `lang`: for recipients without settings
     /// (invitations).
     #[must_use]
     pub fn with_lang(self, lang: Language) -> Self {
@@ -55,31 +63,48 @@ impl Format {
         self.lang
     }
 
-    /// Date, e.g. "30 October 2026".
+    /// Date: `de` spelled out with the month's name ("30 October 2026", in
+    /// German "30. Oktober 2026"), `dmy` "30/10/2026", `iso` "2026-10-30",
+    /// `us` "10/30/2026".
     pub fn date(&self, at: Timestamp) -> String {
         let at = at.to_zoned_datetime(self.tz.clone());
-        tf(
-            self.lang,
-            "format.date",
-            &[
-                ("day", &at.day()),
-                (
-                    "month",
-                    &t(self.lang, &format!("format.month.{}", at.month())),
-                ),
-                ("year", &at.year()),
-            ],
-        )
+        let (year, month, day) = (at.year(), at.month(), at.day());
+        match self.date {
+            DateFormat::De => tf(
+                self.lang,
+                "format.date",
+                &[
+                    ("day", &day),
+                    ("month", &t(self.lang, &format!("format.month.{month}"))),
+                    ("year", &year),
+                ],
+            ),
+            DateFormat::Dmy => format!("{day:02}/{month:02}/{year:04}"),
+            DateFormat::Iso => format!("{year:04}-{month:02}-{day:02}"),
+            DateFormat::Us => format!("{month:02}/{day:02}/{year:04}"),
+        }
     }
 
-    /// Time, e.g. "15:57", with the suffix of the language if it has one.
+    /// Time: "15:57" with the suffix of the language if it has one, or
+    /// "3:57 PM" in every language.
     pub fn time(&self, at: Timestamp) -> String {
         let at = at.to_zoned_datetime(self.tz.clone());
-        tf(
-            self.lang,
-            "format.time_24h",
-            &[("time", &format!("{:02}:{:02}", at.hour(), at.minute()))],
-        )
+        let (hour, minute) = (at.hour(), at.minute());
+        match self.time {
+            TimeFormat::H24 => tf(
+                self.lang,
+                "format.time_24h",
+                &[("time", &format!("{hour:02}:{minute:02}"))],
+            ),
+            TimeFormat::H12 => {
+                let suffix = if hour < 12 { "AM" } else { "PM" };
+                let hour = match hour % 12 {
+                    0 => 12,
+                    hour => hour,
+                };
+                format!("{hour}:{minute:02} {suffix}")
+            }
+        }
     }
 
     /// Point in time: "Today, 15:57", on another day "23 October 2026,
@@ -137,7 +162,12 @@ mod tests {
         // 30.10. 23:30 UTC is already the 31st in Berlin.
         assert_eq!(format.date(at("2026-10-30T23:30:00Z")), "31 October 2026");
         assert_eq!(format.date(at("2026-03-01T12:00:00Z")), "1 March 2026");
-        let new_york = Format::new("America/New_York", Language::English);
+        let new_york = Format::new(
+            "America/New_York",
+            DateFormat::De,
+            TimeFormat::H24,
+            Language::English,
+        );
         assert_eq!(new_york.date(at("2026-10-31T02:00:00Z")), "30 October 2026");
     }
 
@@ -167,8 +197,44 @@ mod tests {
 
     #[test]
     fn unknown_zone_falls_back() {
-        let format = Format::new("Mars/Olympus", Language::English);
+        let format = Format::new(
+            "Mars/Olympus",
+            DateFormat::De,
+            TimeFormat::H24,
+            Language::English,
+        );
         assert_eq!(format.time(at("2026-10-24T13:57:00Z")), "15:57");
+    }
+
+    #[test]
+    fn formats_in_digits_and_on_the_12_hour_clock() {
+        let at_ = at("2026-10-30T13:07:00Z");
+        let with = |date, time| Format::new("Europe/London", date, time, Language::German);
+        assert_eq!(
+            with(DateFormat::Dmy, TimeFormat::H12).date(at_),
+            "30/10/2026"
+        );
+        assert_eq!(
+            with(DateFormat::Iso, TimeFormat::H12).date(at_),
+            "2026-10-30"
+        );
+        assert_eq!(
+            with(DateFormat::Us, TimeFormat::H12).date(at_),
+            "10/30/2026"
+        );
+        assert_eq!(with(DateFormat::Us, TimeFormat::H12).time(at_), "1:07 PM");
+        let midnight = at("2026-10-30T00:05:00Z");
+        assert_eq!(
+            with(DateFormat::Us, TimeFormat::H12).time(midnight),
+            "12:05 AM"
+        );
+        let noon = at("2026-10-30T12:00:00Z");
+        assert_eq!(with(DateFormat::Us, TimeFormat::H12).time(noon), "12:00 PM");
+        // The 24-hour clock keeps the language's suffix.
+        assert_eq!(
+            with(DateFormat::Iso, TimeFormat::H24).time(at_),
+            tf(Language::German, "format.time_24h", &[("time", &"13:07")])
+        );
     }
 
     #[test]

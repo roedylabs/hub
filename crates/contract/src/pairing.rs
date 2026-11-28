@@ -151,6 +151,26 @@ pub struct User {
     pub locale: String,
     /// `active` or `locked`.
     pub status: String,
+    /// Time zone, region and formats for texts the app writes for the user.
+    pub prefs: UserPrefs,
+}
+
+/// A user's shared settings that an app's backend needs for texts and mails
+/// (contract § 7, also in `user.updated`); values as the contract lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserPrefs {
+    /// IANA time zone, e.g. `Europe/Berlin`.
+    pub time_zone: String,
+    /// `DE`, `AT`, `CH`, `FR`, `IT`, `NL`, `ES`, `GB`, `US`; `None`: not set.
+    pub region: Option<String>,
+    /// `de` (25.10.2026), `dmy` (25/10/2026), `iso` (2026-10-25) or `us` (10/25/2026).
+    pub date_format: String,
+    /// `24h` or `12h`.
+    pub time_format: String,
+    /// `monday` or `sunday`.
+    pub week_start: String,
+    /// `1.234,56`, `1,234.56`, `1\u{a0}234,56` or `1\u{2019}234.56`.
+    pub number_format: String,
 }
 
 /// Response of `GET /internal/v1/users`.

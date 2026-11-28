@@ -407,7 +407,14 @@ async fn session_describes_user_session_and_hub() {
         json!({
             "user": {
                 "id": id, "username": "max", "email": "max@example.com",
-                "name": "Max Example", "role": "user", "locale": "en", "theme": "system",
+                "name": "Max Example", "role": "user", "locale": "en",
+            },
+            "prefs": {
+                "theme": "system", "accent": null, "font_size": "medium", "density": "normal",
+                "animations": true, "language": "en", "region": null,
+                "time_zone": "Europe/Berlin", "time_zone_auto": true, "date_format": "iso",
+                "time_format": "24h", "week_start": "monday", "number_format": "1,234.56",
+                "confirm_delete": true, "undo_delay": 5, "shortcuts": true, "developer": false,
             },
             "session": { "id": sid, "auth_time": body["session"]["auth_time"] },
             "hub": { "name": "Roedy Hub", "home": "/", "account": "/account", "admin": null },
@@ -438,7 +445,10 @@ async fn session_describes_user_session_and_hub() {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     let reply = env.as_user(&german, Method::GET, "/session", None).await;
     assert_eq!(reply.json()["user"]["locale"], "de");
-    assert_eq!(reply.json()["user"]["theme"], "light");
+    assert_eq!(reply.json()["prefs"]["theme"], "light");
+    assert_eq!(reply.json()["prefs"]["language"], "system");
+    // Formats without a region follow the language of the sign-in.
+    assert_eq!(reply.json()["prefs"]["date_format"], "de");
 }
 
 #[tokio::test]

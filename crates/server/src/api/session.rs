@@ -12,10 +12,10 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/session", get(current))
 }
 
-/// `200` with user, session and the hub's links while signed in, otherwise
-/// `401 unauthorized`. `locale` is the user's language (`en` or `de`, for
-/// `system` the one of the last sign-in), `theme` the color scheme (`system`
-/// without a choice).
+/// `200` with user, session, the user's shared settings (`prefs`,
+/// `settings::Stored::browser_prefs`) and the hub's links while signed in,
+/// otherwise `401 unauthorized`. `locale` is the user's language (`en` or
+/// `de`, for `system` the one of the last sign-in).
 async fn current(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -30,8 +30,8 @@ async fn current(
             "name": user.display_name,
             "role": user.role.as_str(),
             "locale": stored.lang.code(),
-            "theme": stored.settings.theme().as_str(),
         },
+        "prefs": stored.browser_prefs(state.instance.branding().branding.user_accent),
         "session": { "id": user.session_id, "auth_time": user.auth_time },
         "hub": {
             "name": state.instance.name(),

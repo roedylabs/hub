@@ -725,6 +725,55 @@ async fn the_manifest_is_updated() {
 }
 
 #[tokio::test]
+async fn the_directory_by_app() {
+    let (env, admin) = setup().await;
+    env.add_user("eva", "eva@example.com", Role::User).await;
+    paired_app(&env, &admin, "mail").await;
+    let eva = user_id(&env, "eva").await;
+    env.sql(move |c| c.execute("DELETE FROM app_access WHERE user_id = ?1", [&eva]))
+        .await;
+    let directory = async |session: &str, query: &str| {
+        env.as_user(session, Method::GET, &format!("/directory{query}"), None)
+            .await
+    };
+    let names = |reply: &Reply| -> Vec<String> {
+        reply.json()["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["email"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Everyone sees every active user; with `app` only those with access.
+    let max = env.session_for("max").await;
+    assert_eq!(
+        names(&directory(&max, "").await),
+        ["anna@example.com", "eva@example.com", "max@example.com"]
+    );
+    assert_eq!(
+        names(&directory(&max, "?app=mail").await),
+        ["anna@example.com", "max@example.com"]
+    );
+    // Without access to the app: refused.
+    let eva_session = env.session_for("eva").await;
+    let reply = directory(&eva_session, "?app=mail").await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(reply.error(), "no_access");
+    // A switched-off app counts as unknown.
+    env.sql(|c| {
+        c.execute(
+            "UPDATE apps SET disabled_at = '2026-11-28T00:00:00.000Z' WHERE slug = 'mail'",
+            [],
+        )
+    })
+    .await;
+    assert_eq!(
+        directory(&max, "?app=mail").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn the_users_endpoint_lists_access_and_tombstones() {
     let (env, admin) = setup().await;
     env.add_user("eva", "eva@example.com", Role::User).await;
@@ -772,6 +821,10 @@ async fn the_users_endpoint_lists_access_and_tombstones() {
         json!({
             "sub": max, "username": "max", "email": "max@example.com", "name": "Max Example",
             "role": "user", "app_role": "user", "locale": "de", "status": "locked",
+            "prefs": {
+                "time_zone": "Europe/Berlin", "region": null, "date_format": "de",
+                "time_format": "24h", "week_start": "monday", "number_format": "1.234,56",
+            },
         })
     );
     assert_eq!(

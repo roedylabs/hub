@@ -898,7 +898,10 @@ pub(super) mod tests {
     use std::{fmt::Display, fs, path::PathBuf};
 
     use super::*;
-    use crate::auth::device;
+    use crate::{
+        auth::device,
+        settings::{DateFormat, TimeFormat},
+    };
 
     /// Snapshots under `src/mailer/snapshots`, rendered in English: `*.txt`
     /// and `*.light.html`/`*.dark.html` per sample of [`mails`]. Regenerate
@@ -1016,7 +1019,15 @@ pub(super) mod tests {
         lang: Language,
         f: impl FnOnce(&Context<'_>) -> T,
     ) -> T {
-        let format = Format::default().with_lang(lang);
+        with_format(brand, theme, Format::default().with_lang(lang), f)
+    }
+
+    fn with_format<T>(
+        brand: &Brand,
+        theme: Theme,
+        format: Format,
+        f: impl FnOnce(&Context<'_>) -> T,
+    ) -> T {
         let public_url = Url::parse("https://hub.example.com/").unwrap();
         f(&Context {
             brand,
@@ -1315,6 +1326,48 @@ pub(super) mod tests {
         }
     }
 
+    /// Recipients elsewhere with other formats (`settings::Stored::format`):
+    /// the sign-in notice ("Today" with a time) and the invitation (a date
+    /// and time days ahead), as `<sample>@<zone>.txt`.
+    const ZONES: [(&str, &str, DateFormat, TimeFormat, Language); 3] = [
+        (
+            "new_york",
+            "America/New_York",
+            DateFormat::Us,
+            TimeFormat::H12,
+            Language::English,
+        ),
+        (
+            "tokyo",
+            "Asia/Tokyo",
+            DateFormat::Iso,
+            TimeFormat::H24,
+            Language::German,
+        ),
+        (
+            "london",
+            "Europe/London",
+            DateFormat::Dmy,
+            TimeFormat::H24,
+            Language::English,
+        ),
+    ];
+
+    #[test]
+    fn text_in_the_recipients_zone_and_formats() {
+        let brand = brand();
+        for (suffix, zone, date, time, lang) in ZONES {
+            let format = Format::new(zone, date, time, lang);
+            with_format(&brand, Theme::Light, format, |ctx| {
+                for (name, mail) in mails(ctx) {
+                    if ["security_login", "invite"].contains(&name) {
+                        snapshot(&format!("{name}@{suffix}.txt"), &mail.text);
+                    }
+                }
+            });
+        }
+    }
+
     /// Every snapshot belongs to a sample: none is left over from a removed
     /// one.
     #[test]
@@ -1330,8 +1383,14 @@ pub(super) mod tests {
             if file.starts_with('.') {
                 continue;
             }
-            let stem = file.split('.').next().unwrap();
+            let stem = file.split(['.', '@']).next().unwrap();
             assert!(names.contains(&stem), "stale snapshot {file}");
+            if let Some((_, zone)) = file.split('.').next().unwrap().split_once('@') {
+                assert!(
+                    ZONES.iter().any(|(suffix, ..)| *suffix == zone),
+                    "stale snapshot {file}"
+                );
+            }
         }
     }
 

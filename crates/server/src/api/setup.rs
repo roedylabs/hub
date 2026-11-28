@@ -326,6 +326,7 @@ fn validate(body: CompleteBody) -> Result<Plan, FieldErrors> {
             lang,
             mode: Some(mode),
             accent: Some(accent),
+            ..Settings::default()
         },
     })
 }

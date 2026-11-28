@@ -192,9 +192,16 @@ a name belongs to exactly one slug: `roedy.mail.` is not a prefix of
 
 The hub itself uses the namespace `hub` (`roedy.hub.`; its session cookie
 `__Host-roedy_hub_session` lies outside every app's namespace). Apps MAY
-read `localStorage["roedy.hub.prefs"]` – JSON `{"theme": "system"|"light"|"dark",
-"locale": "en"|"de"}` – to apply theme and language before their first request.
-They MUST NOT write any key outside their namespace.
+read `localStorage["roedy.hub.prefs"]` – the user's shared settings as a JSON
+object with the fields of `prefs` in `GET /api/v1/session`
+([§ 6.2](#62-shared-settings)) – to apply them before their first request, and
+follow its `storage` events to apply a change the user makes in another tab.
+The hub writes it whenever a setting changes. Any field may be missing or
+hold a value the app does not know; the app then keeps its default. After
+signing out it holds only `theme`, `language`, `font_size` and `animations`
+(for the pages without sign-in). It is a copy for the first paint: the
+response of `GET /api/v1/session` is authoritative.
+Apps MUST NOT write any key outside their namespace.
 
 ### 3.7 Switched off
 
@@ -486,7 +493,14 @@ Only the endpoints listed here are part of the contract; other paths under
 {
   "user": {
     "id": "01JDX2Q7…", "username": "alex", "email": "alex@example.com",
-    "name": "Alex Example", "role": "user", "locale": "de", "theme": "system"
+    "name": "Alex Example", "role": "user", "locale": "de"
+  },
+  "prefs": {
+    "theme": "system", "accent": null, "font_size": "medium", "density": "normal",
+    "animations": true, "language": "de", "region": "DE", "time_zone": "Europe/Berlin",
+    "time_zone_auto": true, "date_format": "de", "time_format": "24h",
+    "week_start": "monday", "number_format": "1.234,56", "confirm_delete": true,
+    "undo_delay": 5, "shortcuts": true, "developer": false
   },
   "session": { "id": "01JDX3…", "auth_time": 1795600000 },
   "hub": { "name": "Example Org", "home": "/", "account": "/account", "admin": null }
@@ -495,7 +509,9 @@ Only the endpoints listed here are part of the contract; other paths under
 
 `hub.name` is the organization's name from the hub's administration
 (`"Roedy Hub"` while none is set); `hub.admin` is `"/admin"` for
-administrators, else `null`.
+administrators, else `null`. `user.locale` is the language the hub writes in
+(as in the identity); `prefs` are the user's shared settings
+([§ 6.2](#62-shared-settings)).
 
 ### `GET /api/v1/apps`
 
@@ -535,6 +551,24 @@ immutable`; without `v` or with an earlier one `no-cache`, so that the
 browser revalidates. An app that waits for pairing, or an unknown slug, gets
 `404 {"error": "not_found"}`. The icon has a square `viewBox` and scales to
 any size.
+
+### `GET /api/v1/directory`
+
+The instance's active users, for suggestions inside an app (recipients,
+people to share with); `401 {"error": "unauthorized"}` when signed out:
+
+```json
+{ "users": [ { "id": "01JDX2Q7…", "name": "Alex Example", "email": "alex@example.com" } ] }
+```
+
+Sorted by name. Every signed-in user may read it: it shows what colleagues
+in one organization see of each other anyway, and nothing more – no login
+names, roles, status or settings. Locked users are left out; deleted users
+and open invitations are no users. `?app=<slug>` lists only the users with
+access to that app; the caller needs access to it too (otherwise `403
+{"error": "no_access"}`), and an unknown, pending or switched-off app gets
+`404 {"error": "not_found"}`. The app's backend reads its users with
+`GET /internal/v1/users` ([§ 7](#7-internal-api)).
 
 ### `GET /api/v1/frame.js`
 
@@ -633,6 +667,44 @@ the session's URLs and nowhere else.
 | `429 rate_limited` | More than 60 tokens a minute, or more than 10 refreshes in 10 minutes; `retry_after` in seconds |
 | `502 refresh_failed` | Stalwart could not be reached or refused for now, and no token is valid any more; `reason` names why. Try again later. |
 
+### 6.2 Shared settings
+
+Users set how every Roedy app looks and behaves once, under Account in the
+hub: appearance, language and region, and general behaviour. An app applies
+them and offers no settings of its own for these; its own settings (Mail's
+list design, say) stay in the app. `prefs` of `GET /api/v1/session`:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `theme` | `system`, `light`, `dark` | Colour scheme; `system` follows the operating system |
+| `accent` | `apricot`, `sage`, `lavender`, `sky`, `rose`, `#rrggbb` or `null` | Accent colour; `null`: the brand colour (also while the branding fixes it) |
+| `font_size` | `small`, `medium`, `large` | Font size of the interface |
+| `density` | `compact`, `normal`, `comfortable` | Spacing of lists and rows |
+| `animations` | boolean | Animations on; the system's "reduce motion" applies as well |
+| `language` | `en`, `de`, `system` | Language as chosen; `system` follows the browser (`user.locale` is what the hub writes in) |
+| `region` | `DE`, `AT`, `CH`, `FR`, `IT`, `NL`, `ES`, `GB`, `US` or `null` | Country or region, e.g. for holidays; `null`: not set |
+| `time_zone` | IANA name | The chosen zone; while `time_zone_auto` the last one the hub's web app saw in the user's browser |
+| `time_zone_auto` | boolean | Follow the device: the browser uses its own zone |
+| `date_format` | `de` (25.10.2026), `dmy` (25/10/2026), `iso` (2026-10-25), `us` (10/25/2026) | Date in digits |
+| `time_format` | `24h`, `12h` | Clock |
+| `week_start` | `monday`, `sunday` | First day of the week |
+| `number_format` | `1.234,56`, `1,234.56`, `1 234,56` (no-break space), `1’234.56` (U+2019) | Thousands and decimal separators |
+| `confirm_delete` | boolean | Ask before deleting |
+| `undo_delay` | `3`, `5`, `10` | Seconds an action can be undone |
+| `shortcuts` | boolean | Keyboard shortcuts on |
+| `developer` | boolean | Developer mode: the app's developer tools (log, debug bar, technical details) |
+
+The formats are always resolved: the user's own choice, otherwise what is
+usual in the region, without a region what fits the language. In the
+browser, an app takes the time zone of the device while `time_zone_auto` is
+`true`. New fields and values may appear (compatible additions,
+[§ 14](#14-versioning-and-extensions)); an app keeps its default for what it
+does not know. `@roedy/ui` applies all of this (`connectHub()`, see its
+README). A change reaches other tabs through `localStorage` ([§ 3.6](#36-namespaces-in-the-browser)),
+other devices with the next `GET /api/v1/session`. The app's backend gets
+time zone, region and formats with the users ([§ 7](#7-internal-api)) and
+`user.updated` ([§ 10.2](#102-event-types)).
+
 ## 7. Internal API
 
 The hub serves the internal API on its own listener (`ROEDY_INTERNAL_LISTEN`,
@@ -660,7 +732,7 @@ using the internal API with its secret; only the Stalwart access tokens of
 | `GET /internal/v1/jwks` | – | Public signing keys ([§ 4.4](#44-keys-jwks)), `Cache-Control: max-age=300` |
 | `PUT /internal/v1/manifest` | secret | Send the current manifest, on every start ([§ 8](#8-manifest)) |
 | `GET /internal/v1/events?after=<seq>&limit=<n>` | secret | Read missed events ([§ 10.3](#103-catching-up)) |
-| `GET /internal/v1/users?cursor=<c>&limit=<n>` | secret | Users with access to this app |
+| `GET /internal/v1/users?cursor=<c>&limit=<n>` | secret | Users with access to this app, with their time zone and formats |
 | `GET /internal/v1/users/<sub>` | secret | One user: with access, without access or deleted |
 | `GET /internal/v1/stalwart/servers` | secret | The Stalwart servers' origins ([§ 7.1](#71-stalwart-accounts-for-the-apps-backend)) |
 | `GET /internal/v1/users/<sub>/stalwart-accounts` | secret | A user's Stalwart accounts |
@@ -691,13 +763,19 @@ reconciling after missed events). Ordered by `sub`, `limit` 1–500 (default
   "users": [
     { "sub": "01JDX2Q7…", "username": "alex", "email": "alex@example.com",
       "name": "Alex Example", "role": "user", "app_role": "user",
-      "locale": "de", "status": "active" }
+      "locale": "de", "status": "active",
+      "prefs": { "time_zone": "Europe/Berlin", "region": "DE", "date_format": "de",
+                 "time_format": "24h", "week_start": "monday", "number_format": "1.234,56" } }
   ],
   "next_cursor": null
 }
 ```
 
-`status`: `active` or `locked`. For the next page the app passes
+`status`: `active` or `locked`. `prefs` are what the app needs to write
+texts and mails for the user without a request: the time zone (the last one
+the user's browser reported while it follows the device), region and formats
+as in [§ 6.2](#62-shared-settings), resolved. Write in `locale` and these.
+For the next page the app passes
 `next_cursor` as `cursor`; it is `null` on the last page. A `limit` outside
 1–500 gets `400 bad_request`. Users without access to the app are not
 listed. **Absence from this list never means that a user was deleted** – only
@@ -972,7 +1050,7 @@ it: the app may hold data from earlier access.
 
 | `type` | `data` | The app should |
 |---|---|---|
-| `user.updated` | `{"sub", "username", "email", "name", "role", "locale"}` – the new values | update its copy of the user |
+| `user.updated` | `{"sub", "username", "email", "name", "role", "locale", "prefs"}` – the new values, `prefs` as in [§ 7](#7-internal-api) | update its copy of the user |
 | `user.locked` | `{"sub"}` | end everything that runs for the user without a request: open streams, push subscriptions, scheduled sending. Keep the data. |
 | `user.unlocked` | `{"sub"}` | record the user as no longer locked, so that writes for them are allowed again (also when replaying: if the user was unlocked after a replayed `user.locked`, the replay contains that `user.unlocked` as well) |
 | `user.deleted` | `{"sub"}` | delete the user's data (or anonymize it, as the app documents) |
@@ -994,7 +1072,8 @@ it: the app may hold data from earlier access.
   `"access": false, "app_role": null`.
 - `user.updated` follows a change of any of its fields, `locale` included
   (the user's language, or the language of their last sign-in while the
-  setting follows the browser).
+  setting follows the browser), and of `prefs` (time zone, region, formats).
+  Settings the backend does not get (appearance, behaviour) give none.
 - `session.revoked` with `reason` `expired` follows when the hub cleans up
   expired sessions, up to an hour after the expiry; `revoked` also covers the
   least recently used session of a user who signs in with 20 sessions open.
@@ -1172,6 +1251,9 @@ An app in hub mode MUST:
 It SHOULD:
 
 - [ ] use the app switcher of the hub's frame ([§ 5.5](#55-the-hubs-frame));
+- [ ] apply the shared settings ([§ 6.2](#62-shared-settings)) and offer no
+  settings of its own for them; write texts for a user in their time zone
+  and formats (`prefs` of [§ 7](#7-internal-api));
 - [ ] catch up on events at start;
 - [ ] send keep-alives at least every 30 s on long-lived streams;
 - [ ] log `X-Roedy-Request-Id`;
@@ -1197,11 +1279,13 @@ It SHOULD:
   all Roedy apps ([`plan.md`](plan.md) § 9): what several apps need is built
   in the hub, and an app should not build its own. Stalwart servers, accounts
   and access tokens are part of this document ([§ 6.1](#61-stalwart-accounts)).
-  Planned as compatible additions: shared settings such as time zone and formats;
-  notifications with topics from the manifest; a frame of web components
-  served by the hub (app switcher, notification bell, notice bar); switching
-  an app off in the administration. Until each is in this document, nothing
-  here depends on it.
+  So are the shared settings and the directory ([§ 6.2](#62-shared-settings),
+  [`GET /api/v1/directory`](#get-apiv1directory)), the app switcher
+  ([§ 5.5](#55-the-hubs-frame)) and switching an app off
+  ([§ 3.7](#37-switched-off)). Planned as compatible additions:
+  notifications with topics from the manifest; the notification bell and
+  the notice bar in the hub's frame. Until each is in this document,
+  nothing here depends on it.
 
 ## 15. Examples
 

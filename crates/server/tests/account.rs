@@ -358,6 +358,17 @@ async fn signed_in_devices_and_signing_them_out() {
     assert_eq!(env.count("sessions").await, 0);
 }
 
+/// The settings document without a stored row.
+fn default_settings() -> Value {
+    json!({
+        "lang": "en", "mode": null, "accent": null, "font_size": "medium", "density": "normal",
+        "animations": true, "region": null, "time_zone_auto": true,
+        "time_zone": "Europe/Berlin", "date_format": null, "time_format": null,
+        "week_start": null, "number_format": null, "confirm_delete": true, "undo_delay": 5,
+        "shortcuts": true, "developer": false,
+    })
+}
+
 #[tokio::test]
 async fn settings_with_versions() {
     let env = env().await;
@@ -366,17 +377,17 @@ async fn settings_with_versions() {
     let reply = env.as_user(&token, Method::GET, "/settings", None).await;
     assert_eq!(
         reply.json(),
-        json!({ "version": 0, "settings": { "lang": "en", "mode": null, "accent": null } })
+        json!({ "version": 0, "settings": default_settings() })
     );
     let put = |body: Value| env.as_user(&token, Method::PUT, "/settings", Some(body));
 
     let reply =
         put(json!({ "version": 0, "settings": { "mode": "dark", "accent": "#F80" } })).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(
-        reply.json(),
-        json!({ "version": 1, "settings": { "lang": "en", "mode": "dark", "accent": "#ff8800" } })
-    );
+    let mut expected = default_settings();
+    expected["mode"] = json!("dark");
+    expected["accent"] = json!("#ff8800");
+    assert_eq!(reply.json(), json!({ "version": 1, "settings": expected }));
     // Nothing changes: the version stays.
     let reply = put(json!({ "version": 1, "settings": { "mode": "dark" } })).await;
     assert_eq!(reply.json()["version"], 1);
@@ -387,13 +398,144 @@ async fn settings_with_versions() {
     assert_eq!(reply.json()["version"], 1);
     assert_eq!(reply.json()["settings"]["mode"], "dark");
 
-    let reply = put(json!({ "version": 1, "settings": { "lang": "fr", "font": "large" } })).await;
+    let reply = put(json!({ "version": 1, "settings": {
+        "lang": "fr", "font": "large", "undo_delay": 7, "time_zone": "Europe/Atlantis",
+    } }))
+    .await;
     assert_eq!(
         reply.json()["fields"],
-        json!({ "settings.lang": { "code": "invalid" }, "settings.font": { "code": "unknown" } })
+        json!({
+            "settings.lang": { "code": "invalid" }, "settings.font": { "code": "unknown" },
+            "settings.undo_delay": { "code": "invalid" },
+            "settings.time_zone": { "code": "invalid" },
+        })
     );
     let reply = env.as_user(&token, Method::GET, "/settings", None).await;
     assert_eq!(reply.json()["settings"]["lang"], "en", "nothing changed");
+}
+
+#[tokio::test]
+async fn shared_settings_with_region_and_formats() {
+    let env = env().await;
+    env.add_user("max", "max@example.com", Role::User).await;
+    let token = env.session_for("max").await;
+    let put = |version: i64, settings: Value| {
+        env.as_user(
+            &token,
+            Method::PUT,
+            "/settings",
+            Some(json!({ "version": version, "settings": settings })),
+        )
+    };
+    let reply = put(
+        0,
+        json!({
+            "font_size": "large", "density": "comfortable", "animations": false,
+            "region": "CH", "time_zone_auto": false, "time_zone": "europe/zurich",
+            "time_format": "12h", "confirm_delete": false, "undo_delay": 3,
+            "shortcuts": false, "developer": true,
+        }),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let settings = &reply.json()["settings"];
+    assert_eq!(settings["time_zone"], "Europe/Zurich");
+    assert_eq!(settings["time_format"], "12h");
+    assert_eq!(settings["date_format"], Value::Null);
+
+    // `prefs` in `GET session`: the formats resolved by the region.
+    let prefs = env
+        .as_user(&token, Method::GET, "/session", None)
+        .await
+        .json()["prefs"]
+        .clone();
+    assert_eq!(
+        prefs,
+        json!({
+            "theme": "system", "accent": null, "font_size": "large", "density": "comfortable",
+            "animations": false, "language": "en", "region": "CH",
+            "time_zone": "Europe/Zurich", "time_zone_auto": false, "date_format": "de",
+            "time_format": "12h", "week_start": "monday", "number_format": "1\u{2019}234.56",
+            "confirm_delete": false, "undo_delay": 3, "shortcuts": false, "developer": true,
+        })
+    );
+
+    // Another region sets the own formats back to automatic.
+    let reply = put(1, json!({ "region": "FR" })).await;
+    assert_eq!(reply.json()["settings"]["time_format"], Value::Null);
+    let prefs = env
+        .as_user(&token, Method::GET, "/session", None)
+        .await
+        .json()["prefs"]
+        .clone();
+    assert_eq!(
+        (
+            &prefs["date_format"],
+            &prefs["time_format"],
+            &prefs["number_format"]
+        ),
+        (&json!("dmy"), &json!("24h"), &json!("1\u{a0}234,56"))
+    );
+
+    // The branding fixes the accent: the apps get none.
+    put(2, json!({ "accent": "rose" })).await;
+    let session = env
+        .as_user(&token, Method::GET, "/session", None)
+        .await
+        .json();
+    assert_eq!(session["prefs"]["accent"], "rose");
+    let mut branding = (*env.state.instance.branding()).clone();
+    branding.branding.user_accent = false;
+    env.state.instance.set_branding(branding);
+    let session = env
+        .as_user(&token, Method::GET, "/session", None)
+        .await
+        .json();
+    assert_eq!(session["prefs"]["accent"], Value::Null);
+}
+
+#[tokio::test]
+async fn directory_of_active_users() {
+    let env = env().await;
+    env.add_user("max", "max@example.com", Role::User).await;
+    let anna = env.add_user("anna", "anna@example.com", Role::Admin).await;
+    let eva = env.add_user("eva", "eva@example.com", Role::User).await;
+    let token = env.session_for("max").await;
+    env.sql(move |c| {
+        c.execute(
+            "UPDATE users SET display_name = 'Anna Admin' WHERE id = ?1",
+            [&anna],
+        )?;
+        c.execute("UPDATE users SET status = 'locked' WHERE id = ?1", [&eva])
+    })
+    .await;
+    let reply = env.as_user(&token, Method::GET, "/directory", None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let users = reply.json()["users"].clone();
+    let names: Vec<&str> = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["name"].as_str().unwrap())
+        .collect();
+    // Sorted by name, without the locked user.
+    assert_eq!(names, ["Anna Admin", "Max Example"]);
+    assert_eq!(
+        users[0].as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["email", "id", "name"]
+    );
+    assert_eq!(users[0]["email"], "anna@example.com");
+
+    // Unknown app.
+    let reply = env
+        .as_user(&token, Method::GET, "/directory?app=nothing", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    // Signed out.
+    let reply = env
+        .send(common::CLIENT, Method::GET, "/directory", None, &[], &[])
+        .await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
