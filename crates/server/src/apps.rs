@@ -207,7 +207,7 @@ pub fn sanitize_icon(svg: &str) -> Result<String, &'static str> {
 /// `<img>` of another size would show the icon unscaled in its corner.
 /// `not_square` if `width` and `height` differ (a square `viewBox` with a
 /// rectangular size), `unreadable` without a size.
-pub fn with_view_box(svg: &str) -> Result<String, &'static str> {
+fn with_view_box(svg: &str) -> Result<String, &'static str> {
     let doc = roxmltree::Document::parse(svg).map_err(|_| "unreadable")?;
     let root = doc.root_element();
     if root.has_attribute("viewBox") {
@@ -229,13 +229,6 @@ pub fn with_view_box(svg: &str) -> Result<String, &'static str> {
         &svg[..at],
         &svg[at..]
     ))
-}
-
-/// A stored icon as served: icons sanitized before the `viewBox` was kept
-/// get it now (on read, so that the icon's version and `ETag` follow the
-/// bytes served); one that cannot get it stays as it is.
-pub fn stored_icon(svg: String) -> String {
-    with_view_box(&svg).unwrap_or(svg)
 }
 
 /// Whether the root element has a `viewBox` with equal, positive width and
@@ -431,16 +424,6 @@ mod tests {
             ),
             Err("not_square")
         );
-        // Icons stored without a `viewBox` get one when read.
-        let old = r#"<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h20v20H2z"/></svg>"#;
-        let served = stored_icon(old.to_owned());
-        assert!(
-            served.starts_with(r#"<svg viewBox="0 0 24 24" width="24""#),
-            "{served}"
-        );
-        assert_eq!(stored_icon(served.clone()), served);
-        let wide = r#"<svg width="48" height="24" xmlns="http://www.w3.org/2000/svg"/>"#;
-        assert_eq!(stored_icon(wide.to_owned()), wide);
 
         for (svg, code) in [
             (

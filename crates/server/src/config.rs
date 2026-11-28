@@ -14,7 +14,7 @@
 //! its origin.
 //!
 //! Built-in TLS (`ROEDY_TLS`, `tls`) is the hub's own: off by default (plain
-//! HTTP as before, for development and setups behind a proxy), `acme` for
+//! HTTP, for development and setups behind a proxy), `acme` for
 //! certificates from an ACME CA or `files` for a certificate from files.
 //! With TLS on, `ROEDY_LISTEN` is the HTTPS listener and defaults to
 //! `0.0.0.0:8443`, and `ROEDY_HTTP_LISTEN` serves the ACME HTTP-01

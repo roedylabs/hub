@@ -403,25 +403,6 @@ async fn deleting_the_account() {
     env.add_user("max", "max@example.com", Role::User).await;
     let anna = env.session_for("anna").await;
     let max = env.session_for("max").await;
-    let delete = async |token: &str, word: &str| {
-        env.as_user(
-            token,
-            Method::DELETE,
-            "/auth/me",
-            Some(json!({ "confirm": word })),
-        )
-        .await
-    };
-
-    assert_eq!(
-        delete(&max, "löschen").await.json()["fields"],
-        json!({ "confirm": { "code": "invalid" } })
-    );
-    let reply = delete(&anna, "delete").await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
-    assert_eq!(reply.error(), "last_admin");
-
-    // The confirmation named another account (another tab signed in someone else meanwhile): nothing happens.
     let anna_id: String = env
         .sql(|c| {
             c.query_row("SELECT id FROM users WHERE username = 'anna'", [], |r| {
@@ -436,21 +417,31 @@ async fn deleting_the_account() {
             })
         })
         .await;
-    let named = async |token: &str, id: &str| {
+    let delete = async |token: &str, word: &str, id: &str| {
         env.as_user(
             token,
             Method::DELETE,
             "/auth/me",
-            Some(json!({ "confirm": "delete", "id": id })),
+            Some(json!({ "confirm": word, "id": id })),
         )
         .await
     };
-    let reply = named(&max, &anna_id).await;
+
+    assert_eq!(
+        delete(&max, "löschen", &max_id).await.json()["fields"],
+        json!({ "confirm": { "code": "invalid" } })
+    );
+    let reply = delete(&anna, "delete", &anna_id).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.error(), "last_admin");
+
+    // The confirmation named another account (another tab signed in someone else meanwhile): nothing happens.
+    let reply = delete(&max, "delete", &anna_id).await;
     assert_eq!(reply.status, StatusCode::CONFLICT);
     assert_eq!(reply.error(), "account_mismatch");
     assert_eq!(env.count("users").await, 2);
 
-    let reply = named(&max, &max_id).await;
+    let reply = delete(&max, "delete", &max_id).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert!(reply.clears(session::COOKIE));
     assert_eq!(env.count("users").await, 1);

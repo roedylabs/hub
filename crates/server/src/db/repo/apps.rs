@@ -109,18 +109,12 @@ const SELECT: &str = "SELECT a.id, a.slug, a.internal_url, a.state, a.manifest_j
 fn app(row: &rusqlite::Row<'_>) -> rusqlite::Result<App> {
     let state: String = row.get(3)?;
     let manifest: Option<String> = row.get(4)?;
-    let mut manifest = manifest
+    let manifest = manifest
         .map(|json| serde_json::from_str::<Manifest>(&json))
         .transpose()
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
         })?;
-    // Icons stored before the sanitizer kept a `viewBox` (milestone 4.2) get
-    // one here, so that every reader – the icon, its version, the lists –
-    // sees the same bytes.
-    if let Some(manifest) = &mut manifest {
-        manifest.icon = crate::apps::stored_icon(std::mem::take(&mut manifest.icon));
-    }
     let access: String = row.get(5)?;
     let health: Option<String> = row.get(7)?;
     Ok(App {

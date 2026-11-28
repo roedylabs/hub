@@ -36,8 +36,11 @@ reviews:
         returned to clients must not leak internals.
     - path: "crates/server/src/db/migrations/*.sql"
       instructions: >-
-        Applied migrations are immutable. Schema changes need a new numbered
-        migration that works on existing databases.
+        Until the first release there is only the initial schema
+        0001_init.sql, which is edited in place; do not ask for new migrations
+        or compatibility with older databases. After the first release,
+        released migrations are immutable and schema changes need a new
+        numbered migration that works on existing databases.
     - path: "crates/server/locales/*.json"
       instructions: >-
         en.json and de.json must have the same keys and placeholders. German
@@ -67,8 +70,9 @@ reviews:
     - path: "docs/app-contract.md"
       instructions: >-
         The contract apps are built against without reading the hub's code.
-        Changes must stay backwards compatible within version 1 (section 14)
-        and match crates/contract.
+        Until the first release it may change freely (it stays version 1);
+        afterwards changes must stay backwards compatible within version 1
+        (section 14). It must match crates/contract.
     - path: ".github/workflows/*.yml"
       instructions: >-
         Actions are pinned to full commit SHAs with a version comment;

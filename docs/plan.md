@@ -128,9 +128,10 @@ Commit scopes: `server`, `gateway`, `contract`, `example`, `web`, `tokens`,
 
 ### Data model
 
-Migration 0001 (server base) holds `schema_migrations`, `app_settings`,
-`users`, `sessions` and `audit_log`; the other tables follow in later
-migrations with the milestones that use them.
+One initial schema, `crates/server/src/db/migrations/0001_init.sql`, holds
+every table. Until the first release it is edited in place and nothing needs a
+migration path from an earlier state; from the first release on, every schema
+change is a new migration.
 
 From Mail, trimmed: `schema_migrations`, `app_settings`, `users`, `sessions`
 (plus `auth_time`), `audit_log` (category `apps` added), `totp_devices`,
@@ -149,7 +150,9 @@ New:
 | `signing_keys` | `kid`, `private_enc`, `public`, `created_at`, `active_from`, `retired_at` |
 | `events` | `id`, `app_id`, `seq`, `type`, `data`, `created_at`; unique (app, seq) |
 | `deleted_users` | `sub`, `deleted_at`: tombstones for `GET /internal/v1/users/<sub>`, kept permanently |
-| `event_delivery` | `app_id`, `delivered_seq`, `attempts`, `retry_at`, `last_error` |
+| `event_delivery` | `app_id`, `last_seq`, `delivered_seq`, `attempts`, `retry_at`, `failing_since`, `last_error` |
+| `acme_accounts` | `directory`, `key_enc`, `url`, `created_at`: one ACME account per CA |
+| `tls_certificates` | `domain`, `key_enc`, `chain_pem`, `not_before`, `not_after`, `directory`, `created_at` |
 
 ### New dependencies (to be justified in the PRs)
 
@@ -703,7 +706,7 @@ checks pass in every PR; every PR has tests for what it adds.
       (only the hub publishes 443/80, `acme`, no trusted proxy), HTTPS and the
       redirect through the test setup and that only the apps' network reaches
       the internal listener and the apps. `docs/ops.md`: installation without
-      Caddy, DNS, firewall, the TOS opt-in, staging, migrating from Caddy,
+      Caddy, DNS, firewall, the TOS opt-in, staging,
       behind your own proxy. Open: the hub does not compress responses
       (Caddy did); a CI job against Pebble.
    4. [x] **End-to-end** – Playwright suite with axe against hub + example
