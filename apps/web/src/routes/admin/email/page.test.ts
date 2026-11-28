@@ -273,6 +273,7 @@ describe('Administration › Email page', () => {
           status: 422,
           body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
         },
+        { body: STORED },
       ],
     });
     await ready();
@@ -281,7 +282,18 @@ describe('Administration › Email page', () => {
     const alert = await view.findByRole('alert');
     expect(alert).toHaveTextContent('The server’s address has changed.');
     expect(server('Example mail')).toHaveAttribute('aria-describedby', alert.id);
-    await vi.waitFor(() => expect(view.getByText(/mail\.example\.net/)).toBeInTheDocument());
+    await vi.waitFor(() => expect(view.getByText('JMAP session via mail.example.net')).toBeInTheDocument());
+    // The password was for the old address: it is gone, and a new one answers the error.
+    expect(field('Password')).toHaveValue('');
+    await fireEvent.input(field('Password'), { target: { value: 'pw-2' } });
+    expect(view.queryByRole('alert')).toBeNull();
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() =>
+      expect(view.calls.filter((c) => c.method === 'PUT').at(-1)?.body).toEqual({
+        app_password: 'pw-2',
+        server_url: 'https://mail.example.net',
+      }),
+    );
   });
 
   it('sends a test email', async () => {

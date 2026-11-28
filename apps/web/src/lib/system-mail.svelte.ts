@@ -603,9 +603,12 @@ export class SystemMailPage {
   set<K extends MailDraftKey>(key: K, value: MailDraft[K]): void {
     this.edits = { ...this.edits, [key]: value };
     const field = key as MailField;
-    if (this.serverErrors[field]) {
+    // A secret entered after the server moved is for its new address: the server's `changed` error is answered.
+    const moved = (key === 'pass' || key === 'token') && this.serverErrors.srv === 'changed';
+    if (this.serverErrors[field] || moved) {
       const rest = { ...this.serverErrors };
       delete rest[field];
+      if (moved) delete rest.srv;
       this.serverErrors = rest;
     }
   }
@@ -832,11 +835,14 @@ export class SystemMailPage {
   }
 
   /**
-   * The server's address changed since the page loaded (`server_id` `changed`): load the registry again, so that the
-   * pick list shows the current address before the secret is entered again.
+   * The server's address changed since the page loaded (`server_id` `changed`): the entered secret was meant for the
+   * previous address, so it goes – it must not reach the new one with the next test or save. Then load the registry
+   * again, so that the pick list shows the current address before the secret is entered again (which answers the
+   * error, `set`).
    */
   #refreshIfMoved(error: unknown): void {
     if (mailErrorsOf(error).srv !== 'changed') return;
+    this.edits = { ...this.edits, pass: '', token: '' };
     void api<{ servers: MailServer[] }>('GET', 'admin/stalwart/servers')
       .then((list) => {
         if (!this.#disposed) this.servers = list.servers.map(({ id, label, url, host }) => ({ id, label, url, host }));
