@@ -577,7 +577,6 @@ async fn forward(
             answer = &mut respond => break answer,
         }
     };
-    drop(app_watch);
     let mut from_app = match answer {
         Some(Ok(response)) => response,
         Some(Err(error)) => {
@@ -615,11 +614,12 @@ async fn forward(
         && gateway.sessions.generation() != generation
     {
         still_valid(state, app, signed).await;
-        // Switched off while that check waited.
-        if let Some(error) = gone() {
-            return stopped(error);
+        // Switched off while that check waited – even if on again by now.
+        if app_watch.has_ended() && !gateway.streams.shutting_down() {
+            return stopped(gone().unwrap_or(GatewayError::Disabled));
         }
     }
+    drop(app_watch);
     let app_upgrade = switching.then(|| hyper::upgrade::on(&mut from_app));
     let (mut parts, incoming) = from_app.into_parts();
     let body = match (client_upgrade, app_upgrade) {

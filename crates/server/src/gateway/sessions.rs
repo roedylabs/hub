@@ -340,6 +340,12 @@ impl Watch {
         }
     }
 
+    /// Whether it has ended, without waiting.
+    pub fn has_ended(&mut self) -> bool {
+        self.poll_ended(&mut Context::from_waker(std::task::Waker::noop()))
+            .is_ready()
+    }
+
     /// Waits until the session ended, the app was switched off or the
     /// server shuts down.
     pub async fn ended(&mut self) {
@@ -496,6 +502,8 @@ mod tests {
         streams.end_app("app");
         assert!(ended(&mut watch));
         assert!(ended(&mut watch), "polled again");
+        assert!(watch.has_ended());
+        assert!(!streams.watch(owner("s2", "u1")).has_ended());
     }
 
     #[test]
