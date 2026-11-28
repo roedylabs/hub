@@ -1,7 +1,7 @@
 import { fireEvent, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ui } from '@roedy/ui';
-import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 
@@ -38,6 +38,27 @@ describe('Administration › Apps', () => {
     expect(within(rows[2] as HTMLElement).getByRole('img', { name: /Events can’t be delivered/ })).toBeInTheDocument();
     await fireEvent.click(within(rows[1] as HTMLElement).getByRole('button', { name: /Waiting for pairing/ }));
     expect(nav.goto).toHaveBeenCalledWith('/admin/apps/wiki');
+  });
+
+  it('switches an app off from its row after confirmation, and on again', async () => {
+    const view = apps({
+      'PATCH admin/apps/mail': [{ body: { app: disabledApp() } }, { body: { app: pairedApp() } }],
+    });
+    const toggle = await view.findByRole('switch', { name: 'Mail switched on' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(view.getByRole('switch', { name: 'wiki switched on' })).toHaveAttribute('aria-checked', 'true');
+    await fireEvent.click(toggle);
+    expect(ui.confirm).toMatchObject({ title: 'Switch off Mail?', ok: 'Switch off' });
+    ui.confirmOk();
+    await vi.waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    const row = toggle.closest('li') as HTMLElement;
+    expect(row.querySelector('.st')?.textContent?.trim()).toBe('Switched off');
+    expect(ui.toast?.text).toBe('Mail switched off');
+    // The row still opens the app's page; switching on needs no question.
+    await fireEvent.click(toggle);
+    expect(ui.confirm).toBeNull();
+    await vi.waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    expect(nav.goto).not.toHaveBeenCalled();
   });
 
   it('reorders with the buttons, keeps the focus and announces the position', async () => {

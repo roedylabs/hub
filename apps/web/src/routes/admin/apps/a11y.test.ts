@@ -8,14 +8,19 @@
 import { fireEvent, type RenderResult } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { violations } from '@roedy/ui/testing';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
 
 vi.mock('$app/navigation', () => ({ goto: vi.fn(() => Promise.resolve()) }));
 
-const APPS = [pairedApp(), pendingApp('2099-01-01T00:00:00Z'), offlineApp()];
+const APPS = [
+  pairedApp(),
+  pendingApp('2099-01-01T00:00:00Z'),
+  offlineApp(),
+  disabledApp({ slug: 'cal', name: { en: 'Calendar', de: 'Kalender' } }),
+];
 
 afterEach(() => {
   resetSignedIn();

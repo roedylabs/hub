@@ -45,7 +45,7 @@ local_env=(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_
 # scripts/compose-smoke.sh; the fixed container names (roedy-hub,
 # roedy-hub-example) refuse a run next to another one.
 read -r -a engine <<<"${ROEDY_E2E_COMPOSE:-docker compose}"
-compose=("${engine[@]}" -p roedy-e2e -f "$REPO/deploy/compose.yml" -f "$REPO/deploy/compose.test.yml")
+compose=("${engine[@]}" -p roedy-e2e -f "$REPO/deploy/compose.yml" -f "$REPO/deploy/compose.test.yml" --profile example)
 
 # Called by the suite while it runs: restarts the example app with the pairing
 # code in ROEDY_EXAMPLE_PAIRING_CODE – in compose mode by recreating its

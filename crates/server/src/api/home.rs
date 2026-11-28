@@ -8,7 +8,8 @@
 //! administrators see the same: their role gives them no app they have no
 //! access to. Pending apps are never listed – they have no manifest, so no
 //! name or icon, and the gateway lets only hub administrators through to
-//! finish their setup; the administration lists them (`admin/apps`).
+//! finish their setup; the administration lists them (`admin/apps`). Apps
+//! an administrator switched off are left out as well, for everyone.
 //!
 //! The icon (`GET apps/<slug>/icon.svg`) is served outside the API's
 //! middleware by `web::app_icons`: it is public and cacheable, and the
@@ -53,7 +54,9 @@ async fn list(
     let lang = lang.code();
     let rows: Vec<Value> = apps
         .iter()
-        .filter(|app| app.status == Status::Paired && roles.contains_key(&app.slug))
+        .filter(|app| {
+            app.status == Status::Paired && app.enabled() && roles.contains_key(&app.slug)
+        })
         .filter_map(|app| {
             let manifest = app.manifest.as_ref()?;
             Some(json!({

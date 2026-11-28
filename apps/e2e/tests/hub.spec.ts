@@ -3,12 +3,13 @@
 // with password and code → pairing the example app from Administration › Apps
 // → its tile on the home page opens it through the gateway with the identity
 // → SSE and WebSocket through the browser → a user without access gets the
-// 403 page → Stalwart servers, accounts, the return from the sign-in and "No
-// account yet" (without a reachable Stalwart: the sign-in round trip itself is
-// covered by crates/server/tests/stalwart.rs and the callback page's tests) →
-// every page state in desktop and mobile, light and dark → sign-out closes the
-// streams and clears the site data. axe checks every page state. The tests
-// build on each other (serial) and share the run's hub.
+// 403 page → switching the example off (503 page) and on again → Stalwart
+// servers, accounts, the return from the sign-in and "No account yet" (without
+// a reachable Stalwart: the sign-in round trip itself is covered by
+// crates/server/tests/stalwart.rs and the callback page's tests) → every page
+// state in desktop and mobile, light and dark → sign-out closes the streams
+// and clears the site data. axe checks every page state. The tests build on
+// each other (serial) and share the run's hub.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { env } from '../env.ts';
 import {
@@ -379,6 +380,42 @@ test('a user without access gets the 403 page', async ({ browser }) => {
   expect(denied?.status()).toBe(403);
   await state(page, 'No access to this app');
   member.state = await context.storageState();
+});
+
+test('switching the example off answers 503, on again it is back', async ({ browser }) => {
+  const page = await newPage(
+    await newContext(browser, { view: 'desktop', theme: 'light' }, need(admin.state, 'session')),
+  );
+  await page.goto('/admin/apps/example');
+  await state(page, 'Example', 'app details');
+  const toggle = page.getByRole('switch', { name: 'Switched on' });
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+  // Off only after the confirmation.
+  await toggle.click();
+  const dialog = page.getByRole('alertdialog', { name: 'Switch off Example?' });
+  await expect(dialog).toBeVisible();
+  await expectAccessible(page, 'switch off confirmation');
+  await dialog.getByRole('button', { name: 'Switch off', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expectAccessible(page, 'app switched off');
+
+  // The hub answers for the app, even for the administrator, and lists it nowhere.
+  const off = await page.goto('/example/');
+  expect(off?.status()).toBe(503);
+  await state(page, 'App switched off');
+  await page.goto('/');
+  await state(page, 'Hello, Alex', 'home page with the example switched off');
+  await expect(page.getByText('No apps yet')).toBeVisible();
+
+  // On again: no question, and the app answers at once.
+  await page.goto('/admin/apps/example');
+  await state(page, 'Example', 'app details switched off');
+  await page.getByRole('switch', { name: 'Switched on' }).click();
+  await expect(page.getByRole('switch', { name: 'Switched on' })).toHaveAttribute('aria-checked', 'true');
+  const on = await page.goto('/example/');
+  expect(on?.status()).toBe(200);
+  await state(page, 'Example', 'example app switched on again');
 });
 
 test('Stalwart servers, accounts, the return from the sign-in and “No account yet”', async ({ browser }) => {

@@ -62,6 +62,9 @@ export interface AdminApp {
   icon: string | null;
   roles: AppRoleDef[] | null;
   access_default: AccessDefault;
+  /** `false` while an administrator has switched the app off (`disabled_at` since when). */
+  enabled: boolean;
+  disabled_at: string | null;
   position: number;
   health: 'online' | 'offline' | null;
   health_at: string | null;
@@ -145,16 +148,28 @@ export function defaultAccess(app: Pick<AdminApp, 'roles' | 'access_default'>): 
 
 /** Status of an administration app for the list and its page. */
 export interface AppStatus {
-  /** `pending`, `online`, `offline` (failed check) or `unknown` (paired, not checked yet). */
-  kind: 'pending' | 'online' | 'offline' | 'unknown';
+  /**
+   * `disabled` (switched off by an administrator, before anything else), `pending`, `online`, `offline` (failed
+   * check) or `unknown` (paired, not checked yet).
+   */
+  kind: 'disabled' | 'pending' | 'online' | 'offline' | 'unknown';
   label: string;
-  /** Details: since when offline, the pairing code's validity, the last contact. */
+  /** Details: since when switched off or offline, the pairing code's validity, the last contact. */
   detail: string;
   icon: IconName;
 }
 
 /** Status of an app at `now`. */
 export function appStatus(app: AdminApp, now = Date.now()): AppStatus {
+  if (!app.enabled) {
+    const since = app.disabled_at ? Date.parse(app.disabled_at) : NaN;
+    return {
+      kind: 'disabled',
+      label: m.apps_status_disabled(),
+      detail: Number.isFinite(since) ? m.apps_disabled_since({ ago: ago(since, now) }) : '',
+      icon: 'ti-plug-off',
+    };
+  }
   if (app.state === 'pending') {
     const exp = app.pairing ? Date.parse(app.pairing.expires_at) : NaN;
     const open = Number.isFinite(exp) && exp > now;
@@ -190,8 +205,9 @@ function until(t: number, now: number): string {
   return m.apps_minutes({ n: Math.max(1, Math.ceil((t - now) / 60_000)) });
 }
 
-/** Problem of the event delivery, otherwise `''`. */
+/** Problem of the event delivery, otherwise `''` – also while the app is switched off: its events wait on purpose. */
 export function eventsProblem(app: AdminApp, now = Date.now()): string {
+  if (!app.enabled) return '';
   const e = app.events;
   if (e.given_up) return m.apps_events_given_up();
   if (e.failing_since) {

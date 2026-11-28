@@ -1,6 +1,7 @@
 <!--
   Administration › Apps: the apps in their order on the home page with icon,
-  name, address, status and number of users; each row opens the app's page.
+  name, address, status and number of users; each row opens the app's page
+  and has the switch "Switched on" (off after a confirmation).
   "Move up" and "Move down" change the order (buttons: keyboard and screen
   reader; the new position is announced). "Add app" with slug and internal
   address; afterwards the first pairing code is shown once with "Copy".
@@ -39,6 +40,8 @@
       status: appStatus(a, now),
       problem: a.state === 'paired' ? eventsProblem(a, now) : '',
       sub: a.state === 'paired' ? m.apps_row_sub({ slug: a.slug, users: usersOf(a.user_count) }) : `/${a.slug}/`,
+      enabled: a.enabled,
+      switching: p.switching.includes(a.slug),
       first: i === 0,
       last: i === p.rows.length - 1,
     })),
@@ -224,6 +227,19 @@
                 </span>
               {/if}
               {#if !isMobile}<span class="chev"><Icon name="ti-chevron-right" /></span>{/if}
+            </button>
+            <button
+              type="button"
+              role="switch"
+              class="switch"
+              class:on={r.enabled}
+              aria-checked={r.enabled}
+              aria-disabled={r.switching}
+              aria-label={m.apps_switch_label({ name: r.name })}
+              use:tooltip={isMobile ? undefined : r.enabled ? m.apps_switch() : m.apps_status_disabled()}
+              onclick={() => p.setEnabled(r.slug, !r.enabled)}
+            >
+              <span class="knob"></span>
             </button>
             <span class="moves">
               <button
@@ -606,15 +622,60 @@
     background: var(--danger);
   }
 
+  /* switched off: a muted ring */
+  .st-disabled {
+    color: var(--mfg);
+  }
+
   /* waiting: a ring, as for invitations */
+  .st-disabled .st-dot,
   .st-pending .st-dot,
   .st-unknown .st-dot {
     background: transparent;
     box-shadow: inset 0 0 0 2px var(--acc);
   }
 
+  .st-disabled .st-dot,
   .st-unknown .st-dot {
     box-shadow: inset 0 0 0 2px var(--mfg);
+  }
+
+  /* Switch, as on Administration › Email, a little smaller */
+  .switch {
+    width: 44px;
+    height: 26px;
+    margin-left: 6px;
+    border-radius: 9999px;
+    background: var(--sunken);
+    position: relative;
+    flex-shrink: 0;
+    transition: background-color var(--dur, 220ms);
+  }
+
+  .switch.on {
+    background: var(--acc);
+  }
+
+  .switch[aria-disabled='true'] {
+    cursor: progress;
+    opacity: 0.6;
+  }
+
+  .knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 9999px;
+    /* fixed values (switch) */
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(60, 35, 10, 0.25);
+    transition: transform var(--dur, 220ms) cubic-bezier(0.3, 1.5, 0.5, 1);
+  }
+
+  .switch.on .knob {
+    transform: translateX(18px);
   }
 
   .warn {

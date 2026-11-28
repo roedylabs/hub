@@ -3,7 +3,7 @@ import { AppPage, AppsPage, internalUrlError, slugError, slugErrorText } from '#
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
 import { ui } from '@roedy/ui';
-import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -173,6 +173,117 @@ describe('Administration › Apps list', () => {
     p.copyShown();
     await vi.waitFor(() => expect(ui.toast?.text).toBe('Pairing code copied'));
     expect(writeText).toHaveBeenCalledWith(PAIRING.code);
+  });
+
+  it('switches an app off after confirmation and on at once', async () => {
+    const { p, calls } = await list({
+      'PATCH admin/apps/mail': [{ body: { app: disabledApp() } }, { body: { app: pairedApp() } }],
+    });
+    p.setEnabled('mail', false);
+    expect(ui.confirm).toMatchObject({ title: 'Switch off Mail?', ok: 'Switch off', icon: 'ti-plug-off' });
+    expect(p.switching).toEqual([]);
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(0);
+    // Cancelling changes nothing.
+    ui.confirmCancel();
+    expect(p.rows[0]?.enabled).toBe(true);
+    p.setEnabled('mail', false);
+    ui.confirmOk();
+    expect(p.switching).toEqual(['mail']);
+    await vi.waitFor(() => expect(p.rows[0]?.enabled).toBe(false));
+    expect(p.switching).toEqual([]);
+    expect(calls.at(-1)).toMatchObject({ method: 'PATCH', path: 'admin/apps/mail', body: { enabled: false } });
+    expect(ui.toast?.text).toBe('Mail switched off');
+    // On: no question.
+    p.setEnabled('mail', true);
+    expect(ui.confirm).toBeNull();
+    await vi.waitFor(() => expect(p.rows[0]?.enabled).toBe(true));
+    expect(calls.at(-1)).toMatchObject({ body: { enabled: true } });
+    expect(ui.toast?.text).toBe('Mail switched on');
+    expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'wiki', 'notes']);
+  });
+
+  it('keeps a switch against a list load that predates it, with the delivery it returns', async () => {
+    let answer: (reply: { body: unknown }) => void = () => {};
+    const late = new Promise<{ body: unknown }>((resolve) => (answer = resolve));
+    const { p, calls } = await list({
+      'GET admin/apps': [
+        { body: { apps: APPS } },
+        () => late,
+        { body: { apps: [pairedApp(), pendingApp(), offlineApp({ enabled: false })] } },
+      ],
+      'PATCH admin/apps/notes': [
+        { body: { app: offlineApp({ enabled: false, disabled_at: '2026-10-26T11:00:00Z' }) } },
+      ],
+      'PATCH admin/apps/mail': [{ body: { app: pairedApp() } }],
+    });
+    void p.load();
+    p.setEnabled('notes', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false));
+    answer({ body: { apps: APPS } });
+    await tick();
+    await tick();
+    expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false);
+    // The discarded load is replaced by one after the switch.
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(3);
+    // Switching on returns the reset delivery: no stale warning in the row.
+    p.rows = p.rows.map((a) => (a.slug === 'mail' ? disabledApp() : a));
+    p.setEnabled('mail', true);
+    await vi.waitFor(() => expect(p.rows[0]?.enabled).toBe(true));
+    expect(p.rows[0]?.events.failing_since).toBeNull();
+  });
+
+  it('replaces a load a switch discarded only once the queued order writes settled', async () => {
+    let answerLoad: (reply: { body: unknown }) => void = () => {};
+    const late = new Promise<{ body: unknown }>((resolve) => (answerLoad = resolve));
+    let answerOrder: (reply: { body: unknown }) => void = () => {};
+    const order = new Promise<{ body: unknown }>((resolve) => (answerOrder = resolve));
+    const moved = [pairedApp(), offlineApp({ enabled: false }), pendingApp()];
+    const { p, calls } = await list({
+      'GET admin/apps': [{ body: { apps: APPS } }, () => late, { body: { apps: moved } }],
+      'PATCH admin/apps': [() => order],
+      'PATCH admin/apps/notes': [{ body: { app: offlineApp({ enabled: false }) } }],
+    });
+    void p.load();
+    p.move('notes', -1);
+    p.setEnabled('notes', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false));
+    answerLoad({ body: { apps: APPS } });
+    await tick();
+    const loads = () => calls.filter((c) => c.method === 'GET').length;
+    expect(loads()).toBe(2);
+    expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'notes', 'wiki']);
+    answerOrder({ body: { apps: moved } });
+    await vi.waitFor(() => expect(loads()).toBe(3));
+    await vi.waitFor(() => expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'notes', 'wiki']));
+    expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false);
+  });
+
+  it('reloads after a failed switch only once the queued order writes settled', async () => {
+    let answer: (reply: { body: unknown }) => void = () => {};
+    const order = new Promise<{ body: unknown }>((resolve) => (answer = resolve));
+    const { p, calls } = await list({
+      'PATCH admin/apps': [() => order],
+      'PATCH admin/apps/mail': [{ status: 500, body: { error: 'internal' } }],
+    });
+    p.move('notes', -1);
+    p.setEnabled('mail', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('The app wasn’t switched. Please try again.'));
+    const loads = () => calls.filter((c) => c.method === 'GET').length;
+    expect(loads()).toBe(1);
+    answer({ body: { apps: APPS } });
+    await vi.waitFor(() => expect(loads()).toBe(2));
+  });
+
+  it('reloads the list when switching fails', async () => {
+    const { p, calls } = await list({ 'PATCH admin/apps/notes': [{ status: 500, body: { error: 'internal' } }] });
+    p.setEnabled('notes', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('The app wasn’t switched. Please try again.'));
+    await vi.waitFor(() => expect(calls.at(-1)).toMatchObject({ method: 'GET', path: 'admin/apps' }));
+    expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(true);
   });
 
   it('reloads the account when the role was lost', async () => {
@@ -396,6 +507,74 @@ describe('Administration › Apps › an app', () => {
     late({ body: { app: pairedApp() } });
     await tick();
     expect(p.app?.access_default).toBe('selected');
+  });
+
+  it('switches the app off after confirmation and on again', async () => {
+    const { p, calls } = await app({
+      'GET admin/apps/mail': [{ body: { app: pairedApp() } }, { body: { app: disabledApp() } }],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [
+        { body: { app: disabledApp() } },
+        { status: 500, body: { error: 'internal' } },
+        { body: { app: pairedApp() } },
+      ],
+    });
+    p.setEnabled(false);
+    expect(p.busy).toBe(false);
+    expect(ui.confirm).toMatchObject({ title: 'Switch off Mail?' });
+    ui.confirmOk();
+    expect(p.busy).toBe(true);
+    await vi.waitFor(() => expect(p.app?.enabled).toBe(false));
+    expect(p.busy).toBe(false);
+    expect(p.app?.disabled_at).toBe('2026-10-26T11:00:00Z');
+    expect(p.app?.events.pending).toBe(2);
+    // A failure says so and loads the app again.
+    p.setEnabled(true);
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('The app wasn’t switched. Please try again.'));
+    await vi.waitFor(() => expect(calls.at(-1)?.path).toBe('admin/apps/mail/users'));
+    expect(p.app?.enabled).toBe(false);
+    p.setEnabled(true);
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Mail switched on'));
+    expect(p.app?.enabled).toBe(true);
+    expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([
+      { enabled: false },
+      { enabled: true },
+      { enabled: true },
+    ]);
+  });
+
+  it('keeps the switch against a default save and a load that predate it', async () => {
+    let answerSave: (reply: { body: unknown }) => void = () => {};
+    const save = new Promise<{ body: unknown }>((resolve) => (answerSave = resolve));
+    let answerLoad: (reply: { body: unknown }) => void = () => {};
+    const load = new Promise<{ body: unknown }>((resolve) => (answerLoad = resolve));
+    const { p, calls } = await app({
+      'GET admin/apps/mail': [
+        { body: { app: pairedApp() } },
+        () => load,
+        { body: { app: disabledApp({ access_default: 'selected' }) } },
+      ],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [() => save, { body: { app: disabledApp({ access_default: 'selected' }) } }],
+    });
+    p.setDefault('selected');
+    void p.load();
+    p.setEnabled(false);
+    ui.confirmOk();
+    // The switch has its own request: it answers first, then the default save and the load that predate it.
+    await vi.waitFor(() => expect(p.app?.enabled).toBe(false));
+    answerSave({ body: { app: pairedApp({ access_default: 'selected' }) } });
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Default for new users saved'));
+    answerLoad({ body: { app: pairedApp() } });
+    await tick();
+    await tick();
+    expect(p.app?.enabled).toBe(false);
+    expect(p.app?.access_default).toBe('selected');
+    // The discarded load is replaced once the default save has settled.
+    await vi.waitFor(() =>
+      expect(calls.filter((c) => c.path === 'admin/apps/mail' && c.method === 'GET')).toHaveLength(3),
+    );
+    expect(p.app?.enabled).toBe(false);
   });
 
   it('removes the app after confirmation and leaves the page', async () => {

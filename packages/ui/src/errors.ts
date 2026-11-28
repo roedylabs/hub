@@ -4,7 +4,8 @@
  * The error pages cover the router's own (404 for an unknown address, 500)
  * and the gateway's (docs/app-contract.md › Errors): 403 `no_app_access`
  * (its own text: no access to the app), 403 `origin_mismatch`,
- * 502 `app_unreachable`, 503 `app_not_ready`, 504 `app_timeout`, and
+ * 502 `app_unreachable`, 503 `app_not_ready`, 503 `app_disabled` (its own
+ * text: an administrator switched the app off), 504 `app_timeout`, and
  * "offline" when the hub itself does not answer.
  *
  * Plus the environment of the app for bug reports (`ErrorEnv`): the rows of a
@@ -53,6 +54,8 @@ const t = texts({
     layout_desktop: 'Desktop',
     layout_narrow: 'Narrow',
     act: 'That didn’t work. Please try again.',
+    off_text: 'An administrator has switched this app off. Try again later or contact your administrator.',
+    off_title: 'App switched off',
     app_text: 'You’re signed in, but you don’t have access to this app. Ask your administrator for access.',
     app_title: 'No access to this app',
     limit: ({ wait }: { wait: string }) => `Too many requests. Try again in ${wait}.`,
@@ -93,6 +96,9 @@ const t = texts({
     layout_desktop: 'Desktop',
     layout_narrow: 'Schmal',
     act: 'Das hat nicht geklappt. Bitte versuchen Sie es erneut.',
+    off_text:
+      'Die Administration hat diese App ausgeschaltet. Versuchen Sie es später erneut oder wenden Sie sich an Ihre Administration.',
+    off_title: 'App ausgeschaltet',
     app_text:
       'Sie sind angemeldet, haben aber keinen Zugriff auf diese App. Bitten Sie Ihre Administration um Zugriff.',
     app_title: 'Kein Zugriff auf diese App',
@@ -152,6 +158,14 @@ export const ERRS = {
     text: t.e503_text,
     retry: true,
   },
+  /** 503 `app_disabled` of the gateway: an administrator switched the app off. */
+  off: {
+    icon: 'ti-plug-off',
+    kicker: t.e503_kicker,
+    title: t.off_title,
+    text: t.off_text,
+    retry: true,
+  },
   '504': {
     icon: 'ti-clock-exclamation',
     kicker: t.e504_kicker,
@@ -177,6 +191,7 @@ const GATEWAY: Readonly<Record<string, ErrorCode>> = {
   not_found: '404',
   app_unreachable: '502',
   app_not_ready: '503',
+  app_disabled: 'off',
   app_timeout: '504',
 };
 

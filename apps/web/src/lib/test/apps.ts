@@ -44,6 +44,8 @@ export function pairedApp(over: Partial<AdminApp> = {}): AdminApp {
       },
     ],
     access_default: 'all',
+    enabled: true,
+    disabled_at: null,
     position: 0,
     health: 'online',
     health_at: '2026-10-26T11:59:00Z',
@@ -98,6 +100,16 @@ export function offlineApp(over: Partial<AdminApp> = {}): AdminApp {
     online_at: '2026-10-26T09:00:00Z',
     user_count: 1,
     events: { ...NO_EVENTS, pending: 4, attempts: 3, failing_since: '2026-10-26T10:00:00Z' },
+    ...over,
+  });
+}
+
+/** A paired app ("Mail", `/mail/`) that an administrator switched off, with events waiting. */
+export function disabledApp(over: Partial<AdminApp> = {}): AdminApp {
+  return pairedApp({
+    enabled: false,
+    disabled_at: '2026-10-26T11:00:00Z',
+    events: { ...NO_EVENTS, pending: 2, attempts: 1, failing_since: '2026-10-26T10:30:00Z' },
     ...over,
   });
 }

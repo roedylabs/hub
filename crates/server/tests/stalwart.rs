@@ -794,6 +794,24 @@ async fn apps_get_servers_accounts_tokens_and_events() {
     );
     let refreshed = example.stalwart_token(&max, &id, true).await.unwrap();
     assert_ne!(refreshed["access_token"], token["access_token"]);
+    // Switched off: no tokens for the users' data; the rest stays open.
+    let switch = |enabled: bool| {
+        hub.admin(
+            Method::PATCH,
+            "/admin/apps/example",
+            Some(json!({ "enabled": enabled })),
+        )
+    };
+    assert_eq!(switch(false).await.status, StatusCode::OK);
+    let refused = example.stalwart_token(&max, &id, false).await.unwrap_err();
+    assert_eq!(
+        (refused.status, &refused.body["error"]),
+        (503, &json!("app_disabled"))
+    );
+    assert!(example.stalwart_accounts(&max).await.is_ok());
+    assert!(example.stalwart_servers().await.is_ok());
+    assert_eq!(switch(true).await.status, StatusCode::OK);
+    assert!(example.stalwart_token(&max, &id, false).await.is_ok());
     // Someone else's account, and a user without access.
     let eva = hub.user_id("eva").await;
     assert_eq!(

@@ -5,6 +5,8 @@
   "audit.apps.access_revoke": " removed the access of {name} to {slug}",
   "audit.apps.access_role": " changed the role of {name} in {slug} to {app_role}",
   "audit.apps.create": " added the app {slug}",
+  "audit.apps.disable": " switched off the app {slug}",
+  "audit.apps.enable": " switched on the app {slug}",
   "audit.apps.invite_access": " set the invitation to {email} to give access to {slug} with the role {app_role}",
   "audit.apps.invite_access.none": " set the invitation to {email} to give no access to {slug}",
   "audit.apps.order": " changed the order of the apps",

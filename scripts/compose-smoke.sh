@@ -41,7 +41,7 @@ trap remove_certs EXIT
 # (project roedy). The fixed container names would collide, so the test
 # refuses to run next to one (see below) instead of replacing it.
 project=roedy-smoke
-compose() { docker compose -p "$project" -f deploy/compose.yml -f deploy/compose.test.yml "$@"; }
+compose() { docker compose -p "$project" -f deploy/compose.yml -f deploy/compose.test.yml --profile example "$@"; }
 
 fail() {
   echo "Smoke test failed: $*" >&2
@@ -68,6 +68,9 @@ check "compose.yml is valid" env ROEDY_PUBLIC_URL=https://app.example.com \
   docker compose -f deploy/compose.yml config -q
 check "compose.yml with the profile mail is valid" production config -q
 check "compose.test.yml is valid" compose config -q
+# Every app has its profile: without one only the hub runs.
+check "without a profile only the hub runs" [ "$(env -u COMPOSE_PROFILES ROEDY_PUBLIC_URL=https://app.example.com \
+  ROEDY_TEST_TLS_DIR=/nonexistent docker compose -f deploy/compose.yml -f deploy/compose.test.yml config --services)" = roedy-hub ]
 config=$(production config --format json)
 # Only the hub publishes, TCP 443 → 8443 and 80 → 8080; never 8081.
 # "<service> [<host_ip>:]<published>:<target>/<protocol>" per published port.

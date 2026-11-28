@@ -166,6 +166,9 @@ WebSocket ping).
   this app at once (their other apps' stay open); the app learns about it
   from `access.changed` with `access: false`. A new role applies to the
   next request, whose identity carries it.
+- **App switched off:** when an administrator switches the app off
+  ([§ 3.7](#37-switched-off)) or removes it, the hub closes every open stream
+  and WebSocket connection to it at once, with a session or without.
 
 ### 3.6 Namespaces in the browser
 
@@ -192,6 +195,37 @@ The hub itself uses the namespace `hub` (`roedy.hub.`; its session cookie
 read `localStorage["roedy.hub.prefs"]` – JSON `{"theme": "system"|"light"|"dark",
 "locale": "en"|"de"}` – to apply theme and language before their first request.
 They MUST NOT write any key outside their namespace.
+
+### 3.7 Switched off
+
+An administrator can switch a paired or pending app off in the hub
+(Administration › Apps) and on again; operators also stop its container, which
+is a separate matter (the hub then answers `502 app_unreachable`). While the
+app is switched off:
+
+- **Browsers:** the hub answers every request under `/<slug>/` itself with
+  `503 {"error": "app_disabled"}` (or its error page for page loads,
+  [§ 12](#12-errors)) – for everyone, hub administrators included, signed in
+  or not. Nothing reaches the app, and its open streams and WebSockets are
+  closed ([§ 3.5](#35-streaming-and-websocket)).
+- **Listing:** `GET /api/v1/apps` leaves the app out
+  ([§ 6](#6-browser-api-of-the-hub)), so the home page and every app
+  switcher do as well. Its icon stays available.
+- **Internal API:** keeps working ([§ 7](#7-internal-api)), so that the app's
+  container can start cleanly, send its manifest, catch up on events and read
+  users – except access tokens for users' Stalwart accounts, which get `503
+  app_disabled` ([§ 7.1](#71-stalwart-accounts-for-the-apps-backend)): a
+  switched-off app does no work in the users' mail, calendars and contacts.
+- **Events** are still written for the app but not delivered
+  ([§ 10.1](#101-delivery)); the health check pauses ([§ 9](#9-pairing)).
+- Its pairing, secret, access entries and roles stay. Switching it on again
+  restores forwarding and listing at once, delivers the waiting events in
+  order right away and checks its health.
+
+An app needs nothing special for this: it sees no requests from browsers and
+no deliveries, and finds the events it missed in its stream as usual. Events
+older than the retention of 30 days are gone by then, which the app handles
+like any other gap ([§ 10.3](#103-catching-up)).
 
 ## 4. Identity
 
@@ -482,9 +516,10 @@ names and descriptions in the user's language (`user.locale` of
 or there was none yet). `url` is `/<slug><home>` with `home` from the manifest.
 `icon` is the address of the icon below, with its version.
 
-Only paired apps are listed. An app that waits for pairing
-([§ 9](#9-pairing)) is not, not even for hub administrators: it has no name or
-icon yet, and they reach it through the hub's administration. A hub
+Only paired apps that are switched on are listed. An app that waits for
+pairing ([§ 9](#9-pairing)) is not, not even for hub administrators: it has
+no name or icon yet, and they reach it through the hub's administration. A
+switched-off app ([§ 3.7](#37-switched-off)) is not listed for anyone. A hub
 administrator sees the apps they have access to, like everyone else.
 
 ### `GET /api/v1/apps/<slug>/icon.svg`
@@ -615,7 +650,9 @@ Authorization: Bearer rhs_01JDX4…_k3J9…
 
 An unknown or revoked secret gets `401 {"error": "invalid_app_credentials"}`.
 The app should then report "connection to the hub lost, pair again" in its
-logs and its admin area.
+logs and its admin area. A switched-off app ([§ 3.7](#37-switched-off)) keeps
+using the internal API with its secret; only the Stalwart access tokens of
+[§ 7.1](#71-stalwart-accounts-for-the-apps-backend) are refused then.
 
 | Method and path | Auth | Purpose |
 |---|---|---|
@@ -704,8 +741,10 @@ no_access` for users without access to the app (also unknown ones).
 token for work without a request from the user (scheduled sending, push
 handling), only if the manifest has `"stalwart": {"backend": true}` (otherwise
 `403 not_requested`). Optional body `{"refresh": true}` as in the browser API;
-response and errors as there, plus `404 no_access` (no access to the app) and
-`403 user_locked` (the user is locked). At most 60 tokens a minute and 10
+response and errors as there, plus `404 no_access` (no access to the app),
+`403 user_locked` (the user is locked) and `503 app_disabled` (an
+administrator switched the app off, [§ 3.7](#37-switched-off); the app
+pauses such work and tries again later). At most 60 tokens a minute and 10
 refreshes in 10 minutes per user. A token fetched here does not count as use
 by a browser: the hub does not renew it early, so fetch it when needed rather
 than keeping one around.
@@ -856,12 +895,15 @@ instance key); the hub keeps only a hash and cannot show it again. It stores
 - **Health:** right after pairing and then about every 30 seconds the hub
   sends `GET /<slug>/readyz` to the app's internal address. A `2xx` answer
   within 10 seconds counts as online
-  ([§ 6](#6-browser-api-of-the-hub) `status`), anything else as offline.
+  ([§ 6](#6-browser-api-of-the-hub) `status`), anything else as offline. Not
+  while the app is switched off ([§ 3.7](#37-switched-off)); switching it on
+  checks it at once.
 - While an app waits for pairing, the hub forwards requests to it only for
   signed-in hub administrators (so that an administrator can complete the
   app's own setup through the hub, for example to enter the pairing code),
   without an identity header – the app does not know the hub's keys yet – and
-  answers `503 app_not_ready` to everyone else.
+  answers `503 app_not_ready` to everyone else (`503 app_disabled` to everyone
+  while it is switched off).
 - **Pairing again** (Admin › Apps › New pairing code) replaces `app_secret`
   once the app has used the new code; the old secret stops working at that
   moment. That is the way to recover an app that lost its data or its secret.
@@ -906,6 +948,11 @@ The app verifies it as in [§ 4.3](#43-verification) with `typ` =
   it is back – it sends its manifest, catches up ([§ 10.3](#103-catching-up)),
   pairs again or answers its health check – and then tries the same event
   again at once.
+- **Switched off:** while an administrator has switched the app off
+  ([§ 3.7](#37-switched-off)), the hub writes its events as usual (`seq`
+  goes on) but delivers none. Switching it on delivers them in order at
+  once, starting with the first one not acknowledged, without waiting for a
+  backoff that ran before. The app may read them earlier with a catch-up.
 - **Gaps:** an event the hub could not deliver within the retention of 30
   days is deleted, and the stream continues after it. A `seq` more than one
   above the highest processed therefore means that the app missed events: it
@@ -1098,6 +1145,7 @@ page loads (`Sec-Fetch-Mode: navigate`, or `Accept` with `text/html` and no
 | 431 | `headers_too_large` | Request headers beyond 64 KiB ([§ 3.4](#34-limits-and-timeouts)); always JSON |
 | 502 | `app_unreachable` | The app does not accept the connection |
 | 503 | `app_not_ready` | The app waits for pairing, and the user is not a hub administrator |
+| 503 | `app_disabled` | An administrator switched the app off ([§ 3.7](#37-switched-off)), for every user |
 | 504 | `app_timeout` | No response headers within 300 s after the request body ([§ 3.4](#34-limits-and-timeouts)) |
 
 Errors of the app itself (its 401, 403, 404, 5xx) reach the browser unchanged.
