@@ -222,10 +222,12 @@ impl SystemMail {
     }
 
     /// Forgets the secret of both sign-ins, e.g. because another server
-    /// or a new address must not get it.
+    /// or a new address must not get it – and the last check, which was of
+    /// the connection with it.
     pub fn forget_secret(&mut self) {
         self.app_password_enc = None;
         self.token_enc = None;
+        self.check = None;
     }
 
     /// Switches to the sign-in `auth` without a new secret: the stored one

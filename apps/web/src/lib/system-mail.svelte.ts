@@ -683,7 +683,7 @@ export class SystemMailPage {
         if (!quiet || error instanceof ApiError) ui.toasts.error(toastText(error));
         return;
       }
-      this.#refreshIfMoved(error);
+      this.#refreshIfMoved(error, d.srv);
       this.#fail(conn, errorText(error, d));
     } finally {
       this.checks--;
@@ -829,7 +829,7 @@ export class SystemMailPage {
       if (this.#disposed) return;
       if (lostAccess(error)) return;
       const errors = mailErrorsOf(error);
-      this.#refreshIfMoved(error);
+      this.#refreshIfMoved(error, d.srv);
       if (Object.keys(errors).length > 0) this.#showErrors(errors, d);
       else ui.toasts.error(isApiError(error, 429) ? toastText(error) : failText(error, m.error_act()));
     } finally {
@@ -841,11 +841,13 @@ export class SystemMailPage {
    * The server's address changed since the page loaded (`server_id` `changed`): the entered secret was meant for the
    * previous address, so it goes – it must not reach the new one with the next test or save. Then load the registry
    * again, so that the pick list shows the current address before the secret is entered again (which answers the
-   * error, `set`); a secret typed before the reload arrived is dropped once it shows another address.
+   * error, `set`); a secret typed before the reload arrived is dropped once it shows another address. `sent` is the
+   * server the refused request was for: a secret entered meanwhile for another one stays. A moved server also lost its
+   * stored secret and check in the backend, so the stored account is loaded again too.
    */
-  #refreshIfMoved(error: unknown): void {
+  #refreshIfMoved(error: unknown, sent: string): void {
     if (mailErrorsOf(error).srv !== 'changed') return;
-    this.edits = { ...this.edits, pass: '', token: '' };
+    if (this.draft.srv === sent) this.edits = { ...this.edits, pass: '', token: '' };
     void api<{ servers: MailServer[] }>('GET', 'admin/stalwart/servers')
       .then((list) => {
         if (this.#disposed) return;
@@ -858,6 +860,11 @@ export class SystemMailPage {
           this.edits = { ...this.edits, pass: '', token: '' };
           this.serverErrors = { ...this.serverErrors, srv: 'changed' };
         }
+        return api<SystemMail>('GET', 'admin/system-mail');
+      })
+      .then((view) => {
+        // "Connected" and the identities were of the previous address.
+        if (view && !this.#disposed && !this.saving) this.#adopt(view);
       })
       .catch(() => {});
   }

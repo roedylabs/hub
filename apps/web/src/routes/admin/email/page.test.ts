@@ -264,6 +264,11 @@ describe('Administration › Email page', () => {
   it('a server moved meanwhile refuses the password and shows the current address', async () => {
     const moved = [{ ...SERVERS[0], url: 'https://mail.example.net', host: 'mail.example.net' }];
     const view = renderPage(STORED, {
+      // The move dropped the stored password and its check.
+      'GET admin/system-mail': [
+        { body: STORED },
+        { body: { ...STORED, has_secret: false, status: 'unchecked', checked_at: null } },
+      ],
       'GET admin/stalwart/servers': [
         { body: { ...REGISTRY.body, servers: SERVERS } },
         { body: { ...REGISTRY.body, servers: moved } },
@@ -283,8 +288,10 @@ describe('Administration › Email page', () => {
     expect(alert).toHaveTextContent('The server’s address has changed.');
     expect(server('Example mail')).toHaveAttribute('aria-describedby', alert.id);
     await vi.waitFor(() => expect(view.getByText('JMAP session via mail.example.net')).toBeInTheDocument());
-    // The password was for the old address: it is gone, and a new one answers the error.
+    // The password was for the old address: it is gone, and a new one answers the error. "Connected" was of the
+    // previous address.
     expect(field('Password')).toHaveValue('');
+    await vi.waitFor(() => expect(view.queryByText('Connected')).toBeNull());
     await fireEvent.input(field('Password'), { target: { value: 'pw-2' } });
     expect(view.queryByRole('alert')).toBeNull();
     await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
@@ -358,6 +365,32 @@ describe('Administration › Email page', () => {
     expect(field('Password')).toHaveValue('');
     reload({ body: { ...REGISTRY.body, servers: SERVERS } });
     await vi.waitFor(() => expect(field('Password')).toHaveValue(''));
+  });
+
+  it('a late refusal for a server no longer chosen keeps the secret entered for the new one', async () => {
+    let refuse: (reply: { status: number; body: unknown }) => void = () => {};
+    renderPage(STORED, {
+      'PUT admin/system-mail': [() => new Promise((resolve) => (refuse = resolve))],
+    });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'for-the-first' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    // While the save is under way, the other server and its password.
+    await fireEvent.click(server('Example mail'));
+    await fireEvent.click(within(screen.getByRole('listbox')).getByRole('option', { name: /Other mail/ }));
+    await fireEvent.input(field('Password'), { target: { value: 'for-the-other' } });
+    refuse({
+      status: 422,
+      body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+    });
+    // The save is over (the bar no longer says "Saving …").
+    await vi.waitFor(() =>
+      expect(within(bar() as HTMLElement).getByRole('button', { name: 'Save' })).not.toHaveAttribute(
+        'aria-busy',
+        'true',
+      ),
+    );
+    expect(field('Password')).toHaveValue('for-the-other');
   });
 
   it('sends a test email', async () => {

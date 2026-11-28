@@ -971,6 +971,8 @@ async fn the_system_mail_sends_from_a_registry_server() {
     .await;
     let shown = hub.admin(Method::GET, "/admin/system-mail", None).await;
     assert_eq!(shown.json()["has_secret"], false, "{}", shown.body);
+    // The check was of the connection with the forgotten secret.
+    assert_eq!(shown.json()["status"], "unchecked");
     // A password typed while the form still showed the old address is not
     // stored for the new one.
     let stale = hub
