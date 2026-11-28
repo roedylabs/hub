@@ -349,16 +349,21 @@ export class AppsPage {
       done: (next) => {
         settle();
         if (this.#disposed) return;
-        // Only the switch: a move on its way keeps its order.
+        // A list load still on its way may predate the switch: it would show the old state.
+        this.#seq++;
+        // Only the switch and the event delivery (switching on resets its backoff): a move on its way keeps its order.
         this.rows = this.rows.map((a) =>
-          a.slug === slug ? { ...a, enabled: next.enabled, disabled_at: next.disabled_at } : a,
+          a.slug === slug ? { ...a, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events } : a,
         );
       },
       failed: (error) => {
         settle();
         if (isApiError(error, 404)) ui.toasts.error(m.apps_gone());
         else ui.toasts.error(failText(error, m.apps_switch_failed()));
-        if (!this.#disposed && !lostAccess(error)) void this.load();
+        if (this.#disposed || lostAccess(error)) return;
+        // Reload once the queued order writes have settled, as after a failed move.
+        if (this.#ordering > 0) this.#reconcile = true;
+        else void this.load();
       },
     });
   }
@@ -519,6 +524,8 @@ export class AppPage {
       done: (next) => {
         this.busy = false;
         if (this.#disposed || !this.app) return;
+        // A load still on its way may predate the switch: it would show the old state.
+        this.#seq++;
         // Only the switch: the response may predate a save of the default.
         this.app = { ...this.app, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events };
       },
@@ -543,7 +550,11 @@ export class AppPage {
     void this.#save(() => api<{ app: AdminApp }>('PATCH', `admin/apps/${this.#slug}`, { access_default: value }))
       .then(
         (res) => {
-          if (current()) this.app = res.app;
+          // Not the switch: the response may predate a switch that succeeded meanwhile.
+          if (current() && this.app) {
+            const { enabled, disabled_at, events } = this.app;
+            this.app = { ...res.app, enabled, disabled_at, events };
+          }
           ui.toasts.show(m.apps_default_saved());
         },
         (error: unknown) => {

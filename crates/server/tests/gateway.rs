@@ -1385,6 +1385,29 @@ async fn switching_the_app_off_and_on() {
     assert!(socket_closed, "WebSocket still open");
     assert!(anonymous_closed, "stream without a session still open");
 
+    // A request that waits for the app's answer while it is switched off
+    // ends at once with 503 instead of waiting for the app.
+    let app = switch(&hub, true).await;
+    assert_eq!(app["enabled"], json!(true));
+    let started = Instant::now();
+    let (waiting, _) = tokio::join!(hub.get("/example/slow?ms=5000", Some(&hub.max)), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        switch(&hub, false).await
+    });
+    let (status, _, body) = json_of(waiting).await;
+    assert_eq!(
+        (status, &body),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({ "error": "app_disabled" })
+        )
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+
     // 503 for everyone and every path, administrators included; the
     // request never reaches the app.
     for session in [
@@ -1439,8 +1462,9 @@ async fn switching_the_app_off_and_on() {
     // Its internal API keeps working: it can start and send its manifest.
     hub.example.send_manifest().await.unwrap();
     // Switching it off again changes nothing.
+    let before = switch(&hub, false).await;
     let again = switch(&hub, false).await;
-    assert_eq!(again["disabled_at"], app["disabled_at"]);
+    assert_eq!(again["disabled_at"], before["disabled_at"]);
 
     // On again: forwarded as before, listed again.
     let app = switch(&hub, true).await;
@@ -1459,7 +1483,7 @@ async fn switching_the_app_off_and_on() {
             .is_ok()
     );
 
-    // Both switches are in the audit log, the repeated one not.
+    // Every switch is in the audit log, the repeated one not.
     let actions: Vec<String> = hub
         .env
         .sql(|c| {
@@ -1468,7 +1492,10 @@ async fn switching_the_app_off_and_on() {
                 .collect()
         })
         .await;
-    assert_eq!(actions, ["apps.disable", "apps.enable"]);
+    assert_eq!(
+        actions,
+        ["apps.disable", "apps.enable", "apps.disable", "apps.enable"]
+    );
 }
 
 #[tokio::test]

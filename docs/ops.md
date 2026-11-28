@@ -204,11 +204,13 @@ Two switches, for different things:
 | Data, pairing, access | Stay | Stay |
 | Who does it | An administrator in the web interface, logged in the audit log | The operator on the host |
 
-To take an app out of service, switch it off in the administration first, then stop its container: remove its
-profile from `COMPOSE_PROFILES` (e.g. `COMPOSE_PROFILES=mail,contacts` without `calendar`) and run
-`docker compose up -d --remove-orphans`. To bring it back, add the profile, `docker compose up -d`, wait until
-Administration › Apps shows it online again, and switch it on. The hub has no Docker socket and never starts or
-stops containers itself.
+To take an app out of service, switch it off in the administration first, then stop its container with
+`docker compose stop roedy-calendar` and remove its profile from `COMPOSE_PROFILES` (e.g.
+`COMPOSE_PROFILES=mail,contacts` without `calendar`), so that the next `docker compose up -d` leaves it stopped.
+Compose does not stop the running container of a profile that is no longer listed, not even with `--remove-orphans`;
+its volume and data stay. To bring it back, add the profile and run `docker compose up -d`, wait until the container
+is healthy (`docker compose ps`), switch the app on in Administration › Apps and wait until it shows online there: its
+health is not checked while it is off. The hub has no Docker socket and never starts or stops containers itself.
 
 While an app is switched off, its internal API keeps working, so that its container can start, send its manifest and
 catch up on events; only access tokens for users' Stalwart accounts are refused (`503 app_disabled`), so a switched-off

@@ -29,11 +29,14 @@
 //! The app's responses are marked [`Proxied`]: the hub's own security
 //! headers stay off them.
 //!
-//! Every response body and WebSocket is registered in [`Streams`]; ending
-//! its session closes it, and switching the app off closes all of the
-//! app's ([`Streams::end_app`]). A stream registered while the app is
-//! being switched off is closed by the check right after it is registered
-//! (the app table is reloaded before the streams end).
+//! Every request is registered in [`Streams`] before it goes to the app,
+//! and stays registered with its response body or WebSocket; ending its
+//! session closes it, and switching the app off closes all of the app's
+//! ([`Streams::end_app`]) – also a request still uploading or waiting for
+//! the app's response headers, which then gets `503 app_disabled`. A
+//! request registered while the app is being switched off is stopped by
+//! the check right after its registration (the app table is reloaded
+//! before the streams end).
 
 pub mod client;
 pub mod headers;
@@ -501,6 +504,24 @@ async fn forward(
         identity,
         websocket,
     };
+    let mut watch = gateway.streams.watch(signed.map_or_else(
+        || Owner::anonymous(&app.id),
+        |signed| Owner {
+            sid: &signed.user.session_id,
+            user_id: &signed.user.id,
+            app_id: &app.id,
+        },
+    ));
+    // Switched off (or removed) since the app was looked up: its streams
+    // were ended before this one was registered, and the table says so.
+    let gone = || match state.apps.get(slug) {
+        None => Some(GatewayError::NotFound),
+        Some(now) if !now.enabled => Some(GatewayError::Disabled),
+        Some(_) => None,
+    };
+    if let Some(error) = gone() {
+        return Err(error);
+    }
     let outgoing = headers::request_headers(request.headers(), &forward);
     let uri = app_uri(app, request.uri()).ok_or(GatewayError::Internal)?;
     let client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
@@ -512,12 +533,31 @@ async fn forward(
     *to_app.version_mut() = Version::HTTP_11;
     *to_app.headers_mut() = outgoing;
 
-    let answer = client::respond(
+    let respond = client::respond(
         gateway.client.request(to_app),
         sent,
         gateway.limits.response,
-    )
-    .await;
+    );
+    tokio::pin!(respond);
+    let answer = tokio::select! {
+        biased;
+        answer = &mut respond => answer,
+        () = watch.ended() => match gone() {
+            // Switched off or removed while the request was on its way:
+            // dropping it ends the upload and the connection to the app.
+            Some(error) => {
+                tracing::debug!(
+                    slug,
+                    request_id = request_id.to_str().unwrap_or_default(),
+                    "request stopped: app switched off or removed"
+                );
+                return Err(error);
+            }
+            // The session ended (or the server shuts down): the response
+            // still goes out, and its body ends at once.
+            None => respond.await,
+        },
+    };
     let mut from_app = match answer {
         Some(Ok(response)) => response,
         Some(Err(error)) => {
@@ -549,21 +589,8 @@ async fn forward(
         );
         return Err(GatewayError::Unreachable);
     }
-    let watch = gateway.streams.watch(signed.map_or_else(
-        || Owner::anonymous(&app.id),
-        |signed| Owner {
-            sid: &signed.user.session_id,
-            user_id: &signed.user.id,
-            app_id: &app.id,
-        },
-    ));
-    // Switched off while the app answered: the streams were ended before
-    // this one was registered, and the table already says so.
-    if state.apps.get(slug).is_none_or(|now| !now.enabled) {
-        gateway.streams.end_app(&app.id);
-    }
-    // A session that ended, or an access that went, since it was read
-    // (while the app answered) had no stream to close yet.
+    // A session that ended, or an access that went, after it was read and
+    // before this request was registered had no stream to close yet.
     if let Some(signed) = signed
         && gateway.sessions.generation() != generation
     {

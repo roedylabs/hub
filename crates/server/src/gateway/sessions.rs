@@ -223,6 +223,7 @@ impl Streams {
         };
         Watch {
             ended: Box::pin(ended),
+            done: false,
             _guard: guard,
         }
     }
@@ -313,20 +314,30 @@ impl Drop for Guard {
 /// A registered stream; dropping it unregisters.
 pub struct Watch {
     ended: Pin<Box<dyn Future<Output = ()> + Send>>,
+    /// `ended` is ready: it is not polled again (the gateway waits for it
+    /// before the app's response and again for its body).
+    done: bool,
     _guard: Guard,
 }
 
 impl Watch {
     /// Ready once the session ended, the app was switched off or the
-    /// server shuts down.
+    /// server shuts down – and from then on.
     pub fn poll_ended(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.ended.as_mut().poll(cx)
+        if !self.done && self.ended.as_mut().poll(cx).is_ready() {
+            self.done = true;
+        }
+        if self.done {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 
     /// Waits until the session ended, the app was switched off or the
     /// server shuts down.
     pub async fn ended(&mut self) {
-        self.ended.as_mut().await;
+        std::future::poll_fn(|cx| self.poll_ended(cx)).await;
     }
 }
 
@@ -468,6 +479,15 @@ mod tests {
         assert!(ended(&mut a) && ended(&mut b) && ended(&mut anonymous));
         assert!(!ended(&mut other) && !ended(&mut other_anonymous));
         assert_eq!(streams.sessions(), ["s1"]);
+    }
+
+    #[test]
+    fn an_ended_watch_stays_ended() {
+        let streams = Arc::new(Streams::default());
+        let mut watch = streams.watch(owner("s1", "u1"));
+        streams.end_app("app");
+        assert!(ended(&mut watch));
+        assert!(ended(&mut watch), "polled again");
     }
 
     #[test]

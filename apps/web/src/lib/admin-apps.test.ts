@@ -202,6 +202,48 @@ describe('Administration › Apps list', () => {
     expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'wiki', 'notes']);
   });
 
+  it('keeps a switch against a list load that predates it, with the delivery it returns', async () => {
+    let answer: (reply: { body: unknown }) => void = () => {};
+    const late = new Promise<{ body: unknown }>((resolve) => (answer = resolve));
+    const { p } = await list({
+      'GET admin/apps': [{ body: { apps: APPS } }, () => late],
+      'PATCH admin/apps/notes': [
+        { body: { app: offlineApp({ enabled: false, disabled_at: '2026-10-26T11:00:00Z' }) } },
+      ],
+      'PATCH admin/apps/mail': [{ body: { app: pairedApp() } }],
+    });
+    void p.load();
+    p.setEnabled('notes', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false));
+    answer({ body: { apps: APPS } });
+    await tick();
+    await tick();
+    expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false);
+    // Switching on returns the reset delivery: no stale warning in the row.
+    p.rows = p.rows.map((a) => (a.slug === 'mail' ? disabledApp() : a));
+    p.setEnabled('mail', true);
+    await vi.waitFor(() => expect(p.rows[0]?.enabled).toBe(true));
+    expect(p.rows[0]?.events.failing_since).toBeNull();
+  });
+
+  it('reloads after a failed switch only once the queued order writes settled', async () => {
+    let answer: (reply: { body: unknown }) => void = () => {};
+    const order = new Promise<{ body: unknown }>((resolve) => (answer = resolve));
+    const { p, calls } = await list({
+      'PATCH admin/apps': [() => order],
+      'PATCH admin/apps/mail': [{ status: 500, body: { error: 'internal' } }],
+    });
+    p.move('notes', -1);
+    p.setEnabled('mail', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('The app wasn’t switched. Please try again.'));
+    const loads = () => calls.filter((c) => c.method === 'GET').length;
+    expect(loads()).toBe(1);
+    answer({ body: { apps: APPS } });
+    await vi.waitFor(() => expect(loads()).toBe(2));
+  });
+
   it('reloads the list when switching fails', async () => {
     const { p, calls } = await list({ 'PATCH admin/apps/notes': [{ status: 500, body: { error: 'internal' } }] });
     p.setEnabled('notes', false);
@@ -466,6 +508,31 @@ describe('Administration › Apps › an app', () => {
       { enabled: true },
       { enabled: true },
     ]);
+  });
+
+  it('keeps the switch against a default save and a load that predate it', async () => {
+    let answerSave: (reply: { body: unknown }) => void = () => {};
+    const save = new Promise<{ body: unknown }>((resolve) => (answerSave = resolve));
+    let answerLoad: (reply: { body: unknown }) => void = () => {};
+    const load = new Promise<{ body: unknown }>((resolve) => (answerLoad = resolve));
+    const { p } = await app({
+      'GET admin/apps/mail': [{ body: { app: pairedApp() } }, () => load],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [() => save, { body: { app: disabledApp({ access_default: 'selected' }) } }],
+    });
+    p.setDefault('selected');
+    void p.load();
+    p.setEnabled(false);
+    ui.confirmOk();
+    // The switch has its own request: it answers first, then the default save and the load that predate it.
+    await vi.waitFor(() => expect(p.app?.enabled).toBe(false));
+    answerSave({ body: { app: pairedApp({ access_default: 'selected' }) } });
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Default for new users saved'));
+    answerLoad({ body: { app: pairedApp() } });
+    await tick();
+    await tick();
+    expect(p.app?.enabled).toBe(false);
+    expect(p.app?.access_default).toBe('selected');
   });
 
   it('removes the app after confirmation and leaves the page', async () => {
