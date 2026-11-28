@@ -119,7 +119,7 @@ export function byteText(bytes: number, locale?: string): string {
     unit++;
   }
   const n = new Intl.NumberFormat(locale, { maximumFractionDigits: unit === 0 ? 0 : 1 }).format(value);
-  return units[unit]({ n });
+  return (units[unit] ?? t.bytes)({ n });
 }
 
 /** Storage as text ("1.2 GB of 5 GB", without a limit "1.2 GB used"); `null` before the first check. */

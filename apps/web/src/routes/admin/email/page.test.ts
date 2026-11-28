@@ -156,9 +156,8 @@ describe('Administration › Email page', () => {
     const view = renderPage(NO_MAIL, {}, []);
     await ready();
     expect(screen.queryByRole('combobox')).toBeNull();
-    expect(
-      view.getByText('No Stalwart server yet. Add one under Administration › Stalwart servers.'),
-    ).toBeInTheDocument();
+    expect(view.getByText('No Stalwart server yet. Add one first, then choose it here.')).toBeInTheDocument();
+    expect(view.getByRole('link', { name: 'Add a Stalwart server' })).toHaveAttribute('href', '/admin/stalwart');
     await fireEvent.input(field('Username'), { target: { value: 'noreply@example.com' } });
     await fireEvent.input(field('Password'), { target: { value: 'pw' } });
     await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));

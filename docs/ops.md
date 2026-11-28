@@ -193,8 +193,11 @@ The hub keeps the Stalwart servers the apps (Mail, Calendar, Contacts) work with
 a user signs in at a server once, and every app uses that account. The browser talks JMAP directly to Stalwart, so
 the servers must be reachable from the users' browsers at their public address.
 
-- **Registry:** an administrator adds a server with its address (`https://mail.example.com`, the origin only) and the
-  domains of its addresses. The system mail's sending account (Administration › Email) is on one of them.
+- **Registry:** an administrator adds a server under Administration › Stalwart servers with its address
+  (`https://mail.example.com`, the origin only) and the domains of its addresses. The system mail's sending account
+  (Administration › Email) is on one of them. Users connect their accounts under Account › Accounts; the server is
+  suggested by the domain of their address. Apps send users without an account to "No account yet"
+  (`/account/no-account`).
 - **OAuth client:** the hub signs users in with an OAuth client of its own per server, a confidential client whose
   secret stays in the hub, encrypted with the instance key. Easiest by registration (DCR) with the user name and an
   app password of a Stalwart administrator that may create OAuth clients; they are used for this one request and not

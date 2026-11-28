@@ -357,8 +357,18 @@ frame ([§ 5.5](#55-the-hubs-frame)) rather than building its own from
 | Home page with all apps | `/` |
 | Profile, language, theme | `/account` |
 | Password, two-factor authentication, signed-in devices | `/account/security` |
+| Stalwart accounts: add, sign in again, colour, default, remove | `/account/accounts` |
+| Connect a Stalwart account (the user has none yet) | `/account/no-account?next=<path, URL-encoded>` |
 | Administration (only for `role` = `admin`) | `/admin` |
 | Access to this app (only for `role` = `admin`) | `/admin/apps/<slug>` |
+
+An app that needs a Stalwart account ([§ 6.1](#61-stalwart-accounts)) and
+gets an empty list sends the user to `/account/no-account?next=…` with the
+current page, checked like the sign-in's `next` ([§ 5.1](#51-not-signed-in)).
+The hub explains what is missing, lets the user connect an account – after
+the sign-in at the server the browser comes back to `next` – and goes on to
+`next` at once for a user who has an account by now. For an account in
+`state` `needs_sign_in` the app links to `/account/accounts`.
 
 ### 5.5 The hub's frame
 
@@ -1119,8 +1129,9 @@ It SHOULD:
 - [ ] log `X-Roedy-Request-Id`;
 - [ ] send a CSP with `frame-ancestors 'self'` or stricter;
 - [ ] if it uses Stalwart accounts: name `stalwart` in its manifest, take the
-  servers' origins into its `connect-src` and keep access tokens in memory
-  only ([§ 6.1](#61-stalwart-accounts), [§ 7.1](#71-stalwart-accounts-for-the-apps-backend)).
+  servers' origins into its `connect-src`, keep access tokens in memory
+  only and send users without an account to `/account/no-account?next=…`
+  ([§ 5.4](#54-links-to-the-hub), [§ 6.1](#61-stalwart-accounts), [§ 7.1](#71-stalwart-accounts-for-the-apps-backend)).
 
 ## 14. Versioning and extensions
 
