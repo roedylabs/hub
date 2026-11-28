@@ -389,6 +389,118 @@ CREATE TABLE tls_certificates (
 ) STRICT;
 
 -- ---------------------------------------------------------------------------
+-- Stalwart servers and users' accounts (docs/plan.md § 9.3), taken over from
+-- Roedy Mail's `servers` and `mail_accounts`
+-- ---------------------------------------------------------------------------
+
+-- The registry (Administration › Stalwart servers). Whether users may connect
+-- accounts on other servers is `app_settings.stalwart_policy`.
+CREATE TABLE stalwart_servers (
+    id                      TEXT PRIMARY KEY,
+    label                   TEXT NOT NULL CHECK (label <> '' AND length(label) <= 100),
+    -- Only scheme, host and port (`https://mail.example.com`), no trailing `/`;
+    -- checked by api::stalwart. One server per address.
+    base_url                TEXT NOT NULL UNIQUE,
+    -- Domains of the email addresses the server serves (lowercase, without
+    -- `@`); each domain belongs to at most one server (checked by
+    -- api::stalwart).
+    domains_json            TEXT NOT NULL DEFAULT '[]'
+                            CHECK (json_valid(domains_json) AND json_type(domains_json) = 'array'),
+    -- The hub's OAuth client in Stalwart (created by hand or via DCR,
+    -- RFC 7591).
+    oauth_client_id         TEXT CHECK (oauth_client_id IS NULL OR oauth_client_id <> ''),
+    -- Confidential clients only; encrypted (purpose
+    -- `stalwart_servers.oauth_client_secret`, row = ID), never sent out.
+    oauth_client_secret_enc BLOB CHECK (oauth_client_secret_enc IS NULL OR oauth_client_id IS NOT NULL),
+    -- Last diagnosis (stalwart::probe): ok, err or unk (not checked).
+    reach                   TEXT NOT NULL DEFAULT 'unk' CHECK (reach IN ('ok', 'err', 'unk')),
+    cors                    TEXT NOT NULL DEFAULT 'unk' CHECK (cors IN ('ok', 'err', 'unk')),
+    oauth                   TEXT NOT NULL DEFAULT 'unk' CHECK (oauth IN ('ok', 'err', 'unk')),
+    tested_at               TEXT,
+    created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+-- Users' Stalwart accounts, shared by every app.
+CREATE TABLE stalwart_accounts (
+    id                TEXT PRIMARY KEY,
+    user_id           TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- Origin of the server like `stalwart_servers.base_url`. The account is
+    -- linked to the registry through this address, not through the server's
+    -- ID: the tokens belong to exactly this server.
+    base_url          TEXT NOT NULL,
+    -- Address of the signed-in account (lowercase), as the session names it.
+    email             TEXT NOT NULL CHECK (email <> ''),
+    -- Primary mail account and username of the JMAP session: by these the
+    -- hub recognises the same account again (duplicates, signing in again).
+    account_id        TEXT NOT NULL CHECK (account_id <> ''),
+    username          TEXT NOT NULL,
+    -- `oauth`: sign-in at the server, the hub exchanged the code (refresh
+    -- token); `token`: the user's access token (e.g. an API key).
+    auth_kind         TEXT NOT NULL CHECK (auth_kind IN ('oauth', 'token')),
+    -- OAuth client the tokens were issued for (needed for the refresh).
+    client_id         TEXT CHECK ((auth_kind = 'oauth') = (client_id IS NOT NULL)),
+    -- Refresh token (`oauth`) or access token (`token`), encrypted (purpose
+    -- `stalwart_accounts.secret`, row = ID); never leaves the hub for `oauth`.
+    secret_enc        BLOB NOT NULL,
+    -- Last access token (`oauth`, purpose `stalwart_accounts.access_token`)
+    -- and when it expires.
+    access_token_enc  BLOB CHECK (access_token_enc IS NULL OR auth_kind = 'oauth'),
+    access_expires_at TEXT,
+    -- The JMAP session at the last sign-in and where it is.
+    session_url       TEXT NOT NULL CHECK (session_url <> ''),
+    session_json      TEXT NOT NULL CHECK (json_valid(session_json)),
+    -- `needs_sign_in`: the refresh was rejected ("Sign in again").
+    state             TEXT NOT NULL DEFAULT 'ok' CHECK (state IN ('ok', 'needs_sign_in')),
+    -- Index into the account colours (`MA_COLORS` of @roedy/tokens).
+    color             INTEGER NOT NULL CHECK (color BETWEEN 0 AND 5),
+    -- The user's default account: exactly one while they have any.
+    is_default        INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    -- Storage as of the last check.
+    last_check_at     TEXT,
+    quota_used        INTEGER,
+    quota_total       INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- When a browser last fetched an access token for the account: the
+    -- early refresh renews active accounts before their token expires.
+    token_used_at     TEXT,
+    -- Last attempt of the job `quota_check`, even if it failed: so it asks a
+    -- broken server again only the next day, not every hour.
+    quota_job_at      TEXT,
+    UNIQUE (user_id, base_url, account_id)
+) STRICT;
+
+CREATE INDEX stalwart_accounts_base_url ON stalwart_accounts (base_url);
+CREATE UNIQUE INDEX stalwart_accounts_default ON stalwart_accounts (user_id) WHERE is_default = 1;
+
+-- Sign-ins at a Stalwart server under way: the hub sent the browser to the
+-- server's sign-in and waits for the code at /oauth/callback. Valid for 10
+-- minutes and once, bound to the browser's session.
+CREATE TABLE stalwart_sign_ins (
+    -- SHA-256 of the `state` parameter (hex); the browser has the value.
+    state_hash  TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    session_id  TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    server_id   TEXT NOT NULL REFERENCES stalwart_servers (id) ON DELETE CASCADE,
+    -- Address and client at the start: if the administrator changes either,
+    -- the sign-in no longer applies.
+    base_url    TEXT NOT NULL,
+    client_id   TEXT NOT NULL,
+    -- "Sign in again" for this account; NULL for a new one.
+    account_id  TEXT REFERENCES stalwart_accounts (id) ON DELETE CASCADE,
+    -- PKCE verifier, encrypted (purpose `stalwart_sign_ins.verifier`, row =
+    -- state_hash).
+    verifier_enc BLOB NOT NULL,
+    -- The address entered (`login_hint`).
+    login_hint  TEXT NOT NULL,
+    -- Path on the hub's origin to return to afterwards.
+    return_to   TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE INDEX stalwart_sign_ins_user ON stalwart_sign_ins (user_id);
+
+-- ---------------------------------------------------------------------------
 -- Audit log
 -- ---------------------------------------------------------------------------
 

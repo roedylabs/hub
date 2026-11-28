@@ -46,6 +46,20 @@ pub struct Manifest {
     #[serde(default = "default_home")]
     pub home: String,
     pub roles: Vec<Role>,
+    /// The app uses users' Stalwart accounts (contract § 8, § 6.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalwart: Option<Stalwart>,
+}
+
+/// What the app needs of users' Stalwart accounts (`stalwart` in the
+/// manifest). Present at all: the app gets the `stalwart.*` events and may
+/// read the servers' origins over the internal API.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stalwart {
+    /// The app's backend fetches access tokens for users' accounts over the
+    /// internal API, without a request from the user.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub backend: bool,
 }
 
 /// A role in the app (contract § 8, § 11).
@@ -137,6 +151,7 @@ impl Manifest {
             }
         };
         let roles = errors.roles(object);
+        let stalwart = errors.stalwart(object);
         match (id, version, name, description, icon, home, roles) {
             (
                 Some(id),
@@ -155,6 +170,7 @@ impl Manifest {
                 icon,
                 home,
                 roles,
+                stalwart,
             }),
             _ => Err(errors.into_error()),
         }
@@ -292,6 +308,28 @@ impl Errors {
             }
         }
         (self.0.len() == before).then_some(texts)
+    }
+
+    /// The optional `stalwart` object with an optional `backend` flag;
+    /// unknown fields in it are ignored like everywhere else.
+    fn stalwart(&mut self, object: &Map<String, Value>) -> Option<Stalwart> {
+        let fields = match object.get("stalwart") {
+            None | Some(Value::Null) => return None,
+            Some(Value::Object(fields)) => fields,
+            Some(_) => {
+                self.add("stalwart", "invalid");
+                return None;
+            }
+        };
+        let backend = match fields.get("backend") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                self.add("stalwart.backend", "invalid");
+                false
+            }
+        };
+        Some(Stalwart { backend })
     }
 
     /// 1 to [`MAX_ROLES`] roles with unique IDs, exactly one default and at
@@ -696,6 +734,33 @@ mod tests {
         assert!(Manifest::parse(&empty_description).is_ok());
         let forty = with(|v| v["name"]["de"] = json!("ä".repeat(40)));
         assert!(Manifest::parse(&forty).is_ok(), "characters, not bytes");
+    }
+
+    #[test]
+    fn stalwart_accounts() {
+        assert_eq!(Manifest::parse(&example()).unwrap().stalwart, None);
+        let browser = with(|v| v["stalwart"] = json!({ "x-later": 1 }));
+        let parsed = Manifest::parse(&browser).unwrap();
+        assert_eq!(parsed.stalwart, Some(Stalwart { backend: false }));
+        // Stored without the default, and it parses again.
+        let stored = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(stored["stalwart"], json!({}));
+        assert_eq!(Manifest::parse(&stored).unwrap(), parsed);
+        let backend = with(|v| v["stalwart"] = json!({ "backend": true }));
+        assert_eq!(
+            Manifest::parse(&backend).unwrap().stalwart,
+            Some(Stalwart { backend: true })
+        );
+        let null = with(|v| v["stalwart"] = Value::Null);
+        assert_eq!(Manifest::parse(&null).unwrap().stalwart, None);
+        assert_eq!(
+            fields(&with(|v| v["stalwart"] = json!(true))),
+            [("stalwart".to_owned(), "invalid")]
+        );
+        assert_eq!(
+            fields(&with(|v| v["stalwart"] = json!({ "backend": "yes" }))),
+            [("stalwart.backend".to_owned(), "invalid")]
+        );
     }
 
     #[test]
