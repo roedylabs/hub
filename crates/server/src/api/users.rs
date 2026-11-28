@@ -57,6 +57,7 @@ use super::{
     apps::{access_changed, app_pending, role_in, set_access},
     invites::{self, Actor, admin_change_then, invite_rows},
     mfa::mfa_disabled,
+    stalwart::accounts as stalwart,
 };
 use crate::{
     app::AppState,
@@ -272,6 +273,14 @@ async fn one_user(
     if id == admin.id {
         return Err(own_account());
     }
+    let removing = matches!(change, Change::Remove);
+    // Removing revokes the grants of the user's Stalwart accounts; no sign-in
+    // or refresh of theirs runs meanwhile.
+    let _locks = if removing {
+        stalwart::lock_owners(state, [id.clone()]).await?
+    } else {
+        Vec::new()
+    };
     let target = id.clone();
     let after = state.clone();
     admin_change_then(
@@ -285,14 +294,21 @@ async fn one_user(
             if change.takes_away() && is_last_admin(tx, &user)? {
                 return Ok(Err(last_admin()));
             }
+            let grants = if removing {
+                stalwart::grants(tx, &user.id)?
+            } else {
+                Vec::new()
+            };
             // Like `bulk`: a lock or removal that took place ends the
             // pending sign-in steps.
             let done = change.apply(tx, actor, &user)?;
             let ends_sign_ins = done && matches!(change, Change::Lock | Change::Remove);
             let row = row_of(tx, &target)?;
-            Ok(Ok((row, ends_sign_ins)))
+            let grants = if done { grants } else { Vec::new() };
+            Ok(Ok((row, ends_sign_ins, grants)))
         },
-        move |(_, ends_sign_ins)| {
+        move |(_, ends_sign_ins, grants)| {
+            stalwart::revoke_grants(&after, std::mem::take(grants));
             if *ends_sign_ins {
                 after.challenges.discard_user(&id);
                 after.end_user_sessions(&id, None);
@@ -303,7 +319,7 @@ async fn one_user(
         },
     )
     .await
-    .map(|(row, _)| row)
+    .map(|(row, _, _)| row)
 }
 
 #[derive(Deserialize)]
@@ -577,8 +593,13 @@ async fn bulk(
     if action != Action::Access {
         ids.remove(&admin.id);
     }
+    let _locks = if action == Action::Remove {
+        stalwart::lock_owners(&state, ids.iter().cloned()).await?
+    } else {
+        Vec::new()
+    };
     let after = state.clone();
-    let (changed, _, _) = admin_change_then(
+    let (changed, _, _, _) = admin_change_then(
         &state,
         admin,
         ip,
@@ -602,9 +623,14 @@ async fn bulk(
                 }
                 None => None,
             };
-            let (mut changed, mut gone) = (Vec::new(), Vec::new());
+            let (mut changed, mut gone, mut revoked) = (Vec::new(), Vec::new(), Vec::new());
             for id in &ids {
                 let done = if let Some(user) = users::credentials_by_id(tx, id)?.map(|c| c.user) {
+                    let grants = if action == Action::Remove {
+                        stalwart::grants(tx, &user.id)?
+                    } else {
+                        Vec::new()
+                    };
                     let change = match action {
                         Action::Role => Some(Change::Role(role.unwrap_or(user.role))),
                         Action::Lock => Some(Change::Lock),
@@ -621,6 +647,9 @@ async fn bulk(
                     };
                     if done && matches!(action, Action::Lock | Action::Remove) {
                         gone.push(id.clone());
+                    }
+                    if done {
+                        revoked.extend(grants);
                     }
                     done
                 } else if let Some(invite) = invitations::get(tx, id)? {
@@ -649,9 +678,10 @@ async fn bulk(
                 }
             }
             let app = access.map(|(app, role)| (app.id, role.is_some()));
-            Ok(Ok((changed, gone, app)))
+            Ok(Ok((changed, gone, app, revoked)))
         },
-        move |(changed, gone, app)| {
+        move |(changed, gone, app, revoked)| {
+            stalwart::revoke_grants(&after, std::mem::take(revoked));
             for id in changed.iter() {
                 match app {
                     Some((app, access)) => access_changed(&after, id, app, *access),

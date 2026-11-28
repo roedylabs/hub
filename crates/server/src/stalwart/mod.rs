@@ -52,11 +52,9 @@ pub struct Stalwart {
     /// Client for custom servers: public addresses only
     /// ([`outbound::public_client`]).
     pub public_http: reqwest::Client,
-    /// One refresh per account at a time ([`token`]).
+    /// One refresh per account at a time ([`token`]); under `user:<id>`
+    /// also adding and signing in again per user (`api::stalwart`).
     pub token_locks: std::sync::Arc<crate::locks::KeyedLocks>,
-    /// Adding and signing in again run one after another per user, so that
-    /// the check for duplicates holds.
-    pub user_locks: std::sync::Arc<crate::locks::KeyedLocks>,
 }
 
 impl Stalwart {
@@ -65,7 +63,6 @@ impl Stalwart {
             http: http_client()?,
             public_http: outbound::public_client()?,
             token_locks: std::sync::Arc::default(),
-            user_locks: std::sync::Arc::default(),
         })
     }
 

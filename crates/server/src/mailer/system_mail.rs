@@ -1,16 +1,15 @@
 //! Sending account of the system mails in `app_settings.system_mail`: an
-//! account on a JMAP server (its origin, [`SystemMail::url`]) with user and
-//! app password or with a token, plus identity, sender name, reply-to address
-//! and copy in "Sent". The secret is stored encrypted with its own purpose in
-//! the AAD. Administration › Email sets it (`api::system_mail`).
+//! account on a server of the Stalwart registry ([`SystemMail::server_id`])
+//! with user and app password or with a token, plus identity, sender name,
+//! reply-to address and copy in "Sent". The secret is stored encrypted with
+//! its own purpose in the AAD. Administration › Email sets it
+//! (`api::system_mail`).
 //!
 //! Plus the last check of the stored account ([`Check`]): from
 //! "Test connection", after saving a new connection and from
 //! every send ([`record`]).
 //!
-//! Taken over from Roedy Mail (`crates/server/src/mailer/system_mail.rs`);
-//! the account names its server's address instead of a server from Mail's
-//! registry.
+//! Taken over from Roedy Mail (`crates/server/src/mailer/system_mail.rs`).
 
 use anyhow::{Context as _, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -21,7 +20,10 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::{Account, MailError};
-use crate::{crypto::SecretKey, db::repo::app_settings};
+use crate::{
+    crypto::SecretKey,
+    db::repo::{app_settings, stalwart_servers as servers},
+};
 
 /// Purpose for the app password's AAD; the row is the key in
 /// `app_settings`.
@@ -111,9 +113,10 @@ pub struct Check {
 /// Stored sending account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemMail {
-    /// Origin of the JMAP server, e.g. `https://mail.example.com`; empty
-    /// before the first save.
-    pub url: String,
+    /// Registry server (`stalwart_servers`); empty before the first save.
+    /// If it is removed, the account counts as not configured
+    /// (`system_mail_configured`).
+    pub server_id: String,
     /// Sign-in with an app password or a token.
     pub auth: Auth,
     /// User for the sign-in, usually the address (`noreply@…`); with a
@@ -145,7 +148,7 @@ pub struct SystemMail {
 /// password), identity and the encrypted secret are the same.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
-    url: String,
+    server_id: String,
     auth: Auth,
     user: Option<String>,
     identity_id: Option<String>,
@@ -158,7 +161,7 @@ pub struct Credentials {
 impl Default for SystemMail {
     fn default() -> Self {
         Self {
-            url: String::new(),
+            server_id: String::new(),
             auth: Auth::Password,
             user: String::new(),
             app_password_enc: None,
@@ -177,13 +180,13 @@ impl SystemMail {
     /// empty, copy in "Sent" by default.
     pub fn new(
         secrets: &SecretKey,
-        url: &str,
+        server_id: &str,
         user: &str,
         app_password: &str,
         identity_id: Option<String>,
     ) -> anyhow::Result<Self> {
         let mut mail = Self {
-            url: url.to_owned(),
+            server_id: server_id.to_owned(),
             user: user.to_owned(),
             identity_id,
             ..Self::default()
@@ -251,7 +254,7 @@ impl SystemMail {
 
     pub fn credentials(&self) -> Credentials {
         Credentials {
-            url: self.url.clone(),
+            server_id: self.server_id.clone(),
             auth: self.auth,
             // Bearer needs no user.
             user: (self.auth == Auth::Password).then(|| self.user.clone()),
@@ -259,12 +262,6 @@ impl SystemMail {
             secret_enc: self.secret_enc().map(str::to_owned),
             keep_sent: self.keep_sent,
         }
-    }
-
-    /// The server's address; `None` before the first save (or if the stored
-    /// one is unreadable).
-    pub fn base_url(&self) -> Option<Url> {
-        Url::parse(&self.url).ok()
     }
 
     /// Sign-in and sender for [`super::Mailer`] with the server's base
@@ -299,20 +296,47 @@ pub fn save(conn: &Connection, mail: &SystemMail) -> anyhow::Result<()> {
     app_settings::set(conn, app_settings::SYSTEM_MAIL, mail)
 }
 
+/// If the address of the server `server_id` changes, the sending account
+/// forgets its secret if it uses this server: it never goes to an address it
+/// was not entered for. Returns the field of the forgotten secret
+/// (`app_password` or `token`) for the audit log.
+pub fn forget_secret_of(
+    conn: &Connection,
+    server_id: &str,
+) -> anyhow::Result<Option<&'static str>> {
+    let Some(mut mail) = load(conn)? else {
+        return Ok(None);
+    };
+    if mail.server_id != server_id || mail.secret_enc().is_none() {
+        return Ok(None);
+    }
+    mail.forget_secret();
+    save(conn, &mail)?;
+    Ok(Some(mail.auth.secret_field()))
+}
+
+/// Base URL of a registry server; `None` if it does not exist.
+pub fn base_url(conn: &Connection, server_id: &str) -> anyhow::Result<Option<Url>> {
+    let Some(server) = servers::get(conn, server_id)? else {
+        return Ok(None);
+    };
+    Url::parse(&server.base_url)
+        .map(Some)
+        .with_context(|| format!("stalwart_servers.base_url of {} invalid", server.id))
+}
+
 /// Stored sending account with its server's base URL; `None` if none is
-/// configured or the secret of the chosen sign-in is missing.
+/// configured, the server is removed or the secret of the chosen sign-in is
+/// missing.
 pub fn with_server(conn: &Connection) -> anyhow::Result<Option<(SystemMail, Url)>> {
     let Some(mail) = load(conn)?.filter(|mail| mail.secret_enc().is_some()) else {
         return Ok(None);
     };
-    let url = mail
-        .base_url()
-        .with_context(|| format!("app_settings.system_mail: invalid url {:?}", mail.url))?;
-    Ok(Some((mail, url)))
+    Ok(base_url(conn, &mail.server_id)?.map(|url| (mail, url)))
 }
 
-/// Whether a sending account is stored, without a connection test
-/// (`system_mail_configured` in `auth/me` and `POST invites`).
+/// Whether a sending account is stored on a registry server, without a
+/// connection test (`system_mail_configured` in `auth/me` and `POST invites`).
 pub fn is_configured(conn: &Connection) -> anyhow::Result<bool> {
     Ok(with_server(conn)?.is_some())
 }
@@ -456,6 +480,7 @@ mod tests {
     fn conn() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         migrations::run(&mut conn).unwrap();
+        servers::tests::add(&conn, SERVER, "https://mail.s1.test");
         conn
     }
 
@@ -468,7 +493,7 @@ mod tests {
         .unwrap()
     }
 
-    const URL: &str = "https://mail.s1.test";
+    const SERVER: &str = "s1";
 
     #[test]
     fn stores_password_sealed_and_builds_account() {
@@ -478,7 +503,7 @@ mod tests {
         assert!(account(&conn, &secrets).unwrap().is_none());
 
         let mail =
-            SystemMail::new(&secrets, URL, "noreply@example.com", "kT9v-Qm2x", None).unwrap();
+            SystemMail::new(&secrets, SERVER, "noreply@example.com", "kT9v-Qm2x", None).unwrap();
         save(&conn, &mail).unwrap();
         let json = json_of(&conn);
         assert!(!json.contains("kT9v"), "{json}");
@@ -504,13 +529,29 @@ mod tests {
         // Another key cannot read the password.
         let other = SecretKey::random().unwrap();
         assert!(super::account(&conn, &other).is_err());
+
+        // Without its server the account is not configured; a moved server
+        // makes it forget the secret.
+        assert_eq!(forget_secret_of(&conn, "s2").unwrap(), None);
+        assert_eq!(
+            forget_secret_of(&conn, SERVER).unwrap(),
+            Some("app_password")
+        );
+        assert!(!is_configured(&conn).unwrap());
+        save(&conn, &load(&conn).unwrap().unwrap()).unwrap();
+        let mail =
+            SystemMail::new(&secrets, SERVER, "noreply@example.com", "kT9v-Qm2x", None).unwrap();
+        save(&conn, &mail).unwrap();
+        servers::delete(&conn, SERVER).unwrap();
+        assert!(!is_configured(&conn).unwrap());
     }
 
     #[test]
     fn token_replaces_the_password_and_signs_in_with_bearer() {
         let conn = conn();
         let secrets = SecretKey::random().unwrap();
-        let mut mail = SystemMail::new(&secrets, URL, "noreply@example.com", "pw", None).unwrap();
+        let mut mail =
+            SystemMail::new(&secrets, SERVER, "noreply@example.com", "pw", None).unwrap();
         mail.set_secret(&secrets, Auth::Token, "api-key-1").unwrap();
         assert_eq!(mail.app_password_enc, None);
         save(&conn, &mail).unwrap();
@@ -544,7 +585,7 @@ mod tests {
     fn token_ignores_the_user_and_no_secret_is_not_configured() {
         let conn = conn();
         let secrets = SecretKey::random().unwrap();
-        let mut mail = SystemMail::new(&secrets, URL, "a@example.com", "pw", None).unwrap();
+        let mut mail = SystemMail::new(&secrets, SERVER, "a@example.com", "pw", None).unwrap();
         mail.set_secret(&secrets, Auth::Token, "t").unwrap();
         let credentials = mail.credentials();
         mail.user = "b@example.com".into();
@@ -561,9 +602,9 @@ mod tests {
     #[test]
     fn the_server_is_part_of_the_connection() {
         let secrets = SecretKey::random().unwrap();
-        let mail = SystemMail::new(&secrets, URL, "a@example.com", "pw", None).unwrap();
+        let mail = SystemMail::new(&secrets, SERVER, "a@example.com", "pw", None).unwrap();
         let other = SystemMail {
-            url: "https://mail.s2.test".into(),
+            server_id: "s2".into(),
             ..mail.clone()
         };
         assert_ne!(mail.credentials(), other.credentials());
@@ -572,7 +613,7 @@ mod tests {
     #[test]
     fn password_is_bound_to_its_purpose() {
         let secrets = SecretKey::random().unwrap();
-        let mail = SystemMail::new(&secrets, URL, "noreply@example.com", "x", None).unwrap();
+        let mail = SystemMail::new(&secrets, SERVER, "noreply@example.com", "x", None).unwrap();
         let sealed = STANDARD
             .decode(mail.app_password_enc.as_ref().unwrap())
             .unwrap();
@@ -583,7 +624,7 @@ mod tests {
     fn records_results_only_for_the_same_connection() {
         let mut conn = conn();
         let secrets = SecretKey::random().unwrap();
-        let mail = SystemMail::new(&secrets, URL, "noreply@example.com", "x", None).unwrap();
+        let mail = SystemMail::new(&secrets, SERVER, "noreply@example.com", "x", None).unwrap();
         save(&conn, &mail).unwrap();
         let credentials = mail.credentials();
         let at = Timestamp::from_second(1_793_880_000).unwrap();

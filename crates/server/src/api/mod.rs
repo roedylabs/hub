@@ -23,6 +23,7 @@ pub mod session;
 pub mod sessions;
 pub mod settings;
 pub mod setup;
+pub mod stalwart;
 pub mod system_mail;
 pub mod users;
 
@@ -67,7 +68,9 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(me::routes())
         .merge(mfa::routes())
         .merge(sessions::routes())
-        .merge(settings::routes());
+        .merge(settings::routes())
+        .merge(stalwart::servers::routes())
+        .merge(stalwart::accounts::routes());
     with_middleware(routes, state)
 }
 
