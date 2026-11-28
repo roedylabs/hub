@@ -296,6 +296,43 @@ describe('Administration › Email page', () => {
     );
   });
 
+  it('drops a secret typed while the moved server still showed its previous address', async () => {
+    const moved = [{ ...SERVERS[0], url: 'https://mail.example.net', host: 'mail.example.net' }];
+    let reload: (reply: { body: unknown }) => void = () => {};
+    const view = renderPage(STORED, {
+      'GET admin/stalwart/servers': [
+        { body: { ...REGISTRY.body, servers: SERVERS } },
+        () => new Promise((resolve) => (reload = resolve)),
+      ],
+      'PUT admin/system-mail': [
+        {
+          status: 422,
+          body: { error: 'invalid', fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } } },
+        },
+        { body: STORED },
+      ],
+    });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'new-pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await view.findByRole('alert');
+    // Typed while the registry is still loading: the page still shows the previous address.
+    await fireEvent.input(field('Password'), { target: { value: 'typed-early' } });
+    expect(view.getByText('JMAP session via mail.example.com')).toBeInTheDocument();
+    reload({ body: { ...REGISTRY.body, servers: moved } });
+    await vi.waitFor(() => expect(view.getByText('JMAP session via mail.example.net')).toBeInTheDocument());
+    expect(field('Password')).toHaveValue('');
+    expect(view.getByRole('alert')).toHaveTextContent('The server’s address has changed.');
+    await fireEvent.input(field('Password'), { target: { value: 'pw-2' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() =>
+      expect(view.calls.filter((c) => c.method === 'PUT').at(-1)?.body).toEqual({
+        app_password: 'pw-2',
+        server_url: 'https://mail.example.net',
+      }),
+    );
+  });
+
   it('sends a test email', async () => {
     const view = renderPage(STORED, {
       'POST admin/system-mail/test': [{ body: { identities: IDS, sent: true } }],

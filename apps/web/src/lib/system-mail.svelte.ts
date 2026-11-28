@@ -838,14 +838,23 @@ export class SystemMailPage {
    * The server's address changed since the page loaded (`server_id` `changed`): the entered secret was meant for the
    * previous address, so it goes – it must not reach the new one with the next test or save. Then load the registry
    * again, so that the pick list shows the current address before the secret is entered again (which answers the
-   * error, `set`).
+   * error, `set`); a secret typed before the reload arrived is dropped once it shows another address.
    */
   #refreshIfMoved(error: unknown): void {
     if (mailErrorsOf(error).srv !== 'changed') return;
     this.edits = { ...this.edits, pass: '', token: '' };
     void api<{ servers: MailServer[] }>('GET', 'admin/stalwart/servers')
       .then((list) => {
-        if (!this.#disposed) this.servers = list.servers.map(({ id, label, url, host }) => ({ id, label, url, host }));
+        if (this.#disposed) return;
+        const urlOf = (servers: readonly MailServer[]) => servers.find((s) => this.draft.srv === s.id)?.url;
+        const shown = urlOf(this.servers);
+        this.servers = list.servers.map(({ id, label, url, host }) => ({ id, label, url, host }));
+        // A secret typed while the previous address was still shown is for that one, too: it goes as well, and the
+        // error stays until a secret is entered for the address shown now.
+        if (urlOf(this.servers) !== shown) {
+          this.edits = { ...this.edits, pass: '', token: '' };
+          this.serverErrors = { ...this.serverErrors, srv: 'changed' };
+        }
       })
       .catch(() => {});
   }
