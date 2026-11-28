@@ -6,6 +6,9 @@
   the center of their column: immediately on open, smoothly after a change
   (`timeSig`).
   Style values (`bg`, `color`, `hoverBg`, `hoverC`) are the class `on`.
+  On desktop the columns are a pointer aid next to the field, which keeps the
+  focus and takes the keyboard (typing, arrow keys): hidden from screen
+  readers and out of the tab order. On mobile they are listboxes of buttons.
 
   Taken over from Roedy Mail (`apps/web/src/lib/components/TimePicker.svelte`)
   with its own texts and `ui.motion` instead of Mail's preferences.
@@ -56,11 +59,25 @@
 
 {#snippet column(name: string, cells: TimeCell[], kind: 'h' | 'm')}
   {#if kind === 'h'}
-    <div data-tcol="h" role="listbox" aria-label={name} class="col no-scrollbar" bind:this={hCol}>
+    <div
+      data-tcol="h"
+      role={isMobile ? 'listbox' : undefined}
+      aria-label={isMobile ? name : undefined}
+      aria-hidden={isMobile ? undefined : 'true'}
+      class="col no-scrollbar"
+      bind:this={hCol}
+    >
       {@render options(cells)}
     </div>
   {:else}
-    <div data-tcol="m" role="listbox" aria-label={name} class="col no-scrollbar" bind:this={mCol}>
+    <div
+      data-tcol="m"
+      role={isMobile ? 'listbox' : undefined}
+      aria-label={isMobile ? name : undefined}
+      aria-hidden={isMobile ? undefined : 'true'}
+      class="col no-scrollbar"
+      bind:this={mCol}
+    >
       {@render options(cells)}
     </div>
   {/if}
@@ -70,8 +87,8 @@
   {#each cells as o (o.label)}
     <button
       type="button"
-      role="option"
-      aria-selected={o.on}
+      role={isMobile ? 'option' : undefined}
+      aria-selected={isMobile ? o.on : undefined}
       tabindex={isMobile ? undefined : -1}
       class="cell"
       class:on={o.on}

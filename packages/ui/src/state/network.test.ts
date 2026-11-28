@@ -285,6 +285,23 @@ describe('appFetch', () => {
       expect(network.offline).toBe(false);
     });
 
+    it('says nothing about the connection when the caller cancels, whatever the reason', async () => {
+      const reason = new TypeError('cancelled');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.reject(reason)),
+      );
+      network.record('https://app.example.test', true);
+      const ctrl = new AbortController();
+      ctrl.abort(reason);
+      await expect(appFetch('https://app.example.test/api/v1/x', { signal: ctrl.signal })).rejects.toBe(reason);
+      await expect(appFetch(new Request('https://app.example.test/api/v1/y', { signal: ctrl.signal }))).rejects.toBe(
+        reason,
+      );
+      await settled();
+      expect(reached()).toEqual({ 'https://app.example.test': true });
+    });
+
     it('remembers a network error or a timeout and passes the error on', async () => {
       const error = new TypeError('Failed to fetch');
       vi.stubGlobal(

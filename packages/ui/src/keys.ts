@@ -21,6 +21,8 @@ const t = texts({
 export interface KeyInput {
   key: string;
   preventDefault: () => void;
+  /** Inside an IME composition: the keys belong to the input method (absent: no). */
+  isComposing?: boolean;
 }
 
 /** Part of `navigator` for detecting the system (tests without a DOM). */

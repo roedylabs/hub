@@ -467,6 +467,8 @@ export function swipeToast(get: () => ToastSwipe | null): Attachment<HTMLElement
     let resetTimer: ReturnType<typeof setTimeout> | undefined;
     /** Ends the tracking of the current pointer when the toast goes away during the gesture. */
     let cancel: (() => void) | null = null;
+    /** Values of a gesture under way that paused the toast. */
+    let held: ToastSwipe | null = null;
 
     const onDown = (e: PointerEvent) => {
       const o = get();
@@ -478,6 +480,7 @@ export function swipeToast(get: () => ToastSwipe | null): Attachment<HTMLElement
         decide: () => true,
         start: () => {
           clearTimeout(resetTimer);
+          held = o;
           o.hold();
           el.style.transition = 'none';
         },
@@ -490,6 +493,7 @@ export function swipeToast(get: () => ToastSwipe | null): Attachment<HTMLElement
         },
         end: (vx, vy, cancelled) => {
           cancel = null;
+          held = null;
           if (!cancelled && toastGone(dx, dy, vx, vy)) {
             const t = ms(200);
             const py = Math.max(0, dy);
@@ -519,6 +523,9 @@ export function swipeToast(get: () => ToastSwipe | null): Attachment<HTMLElement
       el.removeEventListener('pointerdown', onDown);
       clearTimeout(resetTimer);
       cancel?.();
+      // Removed in the middle of a gesture: the toast must not stay paused.
+      held?.back();
+      held = null;
     };
   };
 }

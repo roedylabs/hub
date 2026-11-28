@@ -351,6 +351,39 @@ describe('Toasts', () => {
       expect(last()).toBeNull();
     });
 
+    it('never lets a swipe extend the undo beyond its deadline', async () => {
+      const a = { ...offer(), ms: 2000 };
+      toasts.undoable(a);
+      vi.advanceTimersByTime(1500);
+      toasts.hold();
+      vi.advanceTimersByTime(1000);
+      // Past the deadline while held: "Undo" no longer calls the server, the toast goes.
+      toasts.undo();
+      expect(a.undo).not.toHaveBeenCalled();
+      expect(last()).toBeNull();
+
+      const b = { ...offer(), ms: 2000 };
+      toasts.undoable(b);
+      vi.advanceTimersByTime(1500);
+      toasts.hold();
+      vi.advanceTimersByTime(300);
+      // Sprung back: runs only for the 200 ms left, not another 2400.
+      toasts.resume(2400);
+      vi.advanceTimersByTime(199);
+      expect(last()).toMatchObject({ undo: true });
+      vi.advanceTimersByTime(1);
+      expect(last()).toBeNull();
+
+      const c = { ...offer(), ms: 2000 };
+      toasts.undoable(c);
+      toasts.hold();
+      vi.advanceTimersByTime(2500);
+      toasts.resume(2400);
+      expect(last()).toBeNull();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(c.undo).not.toHaveBeenCalled();
+    });
+
     it('an error after reverting does not hold up signing out', async () => {
       const a = {
         ...offer(),

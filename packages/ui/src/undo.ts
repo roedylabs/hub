@@ -97,6 +97,8 @@ export class Toasts {
   #id = 0;
   /** Paused by `hold()`: the toast stays until `resume()` lets it continue. */
   #held = false;
+  /** End of the offer's undo (ms since 1970): pausing the toast never extends it. */
+  #offerEnd = 0;
 
   /** @param show shows the toast or hides it (`null`) */
   constructor(show: (toast: ToastItem | null) => void, options: ToastsOptions = {}) {
@@ -145,6 +147,11 @@ export class Toasts {
 
   /** "Undo": revert the local change, send nothing (except the compensation `onUndo`). */
   undo(): void {
+    if (this.#offer && Date.now() >= this.#offerEnd) {
+      // The server no longer takes it back: the toast only still showed (paused by a swipe).
+      this.#close();
+      return;
+    }
     const offer = this.#offer;
     if (offer) {
       this.#close();
@@ -203,7 +210,15 @@ export class Toasts {
    * a pending action is sent. Without a paused toast nothing.
    */
   resume(ms: number): void {
-    if (this.#held) this.#arm(ms);
+    if (!this.#held) return;
+    if (this.#offer) {
+      const left = this.#offerEnd - Date.now();
+      if (left <= 0) {
+        this.#close();
+        return;
+      }
+      this.#arm(Math.min(ms, left));
+    } else this.#arm(ms);
   }
 
   /**
@@ -227,6 +242,7 @@ export class Toasts {
 
   #open(text: string, undo: boolean, ms: number, error = false, offer: UndoableAction | null = null): void {
     this.#offer = offer;
+    this.#offerEnd = offer ? Date.now() + ms : 0;
     clearTimeout(this.#timer);
     this.#show({ id: ++this.#id, text, undo, error });
     this.#arm(ms);

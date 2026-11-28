@@ -40,6 +40,28 @@ export interface AppWorkerOptions {
   keep?: (path: string) => boolean;
 }
 
+/**
+ * The registration once it has an active worker. Not `navigator.serviceWorker.ready`: that is the registration of the
+ * page's own scope, which may be another app's (or the hub's) on a page outside this worker's scope.
+ */
+function activated(registration: ServiceWorkerRegistration): Promise<ServiceWorkerRegistration> {
+  if (registration.active) return Promise.resolve(registration);
+  const worker = registration.installing ?? registration.waiting;
+  if (!worker) return Promise.resolve(registration);
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (worker.state === 'activated') {
+        worker.removeEventListener('statechange', check);
+        resolve(registration);
+      } else if (worker.state === 'redundant') {
+        worker.removeEventListener('statechange', check);
+        reject(new Error('The service worker became redundant before it activated'));
+      }
+    };
+    worker.addEventListener('statechange', check);
+  });
+}
+
 export class AppWorker {
   readonly #options: AppWorkerOptions;
   #registering: Promise<ServiceWorkerRegistration> | null = null;
@@ -53,7 +75,7 @@ export class AppWorker {
     const { dev, script, scope } = this.#options;
     this.#registering ??= navigator.serviceWorker
       .register(script, { scope, type: dev ? 'module' : 'classic' })
-      .then(() => navigator.serviceWorker.ready)
+      .then(activated)
       .catch((error: unknown) => {
         this.#registering = null;
         throw error;

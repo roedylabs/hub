@@ -371,6 +371,25 @@ describe('swipeToast', () => {
     expect(document.documentElement.style.userSelect).toBe('');
   });
 
+  it('lets a paused toast run again when it is removed in the middle of a gesture', () => {
+    vi.useFakeTimers();
+    const el = document.createElement('div');
+    document.body.append(el);
+    const o = { animations: false, hold: vi.fn(), away: vi.fn(), back: vi.fn() };
+    const remove = swipeToast(() => o)(el);
+    pointer('pointerdown', 100, 100, el);
+    pointer('pointermove', 120, 100);
+    expect(o.hold).toHaveBeenCalledOnce();
+    if (typeof remove === 'function') remove();
+    expect(o.back).toHaveBeenCalledOnce();
+    expect(o.away).not.toHaveBeenCalled();
+    // No gesture under way: removing releases nothing.
+    const quiet = { animations: false, hold: vi.fn(), away: vi.fn(), back: vi.fn() };
+    const removeQuiet = swipeToast(() => quiet)(el);
+    if (typeof removeQuiet === 'function') removeQuiet();
+    expect(quiet.back).not.toHaveBeenCalled();
+  });
+
   it('can be swiped with the mouse where it can be swiped (mobile, tablet)', () => {
     vi.useFakeTimers();
     const { el, o } = toast();

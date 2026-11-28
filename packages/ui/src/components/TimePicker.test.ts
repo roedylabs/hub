@@ -44,6 +44,11 @@ afterEach(() => {
   ui.animations = true;
 });
 
+/** Cells of a desktop column: a pointer aid, hidden from screen readers (the field takes the keyboard). */
+function cells(view: { container: HTMLElement }, col: 'h' | 'm'): HTMLButtonElement[] {
+  return [...view.container.querySelectorAll<HTMLButtonElement>(`[data-tcol="${col}"] button`)];
+}
+
 describe('time picker', () => {
   it('shows hours and minutes with the chosen time on desktop', () => {
     const view = render(TimePicker, { timePick: values(), isMobile: false });
@@ -51,20 +56,20 @@ describe('time picker', () => {
     expect(view.getByText('Minute')).toBeInTheDocument();
     expect(view.queryByRole('button', { name: 'Done' })).toBeNull();
     expect(view.queryByText('Quiet hours end')).toBeNull();
-    const hours = view.getByRole('listbox', { name: 'Hour' });
-    const mins = view.getByRole('listbox', { name: 'Minute' });
-    expect(hours).toHaveAttribute('data-tcol', 'h');
-    expect(mins).toHaveAttribute('data-tcol', 'm');
-    const h = within(hours).getAllByRole('option');
+    // No listboxes on desktop: the columns are hidden from screen readers and out of the tab order.
+    expect(view.queryByRole('listbox')).toBeNull();
+    expect(view.container.querySelector('[data-tcol="h"]')).toHaveAttribute('aria-hidden', 'true');
+    expect(view.container.querySelector('[data-tcol="m"]')).toHaveAttribute('aria-hidden', 'true');
+    const h = cells(view, 'h');
     expect(h).toHaveLength(24);
     expect(h[0]).toHaveTextContent('00');
     expect(h[0]).toHaveAttribute('tabindex', '-1');
-    expect(within(mins).getAllByRole('option')).toHaveLength(60);
-    const selH = within(hours).getByRole('option', { selected: true });
+    expect(h[0]).not.toHaveAttribute('role');
+    expect(cells(view, 'm')).toHaveLength(60);
+    const selH = cells(view, 'h').find((c) => c.classList.contains('on'));
     expect(selH).toHaveTextContent('07');
-    expect(selH).toHaveClass('on');
     expect(selH).toHaveStyle({ fontWeight: '800' });
-    expect(within(mins).getByRole('option', { selected: true })).toHaveTextContent('30');
+    expect(cells(view, 'm').find((c) => c.classList.contains('on'))).toHaveTextContent('30');
     expect(h[1]).toHaveStyle({ fontWeight: '600' });
     expect(h[1]).not.toHaveClass('on');
   });
@@ -72,19 +77,18 @@ describe('time picker', () => {
   it('chooses hour and minute', async () => {
     const ctx = context();
     const view = render(TimePicker, { timePick: values({}, ctx), isMobile: false });
-    await fireEvent.click(within(view.getByRole('listbox', { name: 'Hour' })).getByRole('option', { name: '22' }));
+    await fireEvent.click(cells(view, 'h')[22]!);
     expect(ctx.set).toHaveBeenLastCalledWith('22:30');
     expect(ctx.show).not.toHaveBeenCalled();
-    await fireEvent.click(within(view.getByRole('listbox', { name: 'Minute' })).getByRole('option', { name: '45' }));
+    await fireEvent.click(cells(view, 'm')[45]!);
     expect(ctx.set).toHaveBeenLastCalledWith('07:45');
     expect(ctx.show).toHaveBeenLastCalledWith(false);
   });
 
   it('shows hours with AM/PM in 12-hour format', () => {
     const view = render(TimePicker, { timePick: values({ h12: true, value: '22:00' }), isMobile: false });
-    const hours = view.getByRole('listbox', { name: 'Hour' });
-    expect(within(hours).getAllByRole('option')[0]).toHaveTextContent('12 AM');
-    expect(within(hours).getByRole('option', { selected: true })).toHaveTextContent('10 PM');
+    expect(cells(view, 'h')[0]).toHaveTextContent('12 AM');
+    expect(cells(view, 'h').find((c) => c.classList.contains('on'))).toHaveTextContent('10 PM');
   });
 
   it('shows title, close and "Done" on mobile', async () => {

@@ -179,6 +179,8 @@ describe('timePickValues', () => {
     v.onFocus();
     expect(v.onInput('23:00')).toBe('23:00');
     v.onKey(key('ArrowUp'));
+    v.hours[22]!.onClick();
+    v.mins[45]!.onClick();
     expect(ctx.show).not.toHaveBeenCalled();
     expect(ctx.set).not.toHaveBeenCalled();
     expect(ctx.edit).not.toHaveBeenCalled();

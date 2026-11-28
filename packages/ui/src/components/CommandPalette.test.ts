@@ -95,6 +95,16 @@ describe('command palette', () => {
     const a = key('a');
     paletteKey(a, rows, 0, select);
     expect(a.preventDefault).not.toHaveBeenCalled();
+
+    // Inside an IME composition Enter and the arrows pick the input method's candidates.
+    select.mockClear();
+    const composing = { ...key('Enter'), isComposing: true };
+    const first = { ...rows[0]!, run: vi.fn() } as PaletteRow;
+    paletteKey(composing, [first], 0, select);
+    paletteKey({ ...key('ArrowDown'), isComposing: true }, rows, 0, select);
+    expect(composing.preventDefault).not.toHaveBeenCalled();
+    expect(first.run).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
   });
 
   it('shows the search field with focus, rows and the empty state', async () => {

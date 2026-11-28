@@ -207,6 +207,9 @@ export const appFetch: typeof fetch = (input, init) => {
       if (network.epoch === epoch) network.record(origin, true);
     },
     (error: unknown) => {
+      // Cancelled by the caller (also with a reason of its own, e.g. a `TypeError`): no answer was awaited.
+      const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
+      if (signal?.aborted) return;
       if (network.epoch === epoch && network.unanswered(error)) network.record(origin, false);
     },
   );

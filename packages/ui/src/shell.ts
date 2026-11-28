@@ -399,6 +399,8 @@ export function paletteKey(
   palIdx: number,
   select: (index: number) => void,
 ): void {
+  // Enter and the arrow keys of an input method (IME) pick its candidates; the event stays its own.
+  if (event.isComposing) return;
   const n = rows.length;
   const at = Math.min(palIdx, n - 1);
   if (event.key === 'ArrowDown') {

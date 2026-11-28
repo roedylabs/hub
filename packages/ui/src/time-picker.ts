@@ -196,6 +196,7 @@ export function timePickValues(input: TimePickInput, ctx: TimePickContext): Time
     hours: Array.from({ length: 24 }, (_, i) => {
       const v = pad(i);
       return cell(h12 ? `${i % 12 || 12} ${i < 12 ? 'AM' : 'PM'}` : v, v === H, () => {
+        if (disabled) return;
         ctx.set(`${v}:${M}`);
         ctx.edit(null);
       });
@@ -203,6 +204,7 @@ export function timePickValues(input: TimePickInput, ctx: TimePickContext): Time
     mins: Array.from({ length: 60 }, (_, i) => {
       const v = pad(i);
       return cell(v, v === M, () => {
+        if (disabled) return;
         ctx.set(`${H}:${v}`);
         // On mobile the sheet stays open ("Done"), on the desktop the minute closes the popover.
         if (isMobile) ctx.edit(null);
