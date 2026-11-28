@@ -1,13 +1,14 @@
 /**
  * Values of the shell components: prop types and the derivations for the
- * header, settings navigation, account menu, confirmation, settings skeleton
- * and select lists.
+ * header, settings navigation, account menu, confirmation, settings skeleton,
+ * select lists, command palette and keyboard shortcuts.
  * Not in the components so that tests and layout can import them
  * type-checked.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/shell.ts`), trimmed to the
- * hub's shell: no search, notifications, apps menu, sidebar, folders, tags,
- * banners, command palette or keyboard shortcuts.
+ * shared shell: no search, notifications, apps menu, sidebar, folders, tags or
+ * banners. The palette's commands and the shortcut list come from the app; the
+ * palette's keyboard (`paletteKey`) is Mail's `onPalKey` from its layout.
  */
 import { texts } from './i18n.ts';
 import type { IconName } from './icons.ts';
@@ -302,4 +303,127 @@ export function overlayClose(close: () => void): (event: OverlayEvent) => void {
     event.preventDefault();
     close();
   };
+}
+
+// --- Command palette ---
+
+/** Command of the palette (`cmds` of the shell): group, label, icon, shortcut. */
+export interface Command {
+  /** Group: a heading above the first command of each run of the same group. */
+  g: string;
+  label: string;
+  icon: IconName;
+  /** Shortcut shown at the right (e.g. "C", "⇧M"). */
+  k?: string;
+  run: () => void;
+}
+
+export interface PaletteRow {
+  g: string;
+  hasHdr: boolean;
+  hasKey: boolean;
+  icon: IconName;
+  k: string;
+  label: string;
+  /** Marked row (`bg`, `iconBg`, `iconColor`, `tileT`). */
+  sel: boolean;
+  run: () => void;
+  hover: () => void;
+}
+
+export interface CommandPaletteValues {
+  palQ: string;
+  palRows: PaletteRow[];
+  palEmpty: boolean;
+  onPalQ: (event: Event & { currentTarget: HTMLInputElement }) => void;
+  onPalKey: (event: KeyboardEvent) => void;
+  onPalOverlay: (event: MouseEvent) => void;
+}
+
+export interface PaletteContext {
+  /**
+   * Command for the search text, placed first (e.g. "Search ‹App› for “‹Text›”"); without it, an app without a
+   * search only filters its commands.
+   */
+  search?: (q: string) => Command;
+  /** Close the palette; runs before the command. */
+  close: () => void;
+  /** Mark row `index` (`palIdx`). */
+  select: (index: number) => void;
+}
+
+/**
+ * Rows like `palRows`: filter commands by search text, with search text first
+ * the app's search command, heading at every change of group. `run` closes the
+ * palette first (`wrap`), `hover` marks the row.
+ */
+export function paletteRows(
+  commands: readonly Command[],
+  palQ: string,
+  palIdx: number,
+  ctx: PaletteContext,
+): PaletteRow[] {
+  const q = palQ.trim();
+  let list = commands;
+  if (q) {
+    const lower = q.toLowerCase();
+    const found = commands.filter((c) => c.label.toLowerCase().includes(lower));
+    list = ctx.search ? [ctx.search(q), ...found] : found;
+  }
+  const idx = Math.min(palIdx, Math.max(list.length - 1, 0));
+  return list.map((c, i) => ({
+    g: c.g,
+    hasHdr: i === 0 || list[i - 1]?.g !== c.g,
+    hasKey: !!c.k,
+    icon: c.icon,
+    k: c.k ?? '',
+    label: c.label,
+    sel: i === idx,
+    run: () => {
+      ctx.close();
+      c.run();
+    },
+    hover: () => {
+      if (palIdx !== i) ctx.select(i);
+    },
+  }));
+}
+
+/**
+ * Keyboard in the palette's search field (`onPalKey`): ↓/↑ mark the next or previous row, wrapping around, Enter
+ * runs the marked row. Other keys stay with the field.
+ */
+export function paletteKey(
+  event: KeyInput,
+  rows: readonly PaletteRow[],
+  palIdx: number,
+  select: (index: number) => void,
+): void {
+  const n = rows.length;
+  const at = Math.min(palIdx, n - 1);
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    select(n ? (at + 1) % n : 0);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    select(n ? (at - 1 + n) % n : 0);
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    rows[at]?.run();
+  }
+}
+
+// --- Keyboard shortcuts ---
+
+/** Shortcut of the app's list: description and keys in order (`shortcut()` in `keys.ts`). */
+export interface Shortcut {
+  d: string;
+  keys: { k: string }[];
+}
+
+export interface ShortcutsDialogValues {
+  /** The app's shortcuts in display order; the descriptions must be distinct. */
+  shortcuts: Shortcut[];
+  closeHelp: () => void;
+  onHelpOverlay: (event: MouseEvent) => void;
 }

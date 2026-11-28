@@ -1,13 +1,17 @@
 /**
  * State module `ui`: window size and layout, dark theme and motion, the open
  * menu or sheet of the shell, a page's select list and dialog, the
- * confirmation, delayed loading indicators (skeletons), toasts and the
- * tooltip. The package's components read it; the app's shell sets it.
+ * confirmation, the command palette and the keyboard shortcuts' help,
+ * delayed loading indicators (skeletons), toasts with
+ * deferred execution (`../undo.ts`) and the tooltip. The package's
+ * components read it; the app's shell sets it.
  *
  * Taken over from the hub's web app, which took it over from Roedy Mail
- * (`apps/web/src/lib/state/ui.svelte.ts`) without the sidebar, splash screen,
- * command palette and keyboard shortcuts, and without undo. There is no "Ask
- * before deleting" setting: `ask()` always asks.
+ * (`apps/web/src/lib/state/ui.svelte.ts`) without the sidebar, splash screen
+ * and the app's commands and shortcuts (each app passes its own to
+ * `CommandPalette` and `ShortcutsDialog`). The undo delay is a settable field
+ * (`undoMs`) instead of Mail's setting `gUndo`. There is no "Ask before
+ * deleting" setting: `ask()` always asks.
  */
 import { MOBILE_BP, NARROW } from '@roedy/tokens';
 import type { Snippet } from 'svelte';
@@ -17,20 +21,15 @@ import type { TipState } from '../actions/tooltip.ts';
 import type { IconName } from '../icons.ts';
 import type { PickerValues } from '../shell.ts';
 import { settings } from '../settings.svelte.ts';
+import { texts } from '../i18n.ts';
 import { isDarkMode } from '../theme.ts';
+import { Toasts, UNDO_MS, type ToastItem } from '../undo.ts';
+import { devLog } from './devlog.svelte.ts';
 
-/** Display duration of a toast and of an error toast (as in Roedy Mail's `undo.ts`). */
-export const TOAST_MS = 3200;
-export const ERROR_TOAST_MS = 4600;
-
-/** Shown toast. */
-export interface ToastItem {
-  /** Counts up per toast so that a new toast with the same text fades in again. */
-  id: number;
-  text: string;
-  /** Error toast: warning icon, announced as `alert`. */
-  error: boolean;
-}
+const t = texts({
+  en: { notice: ({ text }: { text: string }) => `Notice: ${text}` },
+  de: { notice: ({ text }) => `Hinweis: ${text}` },
+});
 
 /**
  * Open menu or sheet, named by the app: e.g. `account` for the account menu (a popover below the avatar on the
@@ -70,37 +69,6 @@ export interface PageDialog {
   content: Snippet<[boolean]>;
   /** Mobile: the content draws its own sheet (colour editor), without the layout's. */
   bare?: boolean;
-}
-
-/** One toast at a time; a new one replaces the shown one. */
-export class Toasts {
-  #show: (toast: ToastItem | null) => void;
-  #id = 0;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-
-  constructor(show: (toast: ToastItem | null) => void) {
-    this.#show = show;
-  }
-
-  show(text: string): void {
-    this.#open(text, false, TOAST_MS);
-  }
-
-  error(text: string): void {
-    this.#open(text, true, ERROR_TOAST_MS);
-  }
-
-  /** Closes the shown toast. */
-  dismiss(): void {
-    clearTimeout(this.#timer);
-    this.#show(null);
-  }
-
-  #open(text: string, error: boolean, ms: number): void {
-    clearTimeout(this.#timer);
-    this.#show({ id: ++this.#id, text, error });
-    this.#timer = setTimeout(() => this.#show(null), ms);
-  }
 }
 
 export class Ui {
@@ -144,9 +112,17 @@ export class Ui {
   /** Already navigated within the app: "Back" on the error page then goes back in history, otherwise home. */
   navigated = $state(false);
 
-  /** Displayed toast. */
+  /** Displayed toast; actions with undo via `toasts.defer()`, notices go into the developer log. */
   toast = $state<ToastItem | null>(null);
-  readonly toasts = new Toasts((toast) => (this.toast = toast));
+  /** Display duration of a toast with undo in ms: the app's undo delay (`UNDO_DELAYS`). */
+  undoMs = $state<number>(UNDO_MS);
+  readonly toasts = new Toasts(
+    (toast) => {
+      this.toast = toast;
+      if (toast) devLog.add(toast.error ? 'error' : 'info', t.notice({ text: toast.text }));
+    },
+    { undoMs: () => this.undoMs },
+  );
   /** Displayed tooltip (`use:tooltip`, `actions/tooltip.ts`). */
   tip = $state<TipState | null>(null);
 
@@ -159,6 +135,31 @@ export class Ui {
   }
 
   /** Requests confirmation before `run`; closes an open menu. */
+  /** Command palette with search text and marked row (`CommandPalette`). */
+  palette = $state(false);
+  palQ = $state('');
+  palIdx = $state(0);
+  /** Keyboard shortcuts' help open (`ShortcutsDialog`). */
+  help = $state(false);
+
+  /** Opens the command palette, if needed with the first typed character; closes an open menu. */
+  openPalette(q = ''): void {
+    this.palette = true;
+    this.palQ = q;
+    this.palIdx = 0;
+    this.menu = null;
+  }
+
+  closePalette(): void {
+    this.palette = false;
+    this.palQ = '';
+  }
+
+  openHelp(): void {
+    this.help = true;
+    this.menu = null;
+  }
+
   ask(request: ConfirmRequest): void {
     this.confirm = request;
     this.confirmIn = '';
@@ -185,14 +186,19 @@ export class Ui {
     this.confirmIn = '';
   }
 
-  /** Discards the session state (sign-out): menus, dialogs, confirmation, toast. */
+  /**
+   * Discards the session state (sign-out): menus, dialogs, confirmation, toast. A pending action with undo is
+   * reverted locally and not sent (`toasts.discard()`); whoever wants it sent awaits `toasts.flush()` first.
+   */
   reset(): void {
     this.menu = null;
     this.pick = null;
     this.pageDialog = null;
     this.confirm = null;
     this.confirmIn = '';
-    this.toasts.dismiss();
+    this.closePalette();
+    this.help = false;
+    this.toasts.discard();
   }
 
   /**

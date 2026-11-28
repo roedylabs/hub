@@ -1,7 +1,20 @@
 // Taken over from Roedy Mail (`apps/web/src/lib/errors.test.ts`).
 import { describe, expect, it } from 'vitest';
 import { ApiError, NetworkError } from './api.ts';
-import { ERRS, errorCodeOf, failText, gatewayErrorIn, gatewayErrorOf, isOffline, loadFailText } from './errors.ts';
+import {
+  ERRS,
+  envRows,
+  envText,
+  errorCodeOf,
+  errorDetails,
+  failText,
+  gatewayErrorIn,
+  gatewayErrorOf,
+  isOffline,
+  layoutOf,
+  loadFailText,
+  type ErrorEnv,
+} from './errors.ts';
 
 describe('errorCodeOf', () => {
   it('maps HTTP statuses to the error pages', () => {
@@ -52,6 +65,46 @@ describe('errors of the gateway', () => {
       meta.remove();
     }
     expect(gatewayErrorIn()).toBeNull();
+  });
+});
+
+describe('environment for bug reports', () => {
+  const env: ErrorEnv = {
+    version: '0.1.0',
+    build: 'abc1234',
+    mobile: false,
+    width: 1440,
+    height: 900,
+    path: '/password/reset/…',
+    browser: 'Test Browser',
+    timeZone: 'Europe/Berlin',
+    language: 'de',
+    region: 'Germany',
+  };
+
+  it('names environment and view on the error page (`errorDetails`)', () => {
+    expect(errorDetails('500', env).split('\n')).toEqual([
+      'Error 500',
+      'Version: 0.1.0 · Build abc1234',
+      'Layout: Desktop',
+      'Screen: 1440 × 900 px',
+      'View: /password/reset/…',
+      'Browser: Test Browser',
+      'Time zone: Europe/Berlin',
+      'Language: DE · Germany',
+    ]);
+  });
+
+  it('lists the rows with rounded sizes and names the layout', () => {
+    const rows = envRows({ ...env, mobile: true, width: 390.4, height: 843.6 });
+    expect(rows.map(([k]) => k)).toEqual(['Version', 'Layout', 'Screen', 'View', 'Browser', 'Time zone', 'Language']);
+    expect(rows[1]?.[1]).toBe('Narrow');
+    expect(rows[2]?.[1]).toBe('390 × 844 px');
+    expect(layoutOf({ mobile: false })).toBe('Desktop');
+    expect(envText('Roedy Mail', env).split('\n').slice(0, 2)).toEqual([
+      'Roedy Mail',
+      'Version: 0.1.0 · Build abc1234',
+    ]);
   });
 });
 

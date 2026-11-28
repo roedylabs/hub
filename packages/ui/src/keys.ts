@@ -1,11 +1,21 @@
 /**
  * The system's keyboard conventions: Apple systems show ⌥ (Option) where the
- * others show Alt (the shortcut Alt+Shift+P of the password fields).
+ * others show Alt (the shortcut Alt+Shift+P of the password fields) and ⌘
+ * where the others show Ctrl; the names of keys in the shortcut lists
+ * (`keyLabel`) and a shortcut of such a list (`shortcut`).
  *
- * Taken over from Roedy Mail (`apps/web/src/lib/keys.ts`): only the detection
- * of Apple systems and the key event of the select lists, without the
- * shortcuts of the shell.
+ * Taken over from Roedy Mail (`apps/web/src/lib/keys.ts`): the detection
+ * of Apple systems, the key event of the select lists, the modifier key and
+ * the key names; without Mail's shortcuts, their groups and tabs and the
+ * mapping of a key to a command, which stay with each app.
  */
+import { texts } from './i18n.ts';
+import type { Shortcut } from './shell.ts';
+
+const t = texts({
+  en: { ctrl: 'Ctrl', enter: 'Enter', esc: 'Esc' },
+  de: { ctrl: 'Strg', enter: 'Enter', esc: 'Esc' },
+});
 
 /** What the select lists need from a key event (an app's select lists; tests without a DOM). */
 export interface KeyInput {
@@ -32,4 +42,25 @@ export function isApple(nav: PlatformInfo | undefined = globalThis.navigator): b
   } catch {
     return false;
   }
+}
+
+/**
+ * Shown modifier key of the shortcuts: "⌘"
+ * on Apple systems, otherwise "Ctrl" ("Strg"). Both work on all systems.
+ */
+export function modKey(nav?: PlatformInfo): string {
+  return isApple(nav) ? '⌘' : t.ctrl();
+}
+
+/** Keys with a name in the interface language (`ctrl`: "Ctrl", "Strg"). */
+export type KeyName = 'ctrl' | 'enter' | 'esc';
+
+/** Name of a key in the shortcut lists and the palette ("Esc", "Enter", "Ctrl"). */
+export function keyLabel(name: KeyName): string {
+  return t[name]();
+}
+
+/** Shortcut of the shortcut list: description and the keys in order (`shortcut('Open palette', modKey(), 'K')`). */
+export function shortcut(d: string, ...keys: string[]): Shortcut {
+  return { d, keys: keys.map((k) => ({ k })) };
 }

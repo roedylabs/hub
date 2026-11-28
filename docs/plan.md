@@ -942,8 +942,7 @@ per person and server. The hub owns what is the same for all of them:
   refresh per account at a time. Access tokens are short-lived; a refresh
   token never leaves the hub.
 
-What the apps get (details with milestone 8, as compatible additions to
-contract version 1):
+What the apps get (details with milestone 8):
 
 - **In the browser:** the hub's browser API lists the user's accounts (with
   the JMAP session URL, state and the capabilities the server offers) and

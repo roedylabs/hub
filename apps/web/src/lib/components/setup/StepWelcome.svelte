@@ -20,6 +20,7 @@
   import type { Attachment } from 'svelte/attachments';
   import {
     accentInk,
+    browserLang,
     ColorDraft,
     customName,
     editorStart,
@@ -34,7 +35,6 @@
   import { setupFrame } from '#lib/components/setup/frame.ts';
   import type { SetupTargets } from '#lib/components/setup/targets.ts';
   import { fold, FOLD_MS, unfold } from '#lib/fold.ts';
-  import { browserLang } from '#lib/locale.ts';
   import { m } from '#lib/paraglide/messages.js';
   import { DESK_LEVELS, type DeskLevel, type Look, type MobLevel } from '#lib/auth-layout.ts';
   import {

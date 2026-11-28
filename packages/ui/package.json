@@ -5,7 +5,9 @@
   "description": "Svelte 5 components, actions and helpers shared by the Roedy apps, with their own English and German texts",
   "license": "AGPL-3.0-only",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "*.css"
+  ],
   "exports": {
     ".": {
       "types": "./src/index.ts",
@@ -15,7 +17,8 @@
     "./testing": {
       "types": "./src/testing/index.ts",
       "default": "./src/testing/index.ts"
-    }
+    },
+    "./base.css": "./base.css"
   },
   "scripts": {
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",

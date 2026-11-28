@@ -4,9 +4,13 @@
  * `ApiError` with status and error code of the response (`error`,
  * docs/app-contract.md › Browser API of the hub).
  *
+ * The requests go through `appFetch`: they report the connection to
+ * `network` and fail in its offline simulation as without a network.
+ *
  * Taken over from Roedy Mail (`apps/web/src/lib/api.ts`) without the
- * installed-app header, the network simulation and maintenance mode.
+ * installed-app header and maintenance mode.
  */
+import { appFetch } from './state/network.svelte.ts';
 
 export const API_BASE = '/api/v1';
 
@@ -66,7 +70,7 @@ export async function api<T>(method: Method, path: string, body?: unknown, optio
   const keepalive = options.keepalive === true && new TextEncoder().encode(payload ?? '').byteLength <= KEEPALIVE_MAX;
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/${path}`, {
+    res = await appFetch(`${API_BASE}/${path}`, {
       method,
       headers,
       credentials: 'same-origin',
@@ -103,7 +107,7 @@ function parsed(text: string): unknown {
 /** Like `api`, but returns the body as a file (export of the audit log). */
 export async function apiBlob(method: Method, path: string): Promise<Blob> {
   try {
-    const res = await fetch(`${API_BASE}/${path}`, {
+    const res = await appFetch(`${API_BASE}/${path}`, {
       method,
       headers: { 'X-Requested-With': 'fetch' },
       credentials: 'same-origin',

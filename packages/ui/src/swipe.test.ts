@@ -1,7 +1,22 @@
-// Taken over from Roedy Mail (`apps/web/src/lib/swipe.test.ts`), trimmed to dragging sheets and dialogs.
+// Taken over from Roedy Mail (`apps/web/src/lib/swipe.test.ts`), trimmed to dragging sheets and dialogs and swiping
+// the toast; `toastSwipe` from Mail's layout.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pointer } from './testing/pointer.ts';
-import { dragSheet, flingDecay, rubber, sheetCloses, sheetOutMs, velocity, type SheetDrag } from './swipe.ts';
+import {
+  dragSheet,
+  flingDecay,
+  rubber,
+  sheetCloses,
+  sheetOutMs,
+  swipeToast,
+  TOAST_BACK_MS,
+  toastGone,
+  toastOffset,
+  toastOpacity,
+  toastSwipe,
+  velocity,
+  type SheetDrag,
+} from './swipe.ts';
 
 describe('gesture maths', () => {
   it('rubber band', () => {
@@ -24,6 +39,18 @@ describe('gesture maths', () => {
     expect(sheetOutMs(400, 10)).toBe(150);
     expect(sheetOutMs(800, 0)).toBe(300);
     expect(sheetOutMs(800, -2)).toBe(300);
+  });
+
+  it('toast: upwards only a rubber band, gone from 56 px or 0.5 px/ms', () => {
+    expect(toastOffset(10, 20)).toEqual([10, 20]);
+    expect(toastOffset(0, -100)[1]).toBeCloseTo(-rubber(100, 18));
+    expect(toastOpacity(0, 0)).toBe(1);
+    expect(toastOpacity(0, 1000)).toBeCloseTo(0.25);
+    expect(toastGone(57, 0, 0, 0)).toBe(true);
+    expect(toastGone(0, 50, 0, 0)).toBe(false);
+    expect(toastGone(0, -200, 0, 0)).toBe(false);
+    expect(toastGone(0, 0, 0, 0.6)).toBe(true);
+    expect(toastGone(0, 0, 0, -0.6)).toBe(false);
   });
 
   it('fling decays by 0.996 per ms', () => {
@@ -302,5 +329,149 @@ describe('dragSheet', () => {
     expect(touch('touchmove', 100, 90, row)).toBe(false);
     pointer('pointercancel', 100, 94);
     touch('touchcancel', 100, 94, row);
+  });
+});
+
+describe('swipeToast', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.innerHTML = '';
+  });
+
+  const toast = (on = true) => {
+    const el = document.createElement('div');
+    document.body.append(el);
+    const o = { animations: false, hold: vi.fn(), away: vi.fn(), back: vi.fn() };
+    swipeToast(() => (on ? o : null))(el);
+    return { el, o };
+  };
+
+  /** Pointer event of a mouse (left button). */
+  const mouse = (type: string, x: number, y: number, target: EventTarget = window) => {
+    const e = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true, button: 0 });
+    Object.assign(e, { pointerId: 2, isPrimary: true, pointerType: 'mouse' });
+    target.dispatchEvent(e);
+  };
+
+  it('does not move without values (desktop layout), neither with the mouse nor with touch', () => {
+    vi.useFakeTimers();
+    const { el, o } = toast(false);
+    mouse('pointerdown', 100, 100, el);
+    mouse('pointermove', 100, 180);
+    mouse('pointerup', 100, 180);
+    pointer('pointerdown', 100, 100, el);
+    pointer('pointermove', 180, 100);
+    pointer('pointerup', 180, 100);
+    vi.advanceTimersByTime(500);
+    expect(el.style.translate).toBe('');
+    expect(o.hold).not.toHaveBeenCalled();
+    expect(o.away).not.toHaveBeenCalled();
+    expect(o.back).not.toHaveBeenCalled();
+    // no gesture: text selection stays possible
+    expect(document.documentElement.style.userSelect).toBe('');
+  });
+
+  it('can be swiped with the mouse where it can be swiped (mobile, tablet)', () => {
+    vi.useFakeTimers();
+    const { el, o } = toast();
+    mouse('pointerdown', 100, 100, el);
+    mouse('pointermove', 110, 100);
+    mouse('pointermove', 180, 100);
+    expect(el.style.translate).toBe('70px');
+    mouse('pointerup', 180, 100);
+    vi.advanceTimersByTime(0);
+    expect(o.away).toHaveBeenCalled();
+    window.dispatchEvent(new MouseEvent('click'));
+  });
+
+  it('springs back after a cancellation by the browser (`pointercancel`), even beyond the threshold', () => {
+    vi.useFakeTimers();
+    const { el, o } = toast();
+    pointer('pointerdown', 100, 100, el);
+    pointer('pointermove', 100, 110);
+    pointer('pointermove', 100, 250);
+    pointer('pointercancel', 100, 250);
+    vi.advanceTimersByTime(500);
+    expect(o.away).not.toHaveBeenCalled();
+    expect(o.back).toHaveBeenCalled();
+    expect(el.style.translate).toBe('');
+    window.dispatchEvent(new MouseEvent('click'));
+  });
+
+  it('keeps a short tap on "Undo" a click', () => {
+    const { el, o } = toast();
+    const undo = document.createElement('button');
+    const click = vi.fn();
+    undo.addEventListener('click', click);
+    el.append(undo);
+    mouse('pointerdown', 100, 100, undo);
+    mouse('pointermove', 103, 101);
+    mouse('pointerup', 103, 101);
+    undo.click();
+    expect(click).toHaveBeenCalled();
+    expect(o.hold).not.toHaveBeenCalled();
+  });
+
+  it('stops while dragging and goes when dragged far enough', () => {
+    vi.useFakeTimers();
+    const { el, o } = toast();
+    pointer('pointerdown', 100, 100, el);
+    pointer('pointermove', 100, 110);
+    expect(o.hold).toHaveBeenCalled();
+    pointer('pointermove', 100, 180);
+    expect(el.style.translate).toBe('0px 70px');
+    pointer('pointerup', 100, 180);
+    vi.advanceTimersByTime(0);
+    expect(o.away).toHaveBeenCalled();
+    expect(o.back).not.toHaveBeenCalled();
+  });
+
+  it('springs back when dragged briefly and keeps running', () => {
+    vi.useFakeTimers();
+    const { el, o } = toast();
+    pointer('pointerdown', 100, 100, el);
+    pointer('pointermove', 110, 100);
+    pointer('pointermove', 130, 100);
+    vi.advanceTimersByTime(200);
+    pointer('pointerup', 130, 100);
+    expect(o.back).toHaveBeenCalled();
+    expect(o.away).not.toHaveBeenCalled();
+  });
+});
+
+describe('toastSwipe', () => {
+  function setup() {
+    let current: number | null = 1;
+    const toasts = { hold: vi.fn(), dismiss: vi.fn(), resume: vi.fn() };
+    const values = toastSwipe(
+      toasts,
+      () => current,
+      () => true,
+    );
+    return { toasts, values, show: (id: number | null) => (current = id) };
+  }
+
+  it('pauses the shown toast, closes it when swiped away and lets it run on after springing back', () => {
+    const { toasts, values } = setup();
+    expect(values.animations).toBe(true);
+    values.hold();
+    expect(toasts.hold).toHaveBeenCalledOnce();
+    values.back();
+    expect(toasts.resume).toHaveBeenCalledWith(TOAST_BACK_MS);
+    values.hold();
+    values.away();
+    expect(toasts.dismiss).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a new toast that replaced the swiped one alone', () => {
+    const { toasts, values, show } = setup();
+    values.hold();
+    show(2);
+    values.away();
+    values.back();
+    show(null);
+    values.away();
+    expect(toasts.dismiss).not.toHaveBeenCalled();
+    expect(toasts.resume).not.toHaveBeenCalled();
   });
 });

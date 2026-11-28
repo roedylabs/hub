@@ -1,13 +1,14 @@
 /**
- * Dragging sheets (mobile) and dialogs (tablet) down to close them: follows
- * the pointer, rubber band upwards, sliding out or springing back.
+ * Dragging sheets (mobile) and dialogs (tablet) down to close them, and
+ * swiping the toast away: follows the pointer, rubber band upwards, sliding
+ * out or springing back.
  *
- * The gesture paints directly on the DOM (offset of the panel, opacity of the
- * backdrop), not via Svelte state. One gesture at a time.
+ * The gesture paints directly on the DOM (offset of the panel or toast,
+ * opacity of the backdrop), not via Svelte state. One gesture at a time.
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/swipe.ts`), trimmed to
- * dragging sheets and dialogs (no swiping of list rows and toasts, no
- * pulling up "More", no swiping back).
+ * dragging sheets and dialogs and swiping the toast (no swiping of list rows,
+ * no pulling up "More", no swiping back).
  */
 import type { Attachment } from 'svelte/attachments';
 import { hideTooltip } from './actions/tooltip.ts';
@@ -19,6 +20,20 @@ export const SLOP = 8;
 
 /** Rubber band: grows with `d` but stays below `max` (`rubber`). */
 export const rubber = (d: number, max: number): number => (max * d) / (d + max);
+
+/** After springing back the toast runs this much longer and then goes as if expired (`gRelease`). */
+export const TOAST_BACK_MS = 2400;
+
+/** Offset of the toast: free sideways and downwards, upwards only as a rubber band. */
+export const toastOffset = (dx: number, dy: number): [number, number] => [dx, dy > 0 ? dy : -rubber(-dy, 18)];
+
+/** Opacity of the toast while dragging: fades with the distance, at most to 25 %. */
+export const toastOpacity = (dx: number, dy: number): number =>
+  1 - Math.min(0.75, Math.hypot(dx, Math.max(0, dy)) / 140);
+
+/** The toast goes: dragged further than 56 px sideways or down, or flung faster than 0.5 px/ms. */
+export const toastGone = (dx: number, dy: number, vx: number, vy: number): boolean =>
+  Math.hypot(dx, Math.max(0, dy)) > 56 || Math.hypot(vx, Math.max(0, vy)) > 0.5;
 
 /** A sheet closes when dragged further than 30 % of its height and not flung back up, or when flung down faster than 0.5 px/ms. */
 export const sheetCloses = (off: number, height: number, vy: number): boolean =>
@@ -423,5 +438,119 @@ export function dragSheet(get: () => SheetDrag | null): Attachment<HTMLElement> 
       cancel?.();
       undo?.();
     };
+  };
+}
+
+// --- Toast ---
+
+/** Values of the swipeable toast (`toastSwipe()` builds them for `ui.toasts`). */
+export interface ToastSwipe {
+  animations: boolean;
+  /** Gesture starts: the toast stays until it ends. */
+  hold: () => void;
+  /** Swiped away: close the toast, send a pending action immediately. */
+  away: () => void;
+  /** Sprung back: the toast runs for another `TOAST_BACK_MS` and then goes as if expired. */
+  back: () => void;
+}
+
+/**
+ * Swiping the toast (`data-g="toast"`, `touch-action: none`) in any direction
+ * except up: far or fast enough it flies out, otherwise it springs back; after
+ * `pointercancel` it always springs back. A short tap on "Undo" stays a click.
+ * Only where `get` returns values: in the shell on mobile and on tablets
+ * (`ui.swipeOn`), there with any pointer. Without (desktop layout, pages
+ * without a shell) the toast does not move and its text stays selectable.
+ */
+export function swipeToast(get: () => ToastSwipe | null): Attachment<HTMLElement> {
+  return (el) => {
+    let resetTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Ends the tracking of the current pointer when the toast goes away during the gesture. */
+    let cancel: (() => void) | null = null;
+
+    const onDown = (e: PointerEvent) => {
+      const o = get();
+      if (!o || !canStart(e)) return;
+      const ms = (n: number) => (o.animations ? n : 0);
+      let dx = 0;
+      let dy = 0;
+      cancel = follow(e, {
+        decide: () => true,
+        start: () => {
+          clearTimeout(resetTimer);
+          o.hold();
+          el.style.transition = 'none';
+        },
+        move: (x, y) => {
+          dx = x;
+          dy = y;
+          const [tx, ty] = toastOffset(x, y);
+          el.style.translate = `${tx}px ${ty}px`;
+          el.style.filter = `opacity(${toastOpacity(x, y)})`;
+        },
+        end: (vx, vy, cancelled) => {
+          cancel = null;
+          if (!cancelled && toastGone(dx, dy, vx, vy)) {
+            const t = ms(200);
+            const py = Math.max(0, dy);
+            const n = Math.max(Math.hypot(dx, py), 1);
+            el.style.transition = `translate ${t}ms ease-out, filter ${t}ms ease-out`;
+            el.style.translate = `${dx + (dx / n) * 120}px ${py + (py / n) * 120}px`;
+            el.style.filter = 'opacity(0)';
+            later(t, o.away);
+            return;
+          }
+          const t = ms(380);
+          el.style.transition = `translate ${t}ms ${SPRING}, filter ${t}ms ease`;
+          el.style.translate = '0 0';
+          el.style.filter = 'opacity(1)';
+          o.back();
+          resetTimer = setTimeout(() => {
+            el.style.transition = '';
+            el.style.translate = '';
+            el.style.filter = '';
+          }, t + 30);
+        },
+      });
+    };
+
+    el.addEventListener('pointerdown', onDown);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      clearTimeout(resetTimer);
+      cancel?.();
+    };
+  };
+}
+
+/**
+ * Swiping values for `ui.toasts`: paused during the gesture, sent at once when
+ * swiped away, another `TOAST_BACK_MS` when it springs back – only while the
+ * same toast is shown; a new one that replaces it during the gesture runs on
+ * its own. `current` is the shown toast's `id` (`ui.toast?.id`).
+ *
+ * From Roedy Mail's layout (`apps/web/src/routes/+layout.svelte`, `toastSwipe`).
+ */
+export function toastSwipe(
+  toasts: { hold: () => void; dismiss: () => void; resume: (ms: number) => void },
+  current: () => number | null,
+  animations: () => boolean,
+): ToastSwipe {
+  let swiped: number | null = null;
+  const same = () => swiped !== null && current() === swiped;
+  return {
+    get animations() {
+      return animations();
+    },
+    hold: () => {
+      swiped = current();
+      toasts.hold();
+    },
+    away: () => {
+      if (same()) toasts.dismiss();
+    },
+    back: () => {
+      if (same()) toasts.resume(TOAST_BACK_MS);
+    },
   };
 }

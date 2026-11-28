@@ -7,8 +7,14 @@
  * 502 `app_unreachable`, 503 `app_not_ready`, 504 `app_timeout`, and
  * "offline" when the hub itself does not answer.
  *
+ * Plus the environment of the app for bug reports (`ErrorEnv`): the rows of a
+ * developer page, the text of "Copy details" and the debug bar.
+ *
  * Taken over from Roedy Mail (`apps/web/src/lib/errors.ts`) with the
- * gateway's codes and without the developer details.
+ * gateway's codes, without the values of Mail's error page and without the
+ * time in the account's time zone (`timeZoneOf`, `timeText`, from Mail's
+ * settings). The app passes the view (`ErrorEnv.path`) already without
+ * secrets; Mail redacted tokens in its own addresses (`redactPath`).
  */
 import { isApiError, NetworkError, retryAfter } from './api.ts';
 import type { IconName } from './icons.ts';
@@ -35,6 +41,17 @@ const t = texts({
     e504_kicker: 'Error 504',
     e504_text: 'The app didn’t answer in time. Try again.',
     e504_title: 'The app took too long',
+    env_browser: 'Browser',
+    env_language: 'Language',
+    env_layout: 'Layout',
+    env_screen: 'Screen',
+    env_screen_value: ({ width, height }: { width: number; height: number }) => `${width} × ${height} px`,
+    env_timezone: 'Time zone',
+    env_version: 'Version',
+    env_version_value: ({ version, build }: { version: string; build: string }) => `${version} · Build ${build}`,
+    env_view: 'View',
+    layout_desktop: 'Desktop',
+    layout_narrow: 'Narrow',
     act: 'That didn’t work. Please try again.',
     app_text: 'You’re signed in, but you don’t have access to this app. Ask your administrator for access.',
     app_title: 'No access to this app',
@@ -64,6 +81,17 @@ const t = texts({
     e504_kicker: 'Fehler 504',
     e504_text: 'Die App hat nicht rechtzeitig geantwortet. Versuchen Sie es erneut.',
     e504_title: 'Die App braucht zu lange',
+    env_browser: 'Browser',
+    env_language: 'Sprache',
+    env_layout: 'Layout',
+    env_screen: 'Bildschirm',
+    env_screen_value: ({ width, height }) => `${width} × ${height} px`,
+    env_timezone: 'Zeitzone',
+    env_version: 'Version',
+    env_version_value: ({ version, build }) => `${version} · Build ${build}`,
+    env_view: 'Ansicht',
+    layout_desktop: 'Desktop',
+    layout_narrow: 'Schmal',
     act: 'Das hat nicht geklappt. Bitte versuchen Sie es erneut.',
     app_text:
       'Sie sind angemeldet, haben aber keinen Zugriff auf diese App. Bitten Sie Ihre Administration um Zugriff.',
@@ -194,4 +222,52 @@ export function failText(error: unknown, text: string = t.act()): string {
 /** Text of a "Couldn’t load …" card: the wait time after 429, "No connection" without a response, otherwise "That didn’t work". */
 export function loadFailText(error: unknown): string {
   return isApiError(error, 429) ? t.limit({ wait: waitText(retryAfter(error)) }) : failText(error);
+}
+
+/** Environment for "Copy details", the rows of a developer page and the debug bar. */
+export interface ErrorEnv {
+  /** Version of the app, e.g. `0.5.0`. */
+  version: string;
+  /** Build of the app, e.g. the short commit. */
+  build: string;
+  /** Narrow layout (`ui.isMobile`). */
+  mobile: boolean;
+  width: number;
+  height: number;
+  /** View: the page's path, without secrets (the app leaves out tokens in its addresses). */
+  path: string;
+  browser: string;
+  timeZone: string;
+  /** Language of the interface, e.g. `en`. */
+  language: string;
+  /** Region of the formats, e.g. `US`. */
+  region: string;
+}
+
+/** Layout name: narrow (mobile) or desktop. */
+export function layoutOf(env: Pick<ErrorEnv, 'mobile'>): string {
+  return env.mobile ? t.layout_narrow() : t.layout_desktop();
+}
+
+/** Rows of the environment (a developer page and "Copy details"). */
+export function envRows(env: ErrorEnv): [label: string, value: string][] {
+  return [
+    [t.env_version(), t.env_version_value({ version: env.version, build: env.build })],
+    [t.env_layout(), layoutOf(env)],
+    [t.env_screen(), t.env_screen_value({ width: Math.round(env.width), height: Math.round(env.height) })],
+    [t.env_view(), env.path],
+    [t.env_browser(), env.browser],
+    [t.env_timezone(), env.timeZone],
+    [t.env_language(), `${env.language.toUpperCase()} · ${env.region}`],
+  ];
+}
+
+/** Heading, then per row of the environment "label: value". */
+export function envText(title: string, env: ErrorEnv): string {
+  return [title, ...envRows(env).map(([k, v]) => `${k}: ${v}`)].join('\n');
+}
+
+/** Text of "Copy details" on an error page: kicker and environment. */
+export function errorDetails(code: ErrorCode, env: ErrorEnv): string {
+  return envText(ERRS[code].kicker(), env);
 }

@@ -23,6 +23,7 @@ import { ACCENTS } from '@roedy/tokens';
 import {
   api,
   ApiError,
+  browserLang,
   connectSettings,
   isHexColor,
   isRecord,
@@ -30,7 +31,7 @@ import {
   type AccentChoice,
   type ModeName,
 } from '@roedy/ui';
-import { browserLang, deviceLang, rememberLang, type Lang } from '#lib/locale.ts';
+import { deviceLang, rememberLang, type Lang } from '#lib/locale.ts';
 import { baseLocale, isLocale, overwriteGetLocale } from '#lib/paraglide/runtime.js';
 import { writeSharedPrefs } from '#lib/shared-prefs.ts';
 

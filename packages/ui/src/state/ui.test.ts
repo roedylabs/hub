@@ -1,5 +1,7 @@
-// Taken over from Roedy Mail (`apps/web/src/lib/state/ui.test.ts`), trimmed to menus, confirmation and loading.
+// Taken over from Roedy Mail (`apps/web/src/lib/state/ui.test.ts`), trimmed to menus, confirmation, toasts and loading;
+// the undo delay is `ui.undoMs` instead of Mail's setting `gUndo`.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { devLog } from './devlog.svelte.ts';
 import { Loading, SKELETON_DELAY, Ui } from './ui.svelte.ts';
 
 beforeEach(() => {
@@ -8,6 +10,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  devLog.clear();
 });
 
 describe('ui', () => {
@@ -79,6 +82,56 @@ describe('ui: confirmation', () => {
     ui.reset();
     expect(ui).toMatchObject({ menu: null, pick: null, pageDialog: null, confirm: null, confirmIn: '', toast: null });
   });
+
+  it('reverts a pending action on sign-out without sending it', async () => {
+    const ui = new Ui();
+    const action = {
+      text: 'Device signed out',
+      revert: vi.fn(),
+      commit: vi.fn(() => Promise.resolve()),
+      onUndo: vi.fn(),
+    };
+    ui.toasts.defer(action);
+    ui.reset();
+    expect(ui.toast).toBeNull();
+    expect(action.revert).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(action.commit).not.toHaveBeenCalled();
+    expect(action.onUndo).not.toHaveBeenCalled();
+  });
+});
+
+describe('ui: toasts', () => {
+  it('keeps notices and errors as before: text, error, no undo', () => {
+    const ui = new Ui();
+    ui.toasts.show('Saved');
+    expect(ui.toast).toMatchObject({ text: 'Saved', error: false, undo: false });
+    ui.toasts.error('Didn’t work');
+    expect(ui.toast).toMatchObject({ text: 'Didn’t work', error: true, undo: false });
+    ui.toasts.dismiss();
+    expect(ui.toast).toBeNull();
+  });
+
+  it('shows toasts with undo as long as `undoMs` says', () => {
+    const ui = new Ui();
+    expect(ui.undoMs).toBe(5000);
+    ui.undoMs = 3000;
+    ui.toasts.defer({ text: 'Device signed out', revert: () => {} });
+    expect(ui.toast).toMatchObject({ text: 'Device signed out', undo: true });
+    vi.advanceTimersByTime(3000);
+    expect(ui.toast).toBeNull();
+  });
+
+  it('writes notices as info and errors as error into the log, but not dismissing', () => {
+    const ui = new Ui();
+    ui.toasts.show('Saved');
+    ui.toasts.error('Did not work');
+    ui.toasts.dismiss();
+    expect(devLog.entries.map((e) => [e.level, e.msg])).toEqual([
+      ['error', 'Notice: Did not work'],
+      ['info', 'Notice: Saved'],
+    ]);
+  });
 });
 
 describe('Loading', () => {
@@ -100,5 +153,21 @@ describe('Loading', () => {
     await loading.run(Promise.resolve(1));
     vi.advanceTimersByTime(SKELETON_DELAY);
     expect(loading.slow).toBe(false);
+  });
+});
+
+describe('ui: command palette and shortcuts help', () => {
+  it('opens the palette with the typed text, closes a menu, and forgets both on reset', () => {
+    const ui = new Ui();
+    ui.menu = 'account';
+    ui.palIdx = 3;
+    ui.openPalette('se');
+    expect(ui).toMatchObject({ palette: true, palQ: 'se', palIdx: 0, menu: null });
+    ui.closePalette();
+    expect(ui).toMatchObject({ palette: false, palQ: '' });
+    ui.openHelp();
+    ui.openPalette();
+    ui.reset();
+    expect(ui).toMatchObject({ palette: false, help: false });
   });
 });
