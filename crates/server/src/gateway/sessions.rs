@@ -210,6 +210,8 @@ impl Streams {
                 },
             )
         };
+        // For `has_ended`: the same signals, read without polling.
+        let latched = (session_ended.clone(), shutdown.clone());
         let ended = async move {
             // An error means the entry is gone: ended as well.
             let session = async move {
@@ -224,6 +226,7 @@ impl Streams {
         Watch {
             ended: Box::pin(ended),
             done: false,
+            latched,
             _guard: guard,
         }
     }
@@ -323,6 +326,8 @@ pub struct Watch {
     /// `ended` is ready: it is not polled again (the gateway waits for it
     /// before the app's response and again for its body).
     done: bool,
+    /// The receivers of its entry and of the shutdown, for [`Self::has_ended`].
+    latched: (watch::Receiver<bool>, watch::Receiver<bool>),
     _guard: Guard,
 }
 
@@ -340,10 +345,11 @@ impl Watch {
         }
     }
 
-    /// Whether it has ended, without waiting.
-    pub fn has_ended(&mut self) -> bool {
-        self.poll_ended(&mut Context::from_waker(std::task::Waker::noop()))
-            .is_ready()
+    /// Whether it has ended, without waiting: reads the signals themselves,
+    /// so that the runtime's cooperative budget cannot hide an end.
+    pub fn has_ended(&self) -> bool {
+        let (session, shutdown) = &self.latched;
+        self.done || *session.borrow() || *shutdown.borrow()
     }
 
     /// Waits until the session ended, the app was switched off or the
@@ -503,7 +509,14 @@ mod tests {
         assert!(ended(&mut watch));
         assert!(ended(&mut watch), "polled again");
         assert!(watch.has_ended());
-        assert!(!streams.watch(owner("s2", "u1")).has_ended());
+        // Without having been polled.
+        let fresh = streams.watch(owner("s2", "u1"));
+        assert!(!fresh.has_ended());
+        streams.end_app("app");
+        assert!(fresh.has_ended());
+        let late = streams.watch(owner("s3", "u1"));
+        streams.end_all();
+        assert!(late.has_ended());
     }
 
     #[test]
