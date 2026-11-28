@@ -195,6 +195,11 @@ export function pollVisible(target: Window, ms: number, visible: () => boolean, 
  * connection. An already open stream keeps running in the simulation, but
  * the app fetches its changes with requests that fail here again.
  */
+/** Reason of an expired `AbortSignal.timeout()`. */
+function isTimeout(reason: unknown): boolean {
+  return reason instanceof DOMException && reason.name === 'TimeoutError';
+}
+
 export const appFetch: typeof fetch = (input, init) => {
   if (network.simulated) return Promise.reject(new TypeError('Offline simulation'));
   // `Promise.resolve`: also for a stand-in of `fetch` that answers directly (tests).
@@ -207,9 +212,11 @@ export const appFetch: typeof fetch = (input, init) => {
       if (network.epoch === epoch) network.record(origin, true);
     },
     (error: unknown) => {
-      // Cancelled by the caller (also with a reason of its own, e.g. a `TypeError`): no answer was awaited.
-      const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
-      if (signal?.aborted) return;
+      // Cancelled by the caller (also with a reason of its own, e.g. a `TypeError`): no answer was awaited. A
+      // deadline (`AbortSignal.timeout()`) is no cancellation: no answer in time counts. `signal: null` in `init`
+      // drops the request's own signal, as in `fetch`.
+      const signal = init?.signal !== undefined ? init.signal : input instanceof Request ? input.signal : null;
+      if (signal?.aborted && !isTimeout(signal.reason)) return;
       if (network.epoch === epoch && network.unanswered(error)) network.record(origin, false);
     },
   );

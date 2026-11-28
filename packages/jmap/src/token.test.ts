@@ -86,6 +86,19 @@ describe('TokenSource', () => {
     expect(await tokens.token()).toBe('new');
   });
 
+  it('clear right after the fetch was stored still keeps the grant from the waiting caller', async () => {
+    const fetch = vi.fn(() => Promise.resolve({ accessToken: 'old', expiresAt: '2030-01-01T00:00:00Z' }));
+    const tokens = new TokenSource({ fetch });
+    const parse = Date.parse.bind(Date);
+    // `Date.parse` runs after the fetch's own generation check, before `token()` resumes.
+    vi.spyOn(Date, 'parse').mockImplementationOnce((text: string) => {
+      tokens.clear();
+      return parse(text);
+    });
+    await expect(tokens.token()).rejects.toMatchObject({ name: 'AbortError' });
+    vi.restoreAllMocks();
+  });
+
   it('renews when the broker returns the rejected token again', async () => {
     const fetch = vi
       .fn<(refresh: boolean) => Promise<TokenGrant>>()

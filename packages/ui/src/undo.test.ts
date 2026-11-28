@@ -351,6 +351,18 @@ describe('Toasts', () => {
       expect(last()).toBeNull();
     });
 
+    it('ends a held offer on its deadline even without resume or undo', () => {
+      const a = { ...offer(), ms: 2000 };
+      toasts.undoable(a);
+      vi.advanceTimersByTime(500);
+      toasts.hold();
+      vi.advanceTimersByTime(1499);
+      expect(last()).toMatchObject({ undo: true });
+      vi.advanceTimersByTime(1);
+      expect(last()).toBeNull();
+      expect(a.undo).not.toHaveBeenCalled();
+    });
+
     it('never lets a swipe extend the undo beyond its deadline', async () => {
       const a = { ...offer(), ms: 2000 };
       toasts.undoable(a);

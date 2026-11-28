@@ -45,9 +45,9 @@ export interface AppWorkerOptions {
  * page's own scope, which may be another app's (or the hub's) on a page outside this worker's scope.
  */
 function activated(registration: ServiceWorkerRegistration): Promise<ServiceWorkerRegistration> {
-  if (registration.active) return Promise.resolve(registration);
-  const worker = registration.installing ?? registration.waiting;
-  if (!worker) return Promise.resolve(registration);
+  // `active` may still be `activating`; it is the one that counts, otherwise the new one on its way.
+  const worker = registration.active ?? registration.installing ?? registration.waiting;
+  if (!worker || worker.state === 'activated') return Promise.resolve(registration);
   return new Promise((resolve, reject) => {
     const check = () => {
       if (worker.state === 'activated') {

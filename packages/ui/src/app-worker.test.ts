@@ -68,6 +68,22 @@ describe('service worker of the app', () => {
     await expect(failing).rejects.toThrow('redundant');
   });
 
+  it('waits for an active worker that is still activating', async () => {
+    const { container } = stubWorker();
+    const active = Object.assign(new EventTarget(), { state: 'activating' });
+    const own = { scope: '/mail/', active, installing: null, waiting: null };
+    container.register.mockResolvedValueOnce(own as never);
+    let done: unknown = null;
+    void worker()
+      .app.register()
+      .then((r) => (done = r));
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(done).toBeNull();
+    active.state = 'activated';
+    active.dispatchEvent(new Event('statechange'));
+    await vi.waitFor(() => expect(done).toBe(own));
+  });
+
   it('tries again after a failure', async () => {
     const { container } = stubWorker();
     container.register.mockRejectedValueOnce(new Error('blocked'));

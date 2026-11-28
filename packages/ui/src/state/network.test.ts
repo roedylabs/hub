@@ -302,6 +302,30 @@ describe('appFetch', () => {
       expect(reached()).toEqual({ 'https://app.example.test': true });
     });
 
+    it('still counts a deadline and a request whose signal `init` dropped', async () => {
+      const failed = new TypeError('Failed to fetch');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.reject(failed)),
+      );
+      // `AbortSignal.timeout()` expired: no answer in time.
+      const timeout = new AbortController();
+      timeout.abort(new DOMException('too long', 'TimeoutError'));
+      network.record('https://app.example.test', true);
+      await expect(appFetch('https://app.example.test/api/v1/x', { signal: timeout.signal })).rejects.toBe(failed);
+      await settled();
+      expect(reached()).toEqual({ 'https://app.example.test': false });
+
+      // `signal: null` replaces the request's own (cancelled) signal: the failure is the network's.
+      const cancelled = new AbortController();
+      cancelled.abort();
+      network.record('https://app.example.test', true);
+      const request = new Request('https://app.example.test/api/v1/y', { signal: cancelled.signal });
+      await expect(appFetch(request, { signal: null })).rejects.toBe(failed);
+      await settled();
+      expect(reached()).toEqual({ 'https://app.example.test': false });
+    });
+
     it('remembers a network error or a timeout and passes the error on', async () => {
       const error = new TypeError('Failed to fetch');
       vi.stubGlobal(

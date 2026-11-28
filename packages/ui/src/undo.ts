@@ -203,6 +203,8 @@ export class Toasts {
     clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#held = true;
+    // An offer's undo ends on time even while held: the server no longer takes it back afterwards.
+    if (this.#offer) this.#timer = setTimeout(() => this.#close(), Math.max(0, this.#offerEnd - Date.now()));
   }
 
   /**

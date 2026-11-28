@@ -72,8 +72,11 @@ export class TokenSource implements TokenProvider {
       if (held && held.until > this.#now() && held.grant.accessToken !== rejected) return held.grant.accessToken;
       // If the JMAP server rejects the currently valid token, or the broker
       // returns an already rejected one again, it has to renew.
+      const generation = this.#generation;
       const pending = this.#fetch(again || (held !== null && held.grant.accessToken === rejected));
       const next = await abortable(pending.promise, signal);
+      // `clear()` while the fetched grant was on its way to this caller: it must not hand it out.
+      if (generation !== this.#generation) throw new DOMException('token discarded', 'AbortError');
       if (next.grant.accessToken !== rejected || pending.refresh) return next.grant.accessToken;
     }
   }
