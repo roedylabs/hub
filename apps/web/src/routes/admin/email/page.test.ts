@@ -449,6 +449,21 @@ describe('Administration › Email page', () => {
     expect(field('Password')).toHaveValue('');
   });
 
+  it('a save answered with another server drops a secret typed during the save', async () => {
+    let saved: (reply: { body: unknown }) => void = () => {};
+    renderPage(STORED, {
+      'PUT admin/system-mail': [() => new Promise((resolve) => (saved = resolve))],
+    });
+    await ready();
+    await fireEvent.input(field('Sender name'), { target: { value: 'Example' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    // Typed for the first server while the save runs; another administrator chose the other one meanwhile.
+    await fireEvent.input(field('Password'), { target: { value: 'for-the-first' } });
+    saved({ body: { ...STORED, server_id: 's2', sender_name: 'Example', has_secret: false, status: 'unchecked' } });
+    await vi.waitFor(() => expect(server('Other mail')).toBeInTheDocument());
+    expect(field('Password')).toHaveValue('');
+  });
+
   it('a late refusal for a server no longer chosen keeps the secret entered for the new one', async () => {
     let refuse: (reply: { status: number; body: unknown }) => void = () => {};
     renderPage(STORED, {

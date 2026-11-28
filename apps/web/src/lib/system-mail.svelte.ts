@@ -823,6 +823,13 @@ export class SystemMailPage {
         const value = this.edits[k];
         if (value !== undefined && value !== d[k]) Object.assign(rest, { [k]: value });
       }
+      // A secret typed meanwhile was for the server shown then; if the saved account names another one (another
+      // administrator chose it), the secret goes, as with `set` and `#adopt`.
+      const typedFor = rest.srv ?? d.srv;
+      if (typedFor !== '' && (rest.srv ?? view.server_id ?? '') !== typedFor) {
+        delete rest.pass;
+        delete rest.token;
+      }
       this.#adopt(view);
       this.edits = rest;
       this.serverErrors = {};
