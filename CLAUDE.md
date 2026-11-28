@@ -1,9 +1,11 @@
 # Roedy Hub
 
-Gateway, central sign-in and home page for the Roedy apps (Mail, later Contacts, Calendar …) under one origin.
-Backend: Rust (axum, SQLite) in `crates/server`, binary `roedy-hub`. Web app: Svelte 5 / SvelteKit SPA in `apps/web`,
-design tokens in `packages/tokens` (copy from Roedy Mail). Toolchain: Node 26, pnpm 12, Rust stable.
-Sister project: `../mail` (Roedy Mail), read-only from here.
+Gateway, central sign-in, home page and shared platform for the Roedy apps (Mail, Calendar, Contacts …) under one
+origin: everything several apps need is built here, the apps (separate containers and repositories) keep only what is
+specific to them (`docs/plan.md` § 9). Backend: Rust (axum, SQLite) in `crates/server`, binary `roedy-hub`. Web app:
+Svelte 5 / SvelteKit SPA in `apps/web`, design tokens in `packages/tokens` (taken from Roedy Mail, to be published for
+the apps). Toolchain: Node 26, pnpm 12, Rust stable.
+`../mail` is the archived standalone Roedy Mail (`mail-standalone`): a reference only, read-only from here.
 
 ## Key documents
 
