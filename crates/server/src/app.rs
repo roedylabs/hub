@@ -68,6 +68,7 @@ use crate::{
         },
         security_headers,
         static_files::WebAssets,
+        switcher,
     },
 };
 
@@ -267,6 +268,9 @@ pub fn router(state: AppState) -> Router {
         // The apps' icons: public and cacheable images under the API's
         // path, without its middleware (`web::app_icons`).
         .route(app_icons::ICON_PATH, get(app_icons::icon))
+        // The app switcher for the apps' pages, a script loaded with
+        // `<script>` like the icons (`web::switcher`).
+        .route(switcher::SCRIPT_PATH, get(switcher::script))
         .nest(api::PREFIX, api.clone())
         // `nest` does not cover `/api/v1/` (axum 0.8); the API answers there too.
         .route_service(&format!("{}/", api::PREFIX), api.with_state(state.clone()))

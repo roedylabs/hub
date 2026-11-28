@@ -767,7 +767,9 @@ checks pass in every PR; every PR has tests for what it adds.
   second factors keep working; sessions start anew.
 - **Shared Stalwart accounts and tokens** for all apps – see contract § 14.
 - **Ready-made app switcher** as a small script/web component served by the
-  hub, so that each app does not build its own.
+  hub, so that each app does not build its own. Done: `<roedy-app-switcher>`
+  from `GET /api/v1/app-switcher.js` (contract § 5.5), source in
+  `apps/web/src/switcher`, used by the example app.
 - **Notifications, web push, backups in the app, update check, maintenance
   mode, GeoIP** for the hub.
 - **Restoring an older backup** leaves the apps' event position ahead of the

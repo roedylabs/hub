@@ -646,10 +646,14 @@ async fn to_slash(State(example): State<Example>) -> Redirect {
     Redirect::permanent(&format!("/{}/", example.slug()))
 }
 
-/// The page: who is signed in, and the link to the hub's home page
-/// (contract § 5.4). Landmarks and a viewport, so that the end-to-end
-/// suite's axe check passes on it as on the hub's pages; `connect-src 'self'`
-/// lets the suite open the SSE and WebSocket endpoints from it.
+/// The page: who is signed in, the link to the hub's home page and the
+/// hub's ready-made app switcher (contract § 5.4). Landmarks and a viewport,
+/// so that the end-to-end suite's axe check passes on it as on the hub's
+/// pages. The policy is as strict as an app's can be: scripts and images only
+/// from the origin (the switcher and the apps' icons), no styles at all (the
+/// switcher adopts a constructed style sheet, which no `style-src` governs);
+/// `connect-src 'self'` lets the switcher ask the hub, and the suite open
+/// the SSE and WebSocket endpoints from it.
 async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
     let who = match example.identity(&headers).await {
         Ok(identity) => format!("Signed in as {}", escape(&identity.name)),
@@ -658,18 +662,21 @@ async fn home(State(example): State<Example>, headers: HeaderMap) -> Response {
     let page = format!(
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>Example</title><nav aria-label=\"Hub\"><a href=\"/\">Home</a></nav>\
+         <title>Example</title>\
+         <script type=\"module\" src=\"{SWITCHER}\"></script>\
+         <header><nav aria-label=\"Hub\"><a href=\"/\">Home</a>\
+         <roedy-app-switcher></roedy-app-switcher></nav></header>\
          <main><h1>Example</h1><p>{who}</p></main></html>"
     );
-    (
-        [(
-            header::CONTENT_SECURITY_POLICY,
-            "default-src 'none'; connect-src 'self'; frame-ancestors 'self'",
-        )],
-        Html(page),
-    )
-        .into_response()
+    ([(header::CONTENT_SECURITY_POLICY, CSP)], Html(page)).into_response()
 }
+
+/// The hub's app switcher (contract § 5.4).
+pub const SWITCHER: &str = "/api/v1/app-switcher.js";
+
+/// Policy of the page.
+pub const CSP: &str = "default-src 'none'; script-src 'self'; img-src 'self'; \
+     connect-src 'self'; frame-ancestors 'self'";
 
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")

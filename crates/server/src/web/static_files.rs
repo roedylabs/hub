@@ -84,7 +84,7 @@ impl WebAssets {
         }
     }
 
-    async fn get(&self, name: &str) -> Option<Asset> {
+    pub(super) async fn get(&self, name: &str) -> Option<Asset> {
         match self {
             Self::Embedded => embedded(name),
             Self::Dir(root) => from_dir(root, name).await,
@@ -93,9 +93,9 @@ impl WebAssets {
     }
 }
 
-struct Asset {
-    body: Bytes,
-    etag: String,
+pub(super) struct Asset {
+    pub(super) body: Bytes,
+    pub(super) etag: String,
 }
 
 /// Strong ETag from the SHA-256 of the content.

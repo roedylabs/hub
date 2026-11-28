@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "vite build && vite build -c vite.switcher.config.ts",
     "preview": "vite preview",
     "sync": "svelte-kit sync && paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --strategy baseLocale --silent",
     "check": "pnpm run sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
