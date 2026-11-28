@@ -94,17 +94,27 @@ describe('parsing', () => {
         { slug: 'x', name: 'X', url: '//evil.example/', icon: '/i.svg' },
         { slug: 'y', name: 'Y', url: 'javascript:alert(1)', icon: '/i.svg' },
         { slug: 'z', name: 'Z', url: '/z/', icon: '/\\evil.example/i.svg' },
+        // The URL parser drops tabs and line breaks: these would lead to another origin.
+        { slug: 'n', name: 'N', url: '/\n/evil.example/', icon: '/i.svg' },
+        { slug: 't', name: 'T', url: '/n/', icon: '/\t/evil.example/i.svg' },
+        { slug: 'r', name: 'R', url: '/\r/evil.example/', icon: '/i.svg' },
+        { slug: 'q', name: 'Q', url: '/q/?next=%0A', icon: '/i.svg?v=1' },
         { name: 'No slug', url: '/n/', icon: '/i.svg' },
         null,
       ],
     });
-    expect(apps?.map((app) => app.slug)).toEqual(['mail', 'contacts']);
+    expect(apps?.map((app) => app.slug)).toEqual(['mail', 'contacts', 'q']);
     expect(parseApps({ apps: 'none' })).toBeNull();
     expect(parseApps(null)).toBeNull();
   });
 
   it('takes the hub links from the session, with defaults', () => {
     expect(parseLinks(SESSION)).toEqual({ home: '/', account: '/account', admin: '/admin' });
+    expect(parseLinks({ hub: { account: '/\t/evil.example/', admin: '/admin\u0000' } })).toEqual({
+      home: '/',
+      account: '/account',
+      admin: null,
+    });
     expect(parseLinks({ hub: { home: 'https://evil.example/', admin: null } })).toEqual({
       home: '/',
       account: '/account',

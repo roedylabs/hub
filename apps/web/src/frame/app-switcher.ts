@@ -66,9 +66,19 @@ export type View =
   | { kind: 'signed-out' }
   | { kind: 'ready'; apps: HubApp[]; links: HubLinks };
 
-/** A path on this origin (one leading `/`, no `\`), else `null`. */
+/**
+ * A path on this origin, else `null`: one leading `/`, no `\` and no control
+ * characters – the URL parser drops tabs and line breaks, so `/\n/host`
+ * would become `//host`, another origin.
+ */
 function localPath(value: unknown): string | null {
-  return typeof value === 'string' && /^\/(?![/\\])/.test(value) && !value.includes('\\') ? value : null;
+  return typeof value === 'string' &&
+    /^\/(?![/\\])/.test(value) &&
+    !value.includes('\\') &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it looks for
+    !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : null;
 }
 
 /** The apps of a `GET /api/v1/apps` body; entries without the needed fields are left out. */
