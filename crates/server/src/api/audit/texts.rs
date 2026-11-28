@@ -135,6 +135,10 @@ impl<'a> Details<'a> {
         self.0?.get(key)?.as_u64()
     }
 
+    fn flag(self, key: &str) -> Option<bool> {
+        self.0?.get(key)?.as_bool()
+    }
+
     /// A list of texts, joined with commas.
     fn list(self, key: &str) -> Option<String> {
         let items: Option<Vec<&str>> = self
@@ -334,10 +338,26 @@ fn known(row: &Row, lang: Language) -> Option<Line> {
         "org.update" => plain("ti-building"),
         "branding.update" => plain("ti-brush"),
         "system_mail.update" => plain("ti-mail"),
+        "stalwart.policy" => Line::new(
+            "ti-world-www",
+            act(
+                Some(if p.flag("allow_custom_servers")? {
+                    "allowed"
+                } else {
+                    "blocked"
+                }),
+                &[],
+            ),
+        ),
         "audit.retention" => with("ti-history", "keep", &keep(lang, p.number("days")?)),
         // System
         "auth.reset_admin" => with("ti-user-shield", "user", &p.text("user")?).warn(),
         "setup.complete" => plain("ti-rocket"),
+        "stalwart.servers.create" | "stalwart.servers.update" => {
+            with("ti-server-2", "label", &p.text("label")?)
+        }
+        "stalwart.servers.delete" => with("ti-server-off", "label", &p.text("label")?).warn(),
+        "stalwart.servers.register_client" => with("ti-plug-connected", "url", &p.text("url")?),
         "tls.issue" | "tls.renew" => with("ti-lock-check", "domain", &p.text("domain")?),
         "tls.fail" => with("ti-lock-x", "domain", &p.text("domain")?)
             .meta(p.text("error").map(str::to_owned))
@@ -404,7 +424,7 @@ mod tests {
 
     /// All action keys the hub writes, with their category. A new key
     /// belongs here and in both locale files.
-    const ACTIONS: [(&str, Category); 54] = {
+    const ACTIONS: [(&str, Category); 59] = {
         use Category::{Apps, Login, Settings, System, Users};
         [
             ("auth.login", Login),
@@ -452,9 +472,14 @@ mod tests {
             ("org.update", Settings),
             ("branding.update", Settings),
             ("system_mail.update", Settings),
+            ("stalwart.policy", Settings),
             ("audit.retention", Settings),
             ("auth.reset_admin", System),
             ("setup.complete", System),
+            ("stalwart.servers.create", System),
+            ("stalwart.servers.update", System),
+            ("stalwart.servers.delete", System),
+            ("stalwart.servers.register_client", System),
             ("audit.export", System),
             ("tls.issue", System),
             ("tls.renew", System),
@@ -474,6 +499,7 @@ mod tests {
             "slug": "mail", "version": "1.2.0", "roles": ["owner", "viewer"],
             "access_default": "all", "app_role": "user",
             "domain": "hub.example.com", "error": "the CA answered 429 (rateLimited)",
+            "label": "Mail", "url": "https://mail.example.com", "allow_custom_servers": true,
         })
     }
 
@@ -486,6 +512,7 @@ mod tests {
             "slug": "notes", "version": "0.1.0", "roles": ["editor"],
             "access_default": "selected", "app_role": "editor",
             "domain": "app.example.com", "error": "connection refused",
+            "label": "Mail 2", "url": "https://mail2.example.com", "allow_custom_servers": false,
         })
     }
 

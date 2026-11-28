@@ -8,6 +8,9 @@
 //!   every start of the app.
 //! - `GET /internal/v1/users[/<sub>]` ([`users`]): the users with access.
 //! - `GET /internal/v1/events` ([`events`]): catching up on events.
+//! - `GET /internal/v1/stalwart/servers`, `GET /internal/v1/users/<sub>/
+//!   stalwart-accounts[/<id>/token]` ([`stalwart`]): Stalwart servers,
+//!   users' accounts and access tokens for the app's backend.
 //!
 //! Every endpoint but `pair` and `jwks` needs the app secret
 //! ([`PairedApp`]). Responses are JSON with `Cache-Control: no-store` unless
@@ -15,6 +18,7 @@
 
 pub mod events;
 pub mod pair;
+pub mod stalwart;
 pub mod users;
 
 use axum::{
@@ -54,6 +58,18 @@ pub fn router() -> Router<AppState> {
         .route(&format!("{PREFIX}/users"), get(users::list))
         .route(&format!("{PREFIX}/users/{{sub}}"), get(users::show))
         .route(&format!("{PREFIX}/events"), get(events::list))
+        .route(
+            &format!("{PREFIX}/stalwart/servers"),
+            get(stalwart::servers),
+        )
+        .route(
+            &format!("{PREFIX}/users/{{sub}}/stalwart-accounts"),
+            get(stalwart::accounts),
+        )
+        .route(
+            &format!("{PREFIX}/users/{{sub}}/stalwart-accounts/{{id}}/token"),
+            post(stalwart::access_token),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,

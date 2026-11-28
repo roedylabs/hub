@@ -26,7 +26,7 @@ pub mod pairing;
 pub use claims::{Event, Identity};
 pub use jwks::{Jwk, Jwks};
 pub use jws::{Error, Expected, InvalidKey, SigningKey, verify};
-pub use manifest::{Manifest, ManifestError};
+pub use manifest::{Manifest, ManifestError, Stalwart};
 
 /// The request header with the identity (contract § 4.1).
 pub const IDENTITY_HEADER: &str = "X-Roedy-Identity";

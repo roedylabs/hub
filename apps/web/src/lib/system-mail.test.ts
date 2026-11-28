@@ -11,20 +11,22 @@ import {
   firstBadSection,
   liveErrors,
   mailErrorsOf,
+  mailErrorText,
   NO_MAIL,
   precheck,
   reasonText,
   requiredErrors,
   SystemMailPage,
   systemMailValues,
+  type MailServer,
   type SystemMail,
+  type SystemMailInput,
 } from './system-mail.svelte.ts';
-import { hostOf, mailUrlOf, normUrl } from './system-mail-url.ts';
 
 const IDS = [{ id: 'i1', name: 'Example Org', email: 'noreply@example.com' }];
 /** A stored, checked account. */
 const STORED: SystemMail = {
-  url: 'https://mail.example.com',
+  server_id: 's1',
   auth: 'password',
   user: 'noreply@example.com',
   has_secret: true,
@@ -38,7 +40,34 @@ const STORED: SystemMail = {
   identities: IDS,
 };
 
+/** Servers of the Stalwart registry. */
+const SERVERS: MailServer[] = [
+  { id: 's1', label: 'Example mail', url: 'https://mail.example.com', host: 'mail.example.com' },
+  { id: 's2', label: 'Other mail', url: 'https://other.example.com:8443', host: 'other.example.com:8443' },
+];
+/** `GET admin/stalwart/servers` with the fields the page does not use. */
+const registry = (servers: MailServer[] = SERVERS) => ({
+  body: {
+    servers: servers.map((s) => ({
+      ...s,
+      domains: [],
+      client_id: null,
+      has_secret: false,
+      reach: 'ok',
+      cors: 'ok',
+      oauth: 'ok',
+      tested_at: null,
+      accounts: 0,
+      created_at: '2026-11-01T10:00:00Z',
+    })),
+    redirect_uri: 'https://hub.example.com/oauth/stalwart',
+    system_mail_server: servers[0]?.id ?? null,
+  },
+});
+
 const scrollTo = vi.fn();
+const show = vi.fn();
+const mark = vi.fn();
 
 beforeEach(() => {
   signIn('admin');
@@ -46,6 +75,8 @@ beforeEach(() => {
 
 afterEach(() => {
   scrollTo.mockClear();
+  show.mockClear();
+  mark.mockClear();
   resetSignedIn();
 });
 
@@ -59,64 +90,28 @@ function later() {
   return { reply, answer: (r: Reply) => answer(r) };
 }
 
-async function loaded(mail: SystemMail = STORED, routes: Parameters<typeof mockApi>[0] = {}) {
-  const api = mockApi({ 'GET admin/system-mail': [{ body: mail }], ...routes });
+async function loaded(
+  mail: SystemMail = STORED,
+  routes: Parameters<typeof mockApi>[0] = {},
+  servers: MailServer[] = SERVERS,
+) {
+  const api = mockApi({
+    'GET admin/system-mail': [{ body: mail }],
+    'GET admin/stalwart/servers': [registry(servers)],
+    ...routes,
+  });
   const p = new SystemMailPage(scrollTo);
   await p.load();
   return { p, api };
 }
 
-const values = (p: SystemMailPage, now?: number) => systemMailValues(p, now, { scrollTo });
-
-describe('address of the server', () => {
-  it('accepts https origins and http only on localhost, like normalize_url', () => {
-    for (const [raw, origin] of [
-      ['https://mail.example.com', 'https://mail.example.com'],
-      [' https://Mail.Example.com/ ', 'https://mail.example.com'],
-      ['https://mail.example.com:8443', 'https://mail.example.com:8443'],
-      ['http://localhost:8080', 'http://localhost:8080'],
-      ['http://127.0.0.1:9', 'http://127.0.0.1:9'],
-      ['https://192.0.2.1', 'https://192.0.2.1'],
-    ])
-      expect(mailUrlOf(raw as string), raw).toEqual({ origin });
-    for (const [raw, error] of [
-      ['', 'required'],
-      ['  ', 'required'],
-      ['mail.example.com', 'invalid'],
-      ['http://mail.example.com', 'invalid'],
-      ['https://mail.example.com/jmap', 'invalid'],
-      ['https://user:pw@mail.example.com', 'invalid'],
-      ['https://mail.example.com?x=1', 'invalid'],
-      ['https://mail.example.com?', 'invalid'],
-      ['https://mail.example.com#top', 'invalid'],
-      ['https://[::1]', 'invalid'],
-      ['https://mail_x.example.com', 'invalid'],
-      ['ftp://mail.example.com', 'invalid'],
-    ])
-      expect(mailUrlOf(raw as string), raw).toEqual({ error });
-  });
-
-  it('trims like the backend (Rust str::trim): U+0085 at the edges goes, whitespace inside stays an error', () => {
-    expect(mailUrlOf('\u0085https://mail.example.com\u0085')).toEqual({ origin: 'https://mail.example.com' });
-    expect(mailUrlOf('\u0085')).toEqual({ error: 'required' });
-    expect(mailUrlOf('https://mail.\u0085example.com')).toEqual({ error: 'invalid' });
-    // Rust keeps the byte order mark, so the backend rejects the address.
-    expect(mailUrlOf('\ufeffhttps://mail.example.com')).toEqual({ error: 'invalid' });
-    expect(normUrl('\u0085https://Mail.Example.com/\u0085')).toBe('https://mail.example.com');
-  });
-
-  it('stored form and host', () => {
-    expect(normUrl(' https://Mail.Example.com:8443/ ')).toBe('https://mail.example.com:8443');
-    expect(normUrl(' mail.example.com ')).toBe('mail.example.com');
-    expect(hostOf('https://mail.example.com:8443')).toBe('mail.example.com:8443');
-    expect(hostOf('mail.example.com')).toBe('');
-  });
-});
+const values = (p: SystemMailPage, now?: number, pick: Partial<SystemMailInput> = {}) =>
+  systemMailValues(p, { now, open: null, hi: null, isMobile: false, ...pick }, { scrollTo, show, mark });
 
 describe('draft, connection and body', () => {
   it('draft from the stored account without secrets', () => {
     expect(draftOf(STORED)).toEqual({
-      url: 'https://mail.example.com',
+      srv: 's1',
       auth: 'password',
       user: 'noreply@example.com',
       pass: '',
@@ -125,12 +120,13 @@ describe('draft, connection and body', () => {
       replyTo: '',
       keepSent: true,
     });
-    expect(draftOf(NO_MAIL).url).toBe('');
+    expect(draftOf(NO_MAIL).srv).toBe('');
   });
 
-  it('connection: normalized address, user only with password, sender does not count', () => {
+  it('connection: server, user only with password, sender does not count', () => {
     const d = draftOf(STORED);
-    expect(connOf({ ...d, url: 'https://MAIL.example.com/' })).toBe(connOf(d));
+    expect(connOf({ ...d, srv: 's2' })).not.toBe(connOf(d));
+    expect(connOf({ ...d, user: ' noreply@example.com ' })).toBe(connOf(d));
     expect(connOf({ ...d, name: 'Other' })).toBe(connOf(d));
     expect(connOf({ ...d, auth: 'token', user: 'x' })).toBe(connOf({ ...d, auth: 'token', user: 'y' }));
     expect(connOf({ ...d, pass: 'pw' })).not.toBe(connOf(d));
@@ -138,25 +134,37 @@ describe('draft, connection and body', () => {
 
   it('PUT sends only what changed, secrets only when entered', () => {
     const base = draftOf(STORED);
-    expect(changedBody({ ...base, url: 'https://mail.example.com/' }, base)).toEqual({});
+    expect(changedBody({ ...base, user: ' noreply@example.com ' }, base)).toEqual({});
     expect(changedBody({ ...base, name: ' Example ', replyTo: '', keepSent: false }, base)).toEqual({
       sender_name: 'Example',
       keep_sent: false,
     });
-    expect(changedBody({ ...base, url: 'https://other.example.com', pass: ' pw ' }, base)).toEqual({
-      url: 'https://other.example.com',
+    expect(changedBody({ ...base, srv: 's2', pass: ' pw ' }, base)).toEqual({
+      server_id: 's2',
       app_password: ' pw ',
     });
     expect(changedBody({ ...base, auth: 'token', token: ' tok ' }, base)).toEqual({ auth: 'token', token: 'tok' });
+    // A new secret names the address of the server the page shows.
+    expect(changedBody({ ...base, pass: 'pw' }, base, SERVERS)).toEqual({
+      app_password: 'pw',
+      server_url: 'https://mail.example.com',
+    });
+    expect(changedBody({ ...base, name: 'Example' }, base, SERVERS)).toEqual({ sender_name: 'Example' });
+  });
+
+  it('a moved server is an error of the server field', () => {
+    const error = new ApiError(422, {
+      error: 'invalid',
+      fields: { server_id: { code: 'changed', url: 'https://mail.example.net' } },
+    });
+    expect(mailErrorsOf(error)).toEqual({ srv: 'changed' });
+    expect(mailErrorText('srv', 'changed')).toContain('address has changed');
   });
 
   it('checks fields live like the backend', () => {
     const d = draftOf(STORED);
     expect(liveErrors(d)).toEqual({});
-    expect(
-      liveErrors({ ...d, url: 'mail.example.com', user: 'no reply', name: 'x'.repeat(101), replyTo: 'no-at' }),
-    ).toEqual({
-      url: 'invalid',
+    expect(liveErrors({ ...d, user: 'no reply', name: 'x'.repeat(101), replyTo: 'no-at' })).toEqual({
       user: 'invalid',
       name: 'too_long',
       replyTo: 'invalid',
@@ -165,16 +173,23 @@ describe('draft, connection and body', () => {
     expect(liveErrors({ ...d, pass: 'x'.repeat(1025) }).pass).toBe('invalid');
     expect(liveErrors({ ...d, auth: 'token', token: `a${String.fromCharCode(7)}b` }).token).toBe('invalid');
     expect(liveErrors({ ...d, replyTo: `${'a'.repeat(250)}@example.org` }).replyTo).toBe('too_long');
-    // An empty address is not a live error (only on saving or testing).
-    expect(liveErrors({ ...d, url: '' })).toEqual({});
+    // No server chosen is not a live error (only on saving or testing).
+    expect(liveErrors({ ...d, srv: '' })).toEqual({});
   });
 
-  it('required: address, user with password, a secret – a stored one of the same method on the same server counts', () => {
+  it('required: a server of the registry, user with password, a secret – a stored one of the same method on the same server counts', () => {
     const d = draftOf(STORED);
-    expect(requiredErrors(d, STORED)).toEqual({});
-    expect(requiredErrors({ ...d, url: 'https://other.example.com' }, STORED)).toEqual({ pass: 'required' });
-    expect(requiredErrors({ ...d, auth: 'token' }, STORED)).toEqual({ token: 'required' });
-    expect(requiredErrors(draftOf(NO_MAIL), NO_MAIL)).toEqual({ url: 'required', user: 'required', pass: 'required' });
+    expect(requiredErrors(d, STORED, SERVERS)).toEqual({});
+    expect(requiredErrors({ ...d, srv: 's2' }, STORED, SERVERS)).toEqual({ pass: 'required' });
+    expect(requiredErrors({ ...d, auth: 'token' }, STORED, SERVERS)).toEqual({ token: 'required' });
+    expect(requiredErrors(draftOf(NO_MAIL), NO_MAIL, SERVERS)).toEqual({
+      srv: 'required',
+      user: 'required',
+      pass: 'required',
+    });
+    // Removed from the registry meanwhile; an empty registry needs a server too.
+    expect(requiredErrors({ ...d, srv: 'gone' }, STORED, SERVERS)).toEqual({ srv: 'not_found', pass: 'required' });
+    expect(requiredErrors({ ...draftOf(NO_MAIL), user: 'a', pass: 'pw' }, NO_MAIL, [])).toEqual({ srv: 'required' });
     expect(firstBadSection({ replyTo: 'invalid' })).toBe('sender');
     expect(firstBadSection({ replyTo: 'invalid', token: 'required' })).toBe('conn');
     expect(firstBadSection({})).toBeNull();
@@ -182,17 +197,16 @@ describe('draft, connection and body', () => {
 
   it('checks beforehand', () => {
     const d = draftOf(STORED);
-    expect(precheck(d, STORED)).toBeNull();
-    expect(precheck({ ...d, url: '' }, STORED)).toBe('Enter the address of the mail server.');
-    expect(precheck({ ...d, url: 'mail.example.com' }, STORED)).toBe(
-      'Enter the address as https://mail.example.com, without a path.',
+    expect(precheck(d, STORED, SERVERS)).toBeNull();
+    expect(precheck({ ...d, srv: '' }, STORED, SERVERS)).toBe('Choose the mail server.');
+    expect(precheck({ ...d, srv: 'gone' }, STORED, SERVERS)).toBe(
+      'The server is no longer in the server list. Choose another one.',
     );
-    expect(precheck({ ...d, auth: 'token' }, STORED)).toBe('Sign-in failed. No token provided.');
-    expect(precheck({ ...d, user: '' }, STORED)).toBe('Sign-in failed. Enter a username and password.');
-    expect(precheck({ ...d, url: 'https://other.example.com' }, STORED)).toBe(
-      'Sign-in failed. Enter a username and password.',
-    );
-    expect(precheck({ ...d, url: 'https://other.example.com', pass: 'pw' }, STORED)).toBeNull();
+    expect(precheck(d, STORED, [])).toBe('The server is no longer in the server list. Choose another one.');
+    expect(precheck({ ...d, auth: 'token' }, STORED, SERVERS)).toBe('Sign-in failed. No token provided.');
+    expect(precheck({ ...d, user: '' }, STORED, SERVERS)).toBe('Sign-in failed. Enter a username and password.');
+    expect(precheck({ ...d, srv: 's2' }, STORED, SERVERS)).toBe('Sign-in failed. Enter a username and password.');
+    expect(precheck({ ...d, srv: 's2', pass: 'pw' }, STORED, SERVERS)).toBeNull();
   });
 
   it('texts per reason', () => {
@@ -216,13 +230,13 @@ describe('draft, connection and body', () => {
     const err = new ApiError(422, {
       error: 'invalid',
       fields: {
-        url: { code: 'invalid' },
+        server_id: { code: 'not_found' },
         app_password: { code: 'required' },
         reply_to: { code: 'too_long' },
         to: { code: 'invalid' },
       },
     });
-    expect(mailErrorsOf(err)).toEqual({ url: 'invalid', pass: 'required', replyTo: 'too_long' });
+    expect(mailErrorsOf(err)).toEqual({ srv: 'not_found', pass: 'required', replyTo: 'too_long' });
     expect(mailErrorsOf(new ApiError(400, { error: 'bad_request' }))).toEqual({});
   });
 });
@@ -230,8 +244,9 @@ describe('draft, connection and body', () => {
 describe('loading and status', () => {
   it('connected: status, rows, sender', async () => {
     const { p, api } = await loaded();
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail']);
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers']);
     expect(p.status).toBe('ready');
+    expect(p.servers).toEqual(SERVERS);
     const v = values(p, Date.parse('2026-11-26T12:00:00Z'));
     expect(v.mSt).toMatchObject({
       key: 'ok',
@@ -246,17 +261,65 @@ describe('loading and status', () => {
     expect(v.mailFrom).toBe('Example Org <noreply@example.com>');
     expect(v.mailNamePh).toBe('Example Org');
     expect(v.mailSecret).toMatchObject({ label: 'Password', ph: '••••••••', type: 'password', bad: false });
-    expect(v.mailUrlSub).toBe('JMAP session via mail.example.com');
+    expect(v.mailSrvSub).toBe('JMAP session via mail.example.com');
+    expect(v.mailSrvHas).toBe(true);
+    expect(v.selMailSrv).toMatchObject({ title: 'Mail server', label: 'Example mail', open: false, disabled: false });
+    expect(v.selMailSrv.opts.map((o) => [o.label, o.sub, o.on])).toEqual([
+      ['Example mail', 'mail.example.com', true],
+      ['Other mail', 'other.example.com:8443', false],
+    ]);
     expect(v.mailDirty).toBe(false);
   });
 
-  it('without an account "Not set up"; an entered address is "Not checked"', async () => {
+  it('without an account "Not set up"; a chosen server is "Not checked"', async () => {
     const { p } = await loaded(NO_MAIL);
     expect(values(p).mSt).toMatchObject({ key: 'none', title: 'Not set up' });
     expect(values(p).mailSecret.ph).toBe('');
-    expect(values(p).mailUrlSub).toBe('Address of the JMAP server, e.g. https://mail.example.com');
-    p.set('url', 'https://mail.example.com');
+    expect(values(p).mailSrvSub).toBe('The sending account’s Stalwart server');
+    expect(values(p).selMailSrv.label).toBe('Choose server');
+    p.set('srv', 's1');
     expect(values(p).mSt).toMatchObject({ key: 'new', title: 'Not checked' });
+    expect(values(p).selMailSrv.label).toBe('Example mail');
+  });
+
+  it('the pick list opens on the desktop, marks a row and chooses with a click', async () => {
+    const { p } = await loaded(STORED);
+    values(p).selMailSrv.toggle();
+    expect(show).toHaveBeenLastCalledWith('mailsrv');
+    let v = values(p, undefined, { open: 'mailsrv', hi: 1 });
+    expect(v.selMailSrv).toMatchObject({ open: true, active: 1 });
+    expect(values(p, undefined, { open: 'mailsrv', isMobile: true }).selMailSrv.open).toBe(false);
+    v.selMailSrv.opts[1]?.onClick();
+    expect(show).toHaveBeenLastCalledWith(null);
+    expect(p.draft.srv).toBe('s2');
+    v = values(p);
+    expect(v.selMailSrv.label).toBe('Other mail');
+    expect(v.mailSrvSub).toBe('JMAP session via other.example.com:8443');
+    expect(v.mSt.key).toBe('new');
+  });
+
+  it('a server removed from the registry asks for another one', async () => {
+    const { p } = await loaded({ ...STORED, server_id: null, status: 'err', reason: 'unreachable' });
+    const v = values(p);
+    expect(v.selMailSrv.label).toBe('Choose server');
+    expect(v.selMailSrv.opts.some((o) => o.on)).toBe(false);
+    // The stored password belonged to the removed server.
+    expect(v.mailSecret.ph).toBe('');
+  });
+
+  it('an empty registry: no pick list, saving and testing ask for the server', async () => {
+    const { p, api } = await loaded(NO_MAIL, {}, []);
+    expect(values(p)).toMatchObject({ mailSrvHas: false, mailSrvSub: 'The sending account’s Stalwart server' });
+    expect(values(p).selMailSrv.disabled).toBe(true);
+    p.set('user', 'noreply@example.com');
+    p.set('pass', 'pw');
+    await p.save();
+    expect(p.errors).toEqual({ srv: 'required' });
+    expect(values(p).mailErr.srv).toMatchObject({ bad: true, err: 'Choose the mail server.' });
+    expect(scrollTo).toHaveBeenCalledWith('conn');
+    await p.test();
+    expect(values(p).mSt).toMatchObject({ key: 'err', sub: 'Choose the mail server.' });
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers']);
   });
 
   it('a stored error shows the reason and names `role`', async () => {
@@ -271,9 +334,9 @@ describe('loading and status', () => {
       { 'POST admin/system-mail/test': [{ body: { identities: IDS, sent: false } }] },
     );
     await vi.waitFor(() => expect(p.key).toBe('ok'));
-    expect(api.calls[1]).toMatchObject({
+    expect(api.calls[2]).toMatchObject({
       path: 'admin/system-mail/test',
-      body: { url: 'https://mail.example.com', auth: 'password', user: 'noreply@example.com' },
+      body: { server_id: 's1', auth: 'password', user: 'noreply@example.com' },
     });
     expect(ui.toast).toBeNull();
   });
@@ -291,6 +354,7 @@ describe('loading and status', () => {
   it('an error while loading shows the card; 403 reloads the account', async () => {
     const api = mockApi({
       'GET admin/system-mail': [{ status: 403, body: { error: 'forbidden' } }],
+      'GET admin/stalwart/servers': [{ status: 403, body: { error: 'forbidden' } }],
       'GET session': [{ body: sessionOf({ ...TEST_USER, role: 'user' }) }],
     });
     const p = new SystemMailPage(scrollTo);
@@ -298,11 +362,14 @@ describe('loading and status', () => {
     expect(p.status).toBe('failed');
     expect(p.failure).toBe('That didn’t work. Please try again.');
     await vi.waitFor(() => expect(session.isAdmin).toBe(false));
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET session']);
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers', 'GET session']);
   });
 
   it('"Try again" shows the skeleton again and loads', async () => {
-    mockApi({ 'GET admin/system-mail': [{ status: 500, body: { error: 'internal' } }, { body: STORED }] });
+    mockApi({
+      'GET admin/system-mail': [{ status: 500, body: { error: 'internal' } }, { body: STORED }],
+      'GET admin/stalwart/servers': [registry(), registry()],
+    });
     const p = new SystemMailPage(scrollTo);
     await p.load();
     expect(p.status).toBe('failed');
@@ -314,7 +381,10 @@ describe('loading and status', () => {
 
   it('only the latest of two overlapping loads applies; nothing after leaving', async () => {
     const first = later();
-    mockApi({ 'GET admin/system-mail': [first.reply, { body: { ...STORED, sender_name: 'Newer' } }] });
+    mockApi({
+      'GET admin/system-mail': [first.reply, { body: { ...STORED, sender_name: 'Newer' } }],
+      'GET admin/stalwart/servers': [registry(), registry()],
+    });
     const p = new SystemMailPage(scrollTo);
     const a = p.load();
     await p.load();
@@ -323,7 +393,7 @@ describe('loading and status', () => {
     expect(p.draft.name).toBe('Newer');
 
     const late = later();
-    mockApi({ 'GET admin/system-mail': [late.reply] });
+    mockApi({ 'GET admin/system-mail': [late.reply], 'GET admin/stalwart/servers': [registry()] });
     const q = new SystemMailPage(scrollTo);
     const run = q.load();
     q.dispose();
@@ -338,14 +408,14 @@ describe('test connection', () => {
     const { p, api } = await loaded(NO_MAIL, {
       'POST admin/system-mail/test': [{ body: { identities: IDS, sent: false } }],
     });
-    p.set('url', 'https://mail.example.com/');
+    p.set('srv', 's1');
     p.set('user', ' noreply@example.com ');
     p.set('pass', 'pw');
     await p.test();
-    expect(api.calls[1]).toMatchObject({
+    expect(api.calls[2]).toMatchObject({
       method: 'POST',
       path: 'admin/system-mail/test',
-      body: { url: 'https://mail.example.com/', auth: 'password', user: 'noreply@example.com', app_password: 'pw' },
+      body: { server_id: 's1', auth: 'password', user: 'noreply@example.com', app_password: 'pw' },
     });
     expect(p.key).toBe('ok');
     expect(ui.toast).toMatchObject({ text: 'Connection established', error: false });
@@ -355,8 +425,8 @@ describe('test connection', () => {
   it('pre-check without a request', async () => {
     const { p, api } = await loaded(NO_MAIL);
     await p.test();
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail']);
-    expect(values(p).mSt).toMatchObject({ key: 'err', sub: 'Enter the address of the mail server.' });
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers']);
+    expect(values(p).mSt).toMatchObject({ key: 'err', sub: 'Choose the mail server.' });
     expect(ui.toast).toMatchObject({ text: 'Connection failed', error: true });
   });
 
@@ -395,11 +465,11 @@ describe('test connection', () => {
   it('a 422 per field names the field in the status', async () => {
     const { p } = await loaded(STORED, {
       'POST admin/system-mail/test': [
-        { status: 422, body: { error: 'invalid', fields: { url: { code: 'invalid' } } } },
+        { status: 422, body: { error: 'invalid', fields: { server_id: { code: 'not_found' } } } },
       ],
     });
     await p.test();
-    expect(values(p).mSt.sub).toBe('Enter the address as https://mail.example.com, without a path.');
+    expect(values(p).mSt.sub).toBe('The server is no longer in the server list. Choose another one.');
   });
 
   it('a second test while one runs does nothing; a result after leaving writes nothing', async () => {
@@ -427,10 +497,10 @@ describe('test connection', () => {
     p.set('user', 'other@example.com');
     p.set('pass', 'pw');
     await p.test();
-    expect(api.calls[1]?.body).toMatchObject({ identity_id: null });
+    expect(api.calls[2]?.body).toMatchObject({ identity_id: null });
     await p.test();
     // The last check of this connection returned the stored identity: it stays.
-    expect(api.calls[2]?.body).not.toHaveProperty('identity_id');
+    expect(api.calls[3]?.body).not.toHaveProperty('identity_id');
   });
 });
 
@@ -443,7 +513,7 @@ describe('saving', () => {
     const run = p.save();
     expect(p.saving).toBe(true);
     expect(p.key).toBe('busy');
-    expect(api.calls[1]).toMatchObject({
+    expect(api.calls[2]).toMatchObject({
       method: 'PUT',
       path: 'admin/system-mail',
       body: { app_password: 'new-pw', sender_name: 'Example' },
@@ -459,11 +529,9 @@ describe('saving', () => {
 
   it('a new connection that fails: saved, status with the reason, error toast', async () => {
     const { p } = await loaded(STORED, {
-      'PUT admin/system-mail': [
-        { body: { ...STORED, url: 'https://other.example.com', status: 'err', reason: 'unreachable' } },
-      ],
+      'PUT admin/system-mail': [{ body: { ...STORED, server_id: 's2', status: 'err', reason: 'unreachable' } }],
     });
-    p.set('url', 'https://other.example.com');
+    p.set('srv', 's2');
     p.set('pass', 'pw');
     await p.save();
     expect(values(p).mSt).toMatchObject({ key: 'err', sub: 'Can’t reach the server. Check the address.' });
@@ -472,7 +540,7 @@ describe('saving', () => {
 
   it('with a missing secret or a field error: toast, jump, fields marked, nothing sent', async () => {
     const { p, api } = await loaded(STORED);
-    p.set('url', 'https://other.example.com');
+    p.set('srv', 's2');
     await p.save();
     expect(ui.toast).toMatchObject({ text: 'Please check the highlighted fields', error: false });
     expect(scrollTo).toHaveBeenCalledWith('conn');
@@ -484,23 +552,23 @@ describe('saving', () => {
     await p.save();
     expect(scrollTo).toHaveBeenLastCalledWith('sender');
     expect(values(p).mailErr.replyTo).toMatchObject({ bad: true, err: 'Please enter a valid email address.' });
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail']);
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers']);
   });
 
-  it('required errors follow the draft: a restored address brings the stored secret back', async () => {
+  it('required errors follow the draft: the stored server chosen again brings the stored secret back', async () => {
     const { p, api } = await loaded(STORED, {
       'PUT admin/system-mail': [{ body: { ...STORED, sender_name: 'Example' } }],
     });
-    p.set('url', 'https://other.example.com');
+    p.set('srv', 's2');
     await p.save();
     expect(p.errors).toEqual({ pass: 'required' });
     // Back to the stored server: the stored password applies again.
-    p.set('url', 'https://mail.example.com');
+    p.set('srv', 's1');
     p.set('name', 'Example');
     expect(p.errors).toEqual({});
     await p.save();
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'PUT admin/system-mail']);
-    expect(api.calls[1]?.body).toEqual({ sender_name: 'Example' });
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers', 'PUT admin/system-mail']);
+    expect(api.calls[2]?.body).toEqual({ sender_name: 'Example' });
   });
 
   it('a hidden field of the other sign-in method does not block saving', async () => {
@@ -510,10 +578,10 @@ describe('saving', () => {
         { body: { ...STORED, auth: 'token', status: 'ok' } },
       ],
     });
-    p.set('url', 'https://other.example.com');
+    p.set('srv', 's2');
     await p.save();
     expect(p.errors).toEqual({ pass: 'required' });
-    p.set('url', 'https://mail.example.com');
+    p.set('srv', 's1');
     p.set('pass', 'pw');
     await p.save();
     expect(p.errors).toEqual({ pass: 'invalid' });
@@ -522,9 +590,14 @@ describe('saving', () => {
     p.set('token', 'tok');
     expect(p.errors).toEqual({});
     await p.save();
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'PUT admin/system-mail', 'PUT admin/system-mail']);
-    expect(api.calls[2]?.body).toMatchObject({ auth: 'token', token: 'tok' });
-    expect(api.calls[2]?.body).not.toHaveProperty('app_password');
+    expect(sent(api.calls)).toEqual([
+      'GET admin/system-mail',
+      'GET admin/stalwart/servers',
+      'PUT admin/system-mail',
+      'PUT admin/system-mail',
+    ]);
+    expect(api.calls[3]?.body).toMatchObject({ auth: 'token', token: 'tok' });
+    expect(api.calls[3]?.body).not.toHaveProperty('app_password');
   });
 
   it('a saved connection change that fails its check clears the identities of the previous account', async () => {
@@ -533,7 +606,7 @@ describe('saving', () => {
         {
           body: {
             ...STORED,
-            url: 'https://other.example.com',
+            server_id: 's2',
             user: 'sender@example.com',
             status: 'err',
             reason: 'auth_failed',
@@ -543,7 +616,7 @@ describe('saving', () => {
       ],
     });
     expect(values(p).mailFrom).toBe('Example Org <noreply@example.com>');
-    p.set('url', 'https://other.example.com');
+    p.set('srv', 's2');
     p.set('user', 'sender@example.com');
     p.set('pass', 'pw');
     await p.save();
@@ -659,8 +732,13 @@ describe('saving', () => {
     expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
     put.answer({ body: { ...STORED, sender_name: 'Example' } });
     await Promise.all([saving, testing]);
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'PUT admin/system-mail', 'POST admin/system-mail/test']);
-    expect(api.calls[2]?.body).not.toHaveProperty('app_password');
+    expect(sent(api.calls)).toEqual([
+      'GET admin/system-mail',
+      'GET admin/stalwart/servers',
+      'PUT admin/system-mail',
+      'POST admin/system-mail/test',
+    ]);
+    expect(api.calls[3]?.body).not.toHaveProperty('app_password');
   });
 
   it('a load that started before a save does not overwrite its result', async () => {
@@ -670,6 +748,7 @@ describe('saving', () => {
     });
     mockApi({
       'GET admin/system-mail': [get.reply],
+      'GET admin/stalwart/servers': [registry()],
       'PUT admin/system-mail': [{ body: { ...STORED, sender_name: 'Example' } }],
     });
     const loading = p.load();
@@ -687,7 +766,7 @@ describe('saving', () => {
     await p.save();
     expect(ui.toast?.text).toBe('Changes saved');
     expect(p.dirty).toBe(false);
-    expect(sent(api.calls)).toEqual(['GET admin/system-mail']);
+    expect(sent(api.calls)).toEqual(['GET admin/system-mail', 'GET admin/stalwart/servers']);
   });
 
   it('401 when saving reloads the account', async () => {
@@ -711,8 +790,8 @@ describe('test email', () => {
     // The sender name does not change the connection: still connected.
     expect(p.key).toBe('ok');
     await p.send();
-    expect(api.calls[1]?.body).toEqual({
-      url: 'https://mail.example.com',
+    expect(api.calls[2]?.body).toEqual({
+      server_id: 's1',
       auth: 'password',
       user: 'noreply@example.com',
       sender_name: 'Example',

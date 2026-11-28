@@ -31,6 +31,7 @@ use super::{
     ApiError, FieldErrors, JsonBody,
     auth::{self, MAX_PASSWORD, code_used, invalid_code, user_json},
     email::{self as email_change, email_taken, open_json},
+    stalwart::accounts as stalwart,
 };
 use crate::{
     app::AppState,
@@ -717,6 +718,9 @@ async fn delete_me(
         return Err(ApiError::rejected(StatusCode::CONFLICT, "account_mismatch"));
     }
     let removed = user.id.clone();
+    // The grants of the Stalwart accounts are revoked afterwards; no sign-in
+    // or refresh of theirs runs meanwhile.
+    let _locks = stalwart::lock_owners(&state, [user.id.clone()]).await?;
     let deleted = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if !sessions::is_valid(&tx, &user.id, &user.session_id)? {
@@ -742,14 +746,15 @@ async fn delete_me(
                     "role": profile.role.as_str(),
                 })),
         )?;
+        let grants = stalwart::grants(&tx, &user.id)?;
         if !users::delete(&tx, &user.id)? {
             return Ok(Err(ApiError::Unauthorized));
         }
         tx.commit()?;
-        Ok(Ok(()))
+        Ok(Ok(grants))
     })
     .await?;
-    deleted?;
+    stalwart::revoke_grants(&state, deleted?);
     state.challenges.discard_user(&removed);
     state.end_user_sessions(&removed, None);
     tracing::info!(user = %removed, "account deleted");

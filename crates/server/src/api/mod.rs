@@ -23,12 +23,13 @@ pub mod session;
 pub mod sessions;
 pub mod settings;
 pub mod setup;
+pub mod stalwart;
 pub mod system_mail;
 pub mod users;
 
 use axum::{
     Router,
-    extract::{FromRequest, Request},
+    extract::{FromRequest, OptionalFromRequest, Request},
     http::{HeaderMap, HeaderValue, Method, header},
     middleware::{self, Next},
     response::{IntoResponse as _, Response},
@@ -67,7 +68,9 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(me::routes())
         .merge(mfa::routes())
         .merge(sessions::routes())
-        .merge(settings::routes());
+        .merge(settings::routes())
+        .merge(stalwart::servers::routes())
+        .merge(stalwart::accounts::routes());
     with_middleware(routes, state)
 }
 
@@ -172,9 +175,23 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for JsonBody<T> {
     type Rejection = ApiError;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
-        axum::Json::<T>::from_request(request, state)
+        <axum::Json<T> as FromRequest<S>>::from_request(request, state)
             .await
             .map(|axum::Json(value)| Self(value))
+            .map_err(|rejection| ApiError::BadRequest(rejection.body_text()))
+    }
+}
+
+/// An optional body (`Option<JsonBody<T>>`): `None` without `Content-Type`,
+/// otherwise JSON as for [`JsonBody`] (a body of another type gets 400
+/// `bad_request` too).
+impl<S: Send + Sync, T: DeserializeOwned> OptionalFromRequest<S> for JsonBody<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Option<Self>, Self::Rejection> {
+        <axum::Json<T> as OptionalFromRequest<S>>::from_request(request, state)
+            .await
+            .map(|body| body.map(|axum::Json(value)| Self(value)))
             .map_err(|rejection| ApiError::BadRequest(rejection.body_text()))
     }
 }

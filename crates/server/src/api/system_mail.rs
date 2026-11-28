@@ -9,19 +9,18 @@
 //!   stored account) without saving; with `to` a test email then goes to this
 //!   address.
 //!
-//! The server is given by its address (`url`, origin of the JMAP server, e.g.
-//! `https://mail.example.com`); a new address drops the stored secret, which
-//! never goes to an address it was not entered for.
+//! The server is one of the Stalwart registry (`server_id`); another server
+//! drops the stored secret, which never goes to an address it was not
+//! entered for. A new secret comes with the address the form showed
+//! (`server_url`): if an administrator moved the server meanwhile, 422 with
+//! `server_id` `changed` and the current `url` – the secret is not stored.
 //!
 //! Secrets appear in no response, no log and no audit entry.
 //!
 //! Taken over from Roedy Mail (`crates/server/src/api/system_mail.rs`)
-//! without the template preview; the server is an address instead of one
-//! from Mail's registry.
+//! without the template preview.
 
 use std::time::Duration;
-
-use std::net::Ipv4Addr;
 
 use axum::{
     Json, Router,
@@ -33,7 +32,7 @@ use jiff::Timestamp;
 use roedy_jmap as jmap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use url::{Host, Url};
+use url::Url;
 
 use super::{
     ApiError, FieldErrors, JsonBody,
@@ -85,8 +84,9 @@ pub fn routes() -> Router<AppState> {
 /// Response of `GET` and `PUT`.
 #[derive(Debug, Serialize)]
 struct View {
-    /// Address of the JMAP server; `null` without an account.
-    url: Option<String>,
+    /// Registry server; `null` without an account or after its server was
+    /// removed.
+    server_id: Option<String>,
     auth: &'static str,
     user: String,
     has_secret: bool,
@@ -109,7 +109,7 @@ impl View {
         let Some(mail) = system_mail::load(conn)? else {
             return Ok(Self::empty());
         };
-        let on_server = mail.base_url().is_some();
+        let on_server = system_mail::base_url(conn, &mail.server_id)?.is_some();
         let has_secret = mail.secret_enc().is_some();
         let (status, reason, role, checked_at, identities) = match (on_server, mail.check) {
             (false, _) => ("none", None, None, None, Vec::new()),
@@ -124,7 +124,7 @@ impl View {
             ),
         };
         Ok(Self {
-            url: on_server.then_some(mail.url),
+            server_id: on_server.then_some(mail.server_id),
             auth: mail.auth.as_str(),
             user: mail.user,
             has_secret,
@@ -143,7 +143,7 @@ impl View {
     /// Without an account: the defaults with empty credentials.
     fn empty() -> Self {
         Self {
-            url: None,
+            server_id: None,
             auth: Auth::Password.as_str(),
             user: String::new(),
             has_secret: false,
@@ -169,7 +169,10 @@ async fn show(State(state): State<AppState>, _: AdminUser) -> Result<Json<View>,
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Body {
-    url: Option<String>,
+    server_id: Option<String>,
+    /// The server's address as the form showed it; required with a new
+    /// `app_password` or `token`.
+    server_url: Option<String>,
     auth: Option<String>,
     user: Option<String>,
     /// Empty or missing: the stored one stays (like `client_secret`).
@@ -189,8 +192,10 @@ struct Body {
 /// `Some(None)` = empty.
 #[derive(Default)]
 struct Changes {
-    /// Origin of the server, checked ([`normalize_url`]).
-    url: Option<String>,
+    /// Registry server; [`apply`] checks that it exists.
+    server_id: Option<String>,
+    /// The address the form showed, without a trailing `/`.
+    server_url: Option<String>,
     auth: Option<Auth>,
     user: Option<String>,
     app_password: Option<String>,
@@ -206,7 +211,7 @@ impl std::fmt::Debug for Changes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let hidden = |secret: &Option<String>| secret.as_ref().map(|_| "…");
         f.debug_struct("Changes")
-            .field("url", &self.url)
+            .field("server_id", &self.server_id)
             .field("auth", &self.auth)
             .field("user", &self.user)
             .field("app_password", &hidden(&self.app_password))
@@ -237,14 +242,10 @@ impl Body {
     /// fields on the result. Returns the changes and `to`.
     fn checked(self) -> Result<(Changes, Option<String>), ApiError> {
         let mut errors = FieldErrors::default();
-        let url = match self.url.as_deref().map(normalize_url) {
-            None => None,
-            Some(Ok(url)) => Some(url.origin().ascii_serialization()),
-            Some(Err(code)) => {
-                errors.code("url", code);
-                None
-            }
-        };
+        let server_id = self.server_id.map(|id| id.trim().to_owned());
+        if server_id.as_deref() == Some("") {
+            errors.code("server_id", "required");
+        }
         let auth = self.auth.as_deref().map(Auth::parse);
         if auth == Some(None) {
             errors.code("auth", "invalid");
@@ -293,8 +294,11 @@ impl Body {
         if !errors.is_empty() {
             return Err(errors.into_error());
         }
+        let server_url =
+            clean_optional(self.server_url).map(|url| url.trim_end_matches('/').to_owned());
         let changes = Changes {
-            url,
+            server_id,
+            server_url,
             auth: auth.flatten(),
             user,
             app_password,
@@ -319,26 +323,32 @@ struct Applied {
 }
 
 /// Applies the changes to the stored account (without saving) and checks the
-/// result: a server address, user with password, secret of the chosen
-/// sign-in method.
+/// result: a server in the registry, user with password, secret of the
+/// chosen sign-in method.
 fn apply(
+    conn: &rusqlite::Connection,
     secrets: &SecretKey,
     current: Option<&SystemMail>,
     changes: Changes,
 ) -> anyhow::Result<Result<Applied, FieldErrors>> {
     let mut errors = FieldErrors::default();
     let mut next = current.cloned().unwrap_or_default();
-    if let Some(url) = changes.url {
-        if url != next.url {
+    if let Some(server_id) = changes.server_id {
+        if server_id != next.server_id {
             // The stored secret belongs to its server; another one does not
             // get it.
             next.forget_secret();
         }
-        next.url = url;
+        next.server_id = server_id;
     }
-    let base_url = next.base_url();
+    let base_url = system_mail::base_url(conn, &next.server_id)?;
     if base_url.is_none() {
-        errors.code("url", "required");
+        let code = if next.server_id.is_empty() {
+            "required"
+        } else {
+            "not_found"
+        };
+        errors.code("server_id", code);
     }
     if let Some(auth) = changes.auth {
         next.set_auth(auth);
@@ -350,6 +360,20 @@ fn apply(
         Auth::Password => changes.app_password,
         Auth::Token => changes.token,
     };
+    // A new secret only for the address the person saw: another
+    // administrator may have moved the server since the form loaded.
+    if secret.is_some()
+        && let Some(base_url) = &base_url
+    {
+        let current = base_url.origin().ascii_serialization();
+        match changes.server_url {
+            None => errors.code("server_url", "required"),
+            Some(shown) if shown != current => {
+                errors.add("server_id", json!({ "code": "changed", "url": current }));
+            }
+            Some(_) => {}
+        }
+    }
     // The same secret again changes nothing (the values are compared); an
     // unreadable stored one counts as different.
     if let Some(secret) = secret
@@ -381,7 +405,7 @@ fn apply(
     let before = current.cloned().unwrap_or_default();
     let mut changed = Vec::new();
     for (field, differs) in [
-        ("url", before.url != next.url),
+        ("server_id", before.server_id != next.server_id),
         ("auth", before.auth != next.auth),
         ("user", before.user != next.user),
         (
@@ -430,7 +454,7 @@ async fn update(
             return Ok(Err(error));
         }
         let current = system_mail::load(&tx)?;
-        let applied = match apply(&secrets, current.as_ref(), changes)? {
+        let applied = match apply(&tx, &secrets, current.as_ref(), changes)? {
             Ok(applied) => applied,
             Err(errors) => return Ok(Err(errors.into_error())),
         };
@@ -513,7 +537,7 @@ async fn test(
     let admin_id = admin.id.clone();
     let draft = db::call(&state.db, move |conn| {
         let current = system_mail::load(conn)?;
-        let applied = match apply(&secrets, current.as_ref(), changes)? {
+        let applied = match apply(conn, &secrets, current.as_ref(), changes)? {
             Ok(applied) => applied,
             Err(errors) => return Ok(Err(errors.into_error())),
         };
@@ -568,49 +592,6 @@ async fn send_test(state: &AppState, draft: Draft, to: String) -> Result<(), Api
     task.await.map_err(anyhow::Error::from)??
 }
 
-/// Base URL of the JMAP server: `https://` (for development also `http://`
-/// on `localhost` or `127.0.0.1`), host as DNS name or IPv4 address, without
-/// credentials, path, query and fragment. The result is the origin. Taken
-/// over from Roedy Mail (`api::servers::normalize_url`).
-fn normalize_url(raw: &str) -> Result<Url, &'static str> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err("required");
-    }
-    let url = Url::parse(raw.trim_end_matches('/')).map_err(|_| "invalid")?;
-    let loopback = match url.host() {
-        Some(Host::Domain(domain)) => {
-            if !domain.split('.').all(is_dns_label) {
-                return Err("invalid");
-            }
-            domain == "localhost"
-        }
-        Some(Host::Ipv4(ip)) => ip == Ipv4Addr::LOCALHOST,
-        Some(Host::Ipv6(_)) | None => return Err("invalid"),
-    };
-    let scheme_ok = url.scheme() == "https" || (url.scheme() == "http" && loopback);
-    let bare = url.username().is_empty()
-        && url.password().is_none()
-        && url.path() == "/"
-        && url.query().is_none()
-        && url.fragment().is_none();
-    if !scheme_ok || !bare {
-        return Err("invalid");
-    }
-    Url::parse(&url.origin().ascii_serialization()).map_err(|_| "invalid")
-}
-
-/// A label of a DNS name: `a–z`, `0–9`, `-`, not empty, no `-` at the edges.
-fn is_dns_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
 /// Empty or missing text becomes `None`, otherwise trimmed.
 fn clean_optional(value: Option<String>) -> Option<String> {
     value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
@@ -635,6 +616,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::db::repo::stalwart_servers;
 
     fn checked(value: Value) -> Result<(Changes, Option<String>), Value> {
         let body: Body = serde_json::from_value(value).unwrap();
@@ -650,13 +632,17 @@ mod tests {
     #[test]
     fn fields_are_trimmed_and_emptied() {
         let (changes, to) = checked(json!({
-            "url": " https://Mail.Example.com/ ", "auth": "token", "user": " noreply@example.org ",
+            "server_id": " s1 ", "auth": "token", "user": " noreply@example.org ",
             "app_password": "", "token": " abc ", "identity_id": "",
             "sender_name": "  ", "reply_to": null, "keep_sent": false,
-            "to": " max@example.com ",
+            "to": " max@example.com ", "server_url": " https://mail.example.com/ ",
         }))
         .unwrap();
-        assert_eq!(changes.url.as_deref(), Some("https://mail.example.com"));
+        assert_eq!(
+            changes.server_url.as_deref(),
+            Some("https://mail.example.com")
+        );
+        assert_eq!(changes.server_id.as_deref(), Some("s1"));
         assert_eq!(changes.auth, Some(Auth::Token));
         assert_eq!(changes.user.as_deref(), Some("noreply@example.org"));
         assert_eq!(changes.app_password, None);
@@ -677,14 +663,14 @@ mod tests {
     #[test]
     fn each_field_reports_its_own_code() {
         let errors = checked(json!({
-            "url": "", "auth": "sso", "user": "no reply",
+            "server_id": "", "auth": "sso", "user": "no reply",
             "app_password": "a\u{7}b", "token": "x".repeat(5000),
             "identity_id": "i\n1", "sender_name": "x".repeat(101),
             "reply_to": "no-at", "to": "",
         }))
         .unwrap_err();
         let code = |field: &str| errors[field]["code"].as_str().unwrap().to_owned();
-        assert_eq!(code("url"), "required");
+        assert_eq!(code("server_id"), "required");
         assert_eq!(code("auth"), "invalid");
         assert_eq!(code("user"), "invalid");
         assert_eq!(code("app_password"), "invalid");
@@ -707,57 +693,23 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_rejected() {
-        assert!(serde_json::from_value::<Body>(json!({ "server_id": "s1" })).is_err());
+        assert!(serde_json::from_value::<Body>(json!({ "url": "https://x.test" })).is_err());
         assert!(serde_json::from_value::<Body>(json!({ "pass": "x" })).is_err());
-    }
-
-    #[test]
-    fn server_addresses_are_origins() {
-        for (raw, origin) in [
-            ("https://mail.example.com", "https://mail.example.com"),
-            (" https://mail.example.com/ ", "https://mail.example.com"),
-            (
-                "https://mail.example.com:8443",
-                "https://mail.example.com:8443",
-            ),
-            ("http://localhost:8080", "http://localhost:8080"),
-            ("http://127.0.0.1:9", "http://127.0.0.1:9"),
-        ] {
-            let url = normalize_url(raw).unwrap();
-            assert_eq!(url.origin().ascii_serialization(), origin, "{raw}");
-        }
-        for (raw, code) in [
-            ("", "required"),
-            ("mail.example.com", "invalid"),
-            ("http://mail.example.com", "invalid"),
-            ("https://mail.example.com/jmap", "invalid"),
-            ("https://user:pw@mail.example.com", "invalid"),
-            ("https://mail.example.com?x=1", "invalid"),
-            ("https://[::1]", "invalid"),
-            ("https://mail_x.example.com", "invalid"),
-            ("ftp://mail.example.com", "invalid"),
-        ] {
-            assert_eq!(normalize_url(raw).err(), Some(code), "{raw}");
-        }
     }
 
     /// A new server drops the stored secret; the same server keeps it.
     #[test]
     fn another_server_needs_the_secret_again() {
+        let conn = crate::db::repo::users::tests::conn();
+        stalwart_servers::tests::add(&conn, "s1", "https://mail.s1.test");
+        stalwart_servers::tests::add(&conn, "s2", "https://mail.s2.test");
         let secrets = SecretKey::random().unwrap();
-        let stored = SystemMail::new(
-            &secrets,
-            "https://mail.example.com",
-            "noreply@example.com",
-            "pw",
-            None,
-        )
-        .unwrap();
+        let stored = SystemMail::new(&secrets, "s1", "noreply@example.com", "pw", None).unwrap();
         let moved = Changes {
-            url: Some("https://other.example.com".into()),
+            server_id: Some("s2".into()),
             ..Changes::default()
         };
-        let errors = apply(&secrets, Some(&stored), moved)
+        let errors = apply(&conn, &secrets, Some(&stored), moved)
             .unwrap()
             .err()
             .unwrap();
@@ -769,9 +721,56 @@ mod tests {
             sender_name: Some(Some("Example".into())),
             ..Changes::default()
         };
-        let applied = apply(&secrets, Some(&stored), same).unwrap().ok().unwrap();
+        let applied = apply(&conn, &secrets, Some(&stored), same)
+            .unwrap()
+            .ok()
+            .unwrap();
         assert_eq!(applied.changed, ["sender_name"]);
         assert!(!applied.new_connection);
+        let gone = Changes {
+            server_id: Some("s3".into()),
+            ..Changes::default()
+        };
+        let errors = apply(&conn, &secrets, Some(&stored), gone)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(errors.into_value()["server_id"]["code"], "not_found");
+
+        // A new secret needs the address the form showed, and it must still
+        // be the server's.
+        let password = |url: Option<&str>| Changes {
+            app_password: Some("new".into()),
+            server_url: url.map(str::to_owned),
+            ..Changes::default()
+        };
+        let errors = apply(&conn, &secrets, Some(&stored), password(None))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(
+            errors.into_value(),
+            json!({ "server_url": { "code": "required" } })
+        );
+        let moved = password(Some("https://mail.s2.test"));
+        let errors = apply(&conn, &secrets, Some(&stored), moved)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(
+            errors.into_value(),
+            json!({ "server_id": { "code": "changed", "url": "https://mail.s1.test" } })
+        );
+        let applied = apply(
+            &conn,
+            &secrets,
+            Some(&stored),
+            password(Some("https://mail.s1.test")),
+        )
+        .unwrap()
+        .ok()
+        .unwrap();
+        assert_eq!(applied.changed, ["app_password"]);
     }
 
     /// The page names the missing mailbox; other reasons without `role`.

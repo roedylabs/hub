@@ -59,6 +59,7 @@ use crate::{
     rate_limit::RateLimiter,
     setup_token,
     signing::{self, KeyStore},
+    stalwart::Stalwart,
     tls::{self, Tls},
     web::{
         app_icons,
@@ -114,6 +115,8 @@ pub struct AppState {
     /// Wake-up and timing of the event delivery (`events`); [`events::start`]
     /// runs it.
     pub events: Arc<Events>,
+    /// Clients and locks for the Stalwart servers and accounts (`stalwart`).
+    pub stalwart: Arc<Stalwart>,
     /// Built-in TLS (`tls`); `None` with `ROEDY_TLS=off`. Set by `serve`.
     pub tls: Option<Arc<Tls>>,
     pub background: Background,
@@ -198,6 +201,7 @@ impl AppState {
             apps: Arc::new(AppTable::default()),
             probe: apps::probe_client()?,
             events: Arc::new(Events::new()?),
+            stalwart: Arc::new(Stalwart::new()?),
             tls: None,
             background: Background::default(),
         })

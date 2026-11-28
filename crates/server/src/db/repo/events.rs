@@ -7,7 +7,9 @@
 //! here in the same transaction as the change ([`db::atomic`]), so that an
 //! event exists exactly when its change does. User and session events go to
 //! every paired app (contract § 10.2: the app may hold data from earlier
-//! access), `access.changed` only to its app; pending apps get none. Each
+//! access), `access.changed` only to its app, the `stalwart.*` events to
+//! every paired app whose manifest asks for Stalwart accounts
+//! ([`to_stalwart_apps`]); pending apps get none. Each
 //! app has its own `seq`, counted in `event_delivery.last_seq` so that it
 //! never repeats after old events are deleted.
 //!
@@ -37,6 +39,11 @@ pub enum Kind {
     UserDeleted,
     SessionRevoked,
     AccessChanged,
+    StalwartAccountAdded,
+    StalwartAccountRemoved,
+    StalwartAccountNeedsSignIn,
+    StalwartAccountSignedIn,
+    StalwartServersChanged,
 }
 
 impl Kind {
@@ -48,6 +55,11 @@ impl Kind {
             Self::UserDeleted => "user.deleted",
             Self::SessionRevoked => "session.revoked",
             Self::AccessChanged => "access.changed",
+            Self::StalwartAccountAdded => "stalwart.account.added",
+            Self::StalwartAccountRemoved => "stalwart.account.removed",
+            Self::StalwartAccountNeedsSignIn => "stalwart.account.needs_sign_in",
+            Self::StalwartAccountSignedIn => "stalwart.account.signed_in",
+            Self::StalwartServersChanged => "stalwart.servers.changed",
         }
     }
 }
@@ -134,6 +146,45 @@ pub fn to_paired_apps(conn: &Connection, kind: Kind, data: &Value) -> rusqlite::
         }
         Ok(apps.len())
     })
+}
+
+/// IDs of the paired apps whose manifest has `stalwart` (contract § 8).
+pub fn stalwart_apps(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    conn.prepare(
+        "SELECT id FROM apps WHERE state = 'paired' \
+         AND json_type(manifest_json, '$.stalwart') = 'object' ORDER BY id",
+    )?
+    .query_map([], |row| row.get(0))?
+    .collect()
+}
+
+/// Appends a `stalwart.*` event to every app that uses Stalwart accounts,
+/// whether or not the user has access to it (like the user events: the app
+/// may hold data from earlier access); returns how many got it.
+pub fn to_stalwart_apps(conn: &Connection, kind: Kind, data: &Value) -> rusqlite::Result<usize> {
+    db::atomic(conn, |conn| {
+        let apps = stalwart_apps(conn)?;
+        for app in &apps {
+            append(conn, app, kind, data)?;
+        }
+        Ok(apps.len())
+    })
+}
+
+/// `stalwart.account.removed`, `.needs_sign_in` and `.signed_in`.
+pub fn stalwart_account(
+    conn: &Connection,
+    kind: Kind,
+    sub: &str,
+    account_id: &str,
+) -> rusqlite::Result<usize> {
+    to_stalwart_apps(conn, kind, &json!({ "sub": sub, "account_id": account_id }))
+}
+
+/// `stalwart.servers.changed`: an origin was added, changed or removed, or
+/// the policy for custom servers changed.
+pub fn stalwart_servers_changed(conn: &Connection) -> rusqlite::Result<usize> {
+    to_stalwart_apps(conn, Kind::StalwartServersChanged, &json!({}))
 }
 
 pub fn user_locked(conn: &Connection, sub: &str) -> rusqlite::Result<usize> {

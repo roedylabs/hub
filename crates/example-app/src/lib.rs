@@ -92,7 +92,8 @@ pub fn manifest() -> Value {
             { "id": "admin", "name": { "en": "Administrator", "de": "Administrator" },
               "description": { "en": "Manages the example", "de": "Verwaltet das Beispiel" },
               "admin": true }
-        ]
+        ],
+        "stalwart": { "backend": true }
     })
 }
 
@@ -521,6 +522,44 @@ impl Example {
             self.call(Method::GET, &format!("/users/{sub}"), None)
                 .await?,
         )
+    }
+
+    /// `GET /internal/v1/stalwart/servers`: the origins of the Stalwart
+    /// registry and whether custom servers are allowed (`connect-src`).
+    pub async fn stalwart_servers(&self) -> Result<Value, HubError> {
+        self.call(Method::GET, "/stalwart/servers", None).await
+    }
+
+    /// `GET /internal/v1/users/<sub>/stalwart-accounts`.
+    pub async fn stalwart_accounts(&self, sub: &str) -> Result<Value, HubError> {
+        let sub: String = url::form_urlencoded::byte_serialize(sub.as_bytes()).collect();
+        self.call(
+            Method::GET,
+            &format!("/users/{sub}/stalwart-accounts"),
+            None,
+        )
+        .await
+    }
+
+    /// `POST /internal/v1/users/<sub>/stalwart-accounts/<id>/token`: an
+    /// access token for the account, `refresh` when the server rejected the
+    /// previous one.
+    pub async fn stalwart_token(
+        &self,
+        sub: &str,
+        account_id: &str,
+        refresh: bool,
+    ) -> Result<Value, HubError> {
+        let encode = |value: &str| -> String {
+            url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+        };
+        let path = format!(
+            "/users/{}/stalwart-accounts/{}/token",
+            encode(sub),
+            encode(account_id)
+        );
+        let body = refresh.then(|| serde_json::json!({ "refresh": true }));
+        self.call(Method::POST, &path, body.as_ref()).await
     }
 
     /// Fetches the JWKS from the hub and keeps it.

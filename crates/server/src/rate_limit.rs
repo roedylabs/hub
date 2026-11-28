@@ -22,10 +22,10 @@
 //! The clock is read under the lock, so that a thread that waited for it
 //! cannot store a time that has already passed.
 //!
-//! Taken over from Roedy Mail (`crates/server/src/rate_limit.rs`) without the
-//! counter per mail server. Unlike Mail there is no `refund`: an attempt taken
-//! and given back later could erase another one counted in between (GCRA
-//! after a pause, or a lockout window that started over).
+//! Taken over from Roedy Mail (`crates/server/src/rate_limit.rs`). Unlike
+//! Mail there is no `refund`: an attempt taken and given back later could
+//! erase another one counted in between (GCRA after a pause, or a lockout
+//! window that started over).
 
 use std::{
     collections::HashMap,
@@ -91,6 +91,8 @@ pub enum Key {
     User(String),
     /// One counter for everyone (e.g. setup token).
     Global,
+    /// A Stalwart server (origin), e.g. to protect against its Fail2Ban.
+    Server(String),
 }
 
 /// Limit reached; another attempt is allowed after `retry_after`.

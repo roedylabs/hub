@@ -59,6 +59,8 @@ pub struct Client {
     session: Session,
     /// The session as the server returned it.
     session_json: serde_json::Value,
+    /// Where the session was found, after the redirects.
+    session_url: Url,
     api_url: Url,
 }
 
@@ -117,6 +119,7 @@ impl Client {
                 auth,
                 session,
                 session_json,
+                session_url: url,
                 api_url,
             });
         }
@@ -125,6 +128,12 @@ impl Client {
 
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    /// The address of the session resource, after the redirects on the
+    /// server's origin.
+    pub fn session_url(&self) -> &Url {
+        &self.session_url
     }
 
     /// The session as JSON, complete as the server sent it.
