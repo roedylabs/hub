@@ -1089,7 +1089,9 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
       "Back") and `/account/no-account?next=…` for the apps (contract § 5.4).
       Administration › Email links to the registry. In `@roedy/ui` for the
       apps: `StalwartAccount`, account colours, storage texts and
-      `AccountTile`. No API change. The sign-in round trip through a real
+      `AccountTile`. API: `register-client` names the address the
+      administrator saw (`url`) and refuses before the credentials leave
+      when the server moved meanwhile. The sign-in round trip through a real
       server stays in `tests/stalwart.rs`; the end-to-end suite has no
       Stalwart and covers the pages, an unreachable server and an unknown
       return. Left for later: a token client for the apps' browsers in
