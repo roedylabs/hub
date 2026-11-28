@@ -68,6 +68,14 @@ smoke image="roedy-hub:dev" version="":
 smoke-compose:
     scripts/compose-smoke.sh
 
+# End-to-end suite against deploy/compose.test.yml with the images from `just image` and `just image-example` (Docker or Podman; arguments go to `playwright test`)
+e2e *args:
+    scripts/e2e.sh {{ args }}
+
+# End-to-end suite against debug binaries on the host, without containers (arguments go to `playwright test`)
+e2e-host *args:
+    scripts/e2e.sh --host {{ args }}
+
 # Prepare a release: version, CHANGELOG.md and PR (version without v, e.g. 0.2.0)
 release version:
     scripts/release.sh prepare {{ version }}

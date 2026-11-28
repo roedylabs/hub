@@ -580,7 +580,7 @@ checks pass in every PR; every PR has tests for what it adds.
       access states in `users.mjs`). Open: the home page has no design yet –
       it is built plainly with the tokens (greeting, tiles in a grid, a list
       on mobile) and is finished once there is a draft.
-6. **Delivery, TLS, end-to-end** – four PRs. The user decided on 2026-11-27
+6. [x] **Delivery, TLS, end-to-end** – four PRs. The user decided on 2026-11-27
    that there is no Caddy and no other infrastructure image: roedy-hub
    terminates TLS and gets its certificates itself, in-house.
    *Budgets checked in CI:* image ≤ 25 MB, idle ≤ 40 MB.
@@ -706,10 +706,49 @@ checks pass in every PR; every PR has tests for what it adds.
       Caddy, DNS, firewall, the TOS opt-in, staging, migrating from Caddy,
       behind your own proxy. Open: the hub does not compress responses
       (Caddy did); a CI job against Pebble.
-   4. [ ] **End-to-end** – Playwright suite with axe against hub + example
+   4. [x] **End-to-end** – Playwright suite with axe against hub + example
       app on the Compose test setup (setup, sign-in, pairing, opening the app,
       SSE and WebSocket through the browser, sign-out, no access, light and
       dark, desktop and mobile).
+      Done: `apps/e2e` (`@roedy/hub-e2e`, Playwright and axe-core; the axe
+      run with the Chromium audit's rule set, TOTP and the authenticator from
+      Mail's suite) and `scripts/e2e.sh`, which starts `deploy/compose.yml`
+      with `compose.test.yml` (or, with `--host`, debug binaries without
+      containers), makes the test certificate, hands the suite the setup token,
+      restarts the example app with a pairing code when the suite calls
+      `scripts/e2e.sh --pair` and stops everything again. The browser trusts only the
+      test certificate (`--ignore-certificate-errors-spki-list`), Node gets it
+      as `NODE_EXTRA_CA_CERTS`; no TLS check is switched off. One serial flow:
+      `308` from plain HTTP and HSTS; the setup's seven steps with the code
+      from the shown key (desktop, light); sign-in with password and code and
+      `next` (mobile, dark); Administration › Apps › Add, the pairing code,
+      the example paired and online, its details (desktop, dark); the tile
+      on the home page opens `/example/` through the gateway, the example
+      verified the identity (`whoami`: `iss`, `aud`, email, roles); SSE (three
+      events as they are sent) and WebSocket (text, binary, a clean close) in
+      the browser; an invitation without access accepted on a phone with "Set
+      up later", the home page without apps and the `403` page "No access to
+      this app"; sign-in, home, apps, app details, users, the example and the
+      `403` page in desktop and mobile × light and dark; sign-out from the
+      account menu in another tab: `Clear-Site-Data: "cache", "storage"`, the
+      session cookie gone, the app's SSE stream and WebSocket ended at once,
+      the example without identity. axe checks each of these page states
+      (none found anything). CI: the job "End-to-end" in `ci.yml` after
+      "Image", with the images it built (an artifact), the browser cached by
+      Playwright version, traces, screenshots and the container logs as an
+      artifact on failure; part of "CI passed" – the only browser test across
+      hub, gateway and app, a few minutes after "Image". Found on the way:
+      the example app dropped the connection right after a closing frame
+      instead of letting tungstenite answer it (browsers saw `1006`); it now
+      completes the closing handshake, its and the gateway's tests check that.
+      Its page has `<main>` and a viewport (axe) and `connect-src 'self'` (the
+      suite opens SSE and WebSocket from it). Not covered end to end: the
+      sign-in with a recovery code, events delivered to the app, the German
+      interface, browsers other than Chromium, ACME (the in-process fake CA
+      covers it; Pebble stays open), and the setup and invitation steps in
+      the other views and themes (the Chromium audit covers them with mocked
+      data). The example's page and SSE are public (contract § 5.1), so after
+      the sign-out its EventSource connects again – without identity.
 
 ## 7. Open points (not in this assignment)
 

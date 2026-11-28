@@ -791,7 +791,7 @@ async fn error_pages_for_page_loads() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         all(response.headers(), "content-security-policy"),
-        ["default-src 'none'; frame-ancestors 'self'"]
+        ["default-src 'none'; connect-src 'self'; frame-ancestors 'self'"]
     );
 }
 
@@ -946,8 +946,8 @@ async fn websocket_echo_and_close() {
         Message::binary(vec![1, 2, 3])
     );
     socket.close(None).await.unwrap();
-    // The app answers the close and ends the connection (like in the
-    // example's own test, a reset may come instead of the closing frame).
+    // The app's answer to the closing frame comes through, then the end.
+    assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
     assert!(socket_ends(&mut socket, Duration::from_secs(5)).await);
     // Without `Origin` (not a browser) the upgrade goes through too.
     let mut request = format!("ws://{}/example/ws", hub.public)
