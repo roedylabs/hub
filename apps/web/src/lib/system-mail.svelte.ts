@@ -1,8 +1,11 @@
 /**
  * Administration › Email: the sending account of the system mails against
  * `GET/PUT admin/system-mail` and `POST admin/system-mail/test`: status,
- * connection (address of the JMAP server, sign-in by password or token),
- * sender, sending, test email and the bar "Unsaved changes".
+ * connection (server from the hub's Stalwart registry, sign-in by password or
+ * token), sender, sending, test email and the bar "Unsaved changes". The
+ * registry (`GET admin/stalwart/servers`) loads with the account and fills the
+ * "Mail server" pick list; without a server in it the page shows a hint
+ * instead, and saving or testing reports the server as missing.
  *
  * Status: "Checking" during a check, "Connected" as long as the draft matches
  * the last successfully checked connection (`good`), "Not set up" without a
@@ -13,17 +16,17 @@
  * the text for `unchecked`.
  *
  * The page knows secrets only as input: an empty field keeps the stored
- * secret of the same sign-in method on the same server (`has_secret`; a new
- * address drops it on the server), it is only sent when entered. "Save" sends
+ * secret of the same sign-in method on the same server (`has_secret`; another
+ * server drops it on the server), it is only sent when entered. "Save" sends
  * the changed fields right away (the bar shows "Saving …"); the backend checks
  * a changed connection itself (status "Checking" during the request) and
  * answers with the stored account and the result. Inputs made during the
  * request stay; checking and sending wait for a running save.
  *
- * Field errors: the page checks live per the backend's rules (address of the
- * server, username, secret, sender name, reply-to address) and shows the text
- * at the field. Saving with an error – or without the address, username or
- * secret the account needs – shows "Please check the highlighted fields",
+ * Field errors: the page checks live per the backend's rules (username,
+ * secret, sender name, reply-to address) and shows the text at the field.
+ * Saving with an error – or without the server, username or secret the
+ * account needs – shows "Please check the highlighted fields",
  * jumps to the section and sends nothing. A 422 of the server shows the same
  * texts at the field until it is changed.
  *
@@ -34,9 +37,9 @@
  * and without a response (only an error toast).
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/system-mail.svelte.ts`) with
- * the server's address instead of Mail's server registry, without the template
- * preview (the hub's API has none) and the deferred save with undo (the hub's
- * toasts only inform).
+ * the server from the hub's Stalwart registry instead of Mail's server list,
+ * without "Manage mail servers", the template preview (the hub's API has none)
+ * and the deferred save with undo (the hub's toasts only inform).
  */
 import { lostAccess } from '#lib/access.ts';
 import {
@@ -53,12 +56,11 @@ import {
   ui,
   waitText,
 } from '@roedy/ui';
-import { segOptions } from '#lib/select.ts';
+import { segOptions, selectValues, type SelectContext, type SelectState, type SelectValues } from '#lib/select.ts';
 import type { SegOption } from '#lib/appearance.ts';
 import { isEmail } from '#lib/email.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { session } from '#lib/state/session.svelte.ts';
-import { hostOf, mailUrlOf, normUrl } from '#lib/system-mail-url.ts';
 import { trimWs } from '#lib/trim.ts';
 
 export type MailAuth = 'password' | 'token';
@@ -72,8 +74,8 @@ export interface MailIdentity {
 
 /** Response of `GET`/`PUT admin/system-mail`. */
 export interface SystemMail {
-  /** Address (origin) of the JMAP server; `null` without an account. */
-  url: string | null;
+  /** Server of the Stalwart registry; `null` without an account or after it was removed from the registry. */
+  server_id: string | null;
   auth: MailAuth;
   user: string;
   has_secret: boolean;
@@ -89,9 +91,20 @@ export interface SystemMail {
   identities: MailIdentity[];
 }
 
+/** Server of the Stalwart registry for the pick list (`admin/stalwart/servers`). */
+export interface MailServer {
+  id: string;
+  label: string;
+  /** Address as the registry stores it, e.g. `https://mail.example.com/`. */
+  url: string;
+  /** Host with port for the texts, e.g. `mail.example.com:8443`. */
+  host: string;
+}
+
 /** Draft of the form; secrets only as input (empty = keep the stored one). */
 export interface MailDraft {
-  url: string;
+  /** ID of the chosen server; empty = none. */
+  srv: string;
   auth: MailAuth;
   user: string;
   pass: string;
@@ -103,16 +116,17 @@ export interface MailDraft {
 
 export type MailDraftKey = keyof MailDraft;
 
-const DRAFT_KEYS: readonly MailDraftKey[] = ['url', 'auth', 'user', 'pass', 'token', 'name', 'replyTo', 'keepSent'];
+const DRAFT_KEYS: readonly MailDraftKey[] = ['srv', 'auth', 'user', 'pass', 'token', 'name', 'replyTo', 'keepSent'];
 
-/** Text fields that can carry an error. */
-export type MailField = 'url' | 'user' | 'pass' | 'token' | 'name' | 'replyTo';
-export type MailFieldError = 'required' | 'invalid' | 'too_long';
+/** Fields that can carry an error. */
+export type MailField = 'srv' | 'user' | 'pass' | 'token' | 'name' | 'replyTo';
+/** `not_found`: the chosen server is no longer in the registry. */
+export type MailFieldError = 'required' | 'invalid' | 'too_long' | 'not_found';
 export type MailErrors = Partial<Record<MailField, MailFieldError>>;
 
 /** Request fields of the backend per field of the draft. */
 const API_FIELD: Record<MailField, string> = {
-  url: 'url',
+  srv: 'server_id',
   user: 'user',
   pass: 'app_password',
   token: 'token',
@@ -121,12 +135,15 @@ const API_FIELD: Record<MailField, string> = {
 };
 
 /** Fields in page order for the jump to the first error. */
-const FIELD_ORDER: readonly MailField[] = ['url', 'user', 'pass', 'token', 'name', 'replyTo'];
+const FIELD_ORDER: readonly MailField[] = ['srv', 'user', 'pass', 'token', 'name', 'replyTo'];
 
 /** Status of the card; `unchecked` only while the silent check cannot run. */
 export type MailStatusKey = 'busy' | 'new' | 'unchecked' | 'none' | 'ok' | 'err';
 
 export type MailSection = 'conn' | 'sender' | 'delivery' | 'test';
+
+/** Pick lists of the page: the mail server. */
+export type MailPick = 'mailsrv';
 
 /** Sections of the tabs. */
 const MAIL_TABS: readonly [MailSection, () => string][] = [
@@ -154,7 +171,7 @@ const CONNECTION_REASONS: ReadonlySet<string> = new Set([
 
 /** Without a sending account: the defaults. */
 export const NO_MAIL: SystemMail = {
-  url: null,
+  server_id: null,
   auth: 'password',
   user: '',
   has_secret: false,
@@ -181,7 +198,7 @@ const bytes = (value: string): number => new TextEncoder().encode(value).length;
 
 export function draftOf(mail: SystemMail): MailDraft {
   return {
-    url: mail.url ?? '',
+    srv: mail.server_id ?? '',
     auth: mail.auth,
     user: mail.user,
     pass: '',
@@ -202,14 +219,14 @@ function secretOf(d: MailDraft): string {
  * entered secret (empty = the stored one).
  */
 export function connOf(d: MailDraft): string {
-  return JSON.stringify([normUrl(d.url), d.auth, d.auth === 'password' ? trimWs(d.user) : '', secretOf(d)]);
+  return JSON.stringify([d.srv, d.auth, d.auth === 'password' ? trimWs(d.user) : '', secretOf(d)]);
 }
 
 /** Fields of the connection for `test` and `PUT`. */
 function connBody(d: MailDraft): Record<string, unknown> {
   const secret = secretOf(d);
   return {
-    url: trimWs(d.url),
+    server_id: d.srv,
     auth: d.auth,
     // With a token the field is hidden; the backend keeps the stored user.
     ...(d.auth === 'password' && { user: trimWs(d.user) }),
@@ -231,7 +248,7 @@ function draftBody(d: MailDraft): Record<string, unknown> {
 export function changedBody(d: MailDraft, base: MailDraft): Record<string, unknown> {
   const conn = connBody(d);
   const body: Record<string, unknown> = {};
-  if (normUrl(d.url) !== base.url) body.url = conn.url;
+  if (d.srv !== base.srv) body.server_id = conn.server_id;
   if (d.auth !== base.auth) body.auth = d.auth;
   if ('user' in conn && conn.user !== base.user) body.user = conn.user;
   if ('app_password' in conn) body.app_password = conn.app_password;
@@ -245,7 +262,7 @@ export function changedBody(d: MailDraft, base: MailDraft): Record<string, unkno
 }
 
 /** Fields of the connection; if a `PUT` changes one of them, the backend checks right away. */
-const CONNECTION_FIELDS: readonly string[] = ['url', 'auth', 'user', 'app_password', 'token'];
+const CONNECTION_FIELDS: readonly string[] = ['server_id', 'auth', 'user', 'app_password', 'token'];
 
 function touchesConnection(body: Record<string, unknown>): boolean {
   return CONNECTION_FIELDS.some((k) => k in body);
@@ -253,17 +270,15 @@ function touchesConnection(body: Record<string, unknown>): boolean {
 
 /** Does a stored secret apply to the draft (same sign-in method, same server)? */
 function storedSecret(d: MailDraft, saved: SystemMail): boolean {
-  return saved.has_secret && saved.auth === d.auth && saved.url !== null && normUrl(d.url) === saved.url;
+  return saved.has_secret && saved.auth === d.auth && saved.server_id !== null && d.srv === saved.server_id;
 }
 
 /**
- * Errors of the fields with a value, like the backend checks them one by one (`Body::checked`): address, username
- * (password only), the secret of the chosen method, sender name and reply-to address.
+ * Errors of the fields with a value, like the backend checks them one by one (`Body::checked`): username (password
+ * only), the secret of the chosen method, sender name and reply-to address.
  */
 export function liveErrors(d: MailDraft): MailErrors {
   const out: MailErrors = {};
-  const url = mailUrlOf(d.url);
-  if ('error' in url && url.error === 'invalid') out.url = 'invalid';
   const user = trimWs(d.user);
   if (d.auth === 'password' && user && (bytes(user) > MAIL_MAX.user || SPACE.test(user) || CONTROL.test(user)))
     out.user = 'invalid';
@@ -282,12 +297,13 @@ export function liveErrors(d: MailDraft): MailErrors {
 }
 
 /**
- * What the account needs, like the backend's `apply`: the server's address, with a password the username, and a
+ * What the account needs, like the backend's `apply`: a server of the registry, with a password the username, and a
  * secret – entered or stored for the same sign-in method on the same server.
  */
-export function requiredErrors(d: MailDraft, saved: SystemMail): MailErrors {
+export function requiredErrors(d: MailDraft, saved: SystemMail, servers: readonly MailServer[]): MailErrors {
   const out: MailErrors = {};
-  if (!trimWs(d.url)) out.url = 'required';
+  if (!d.srv) out.srv = 'required';
+  else if (!servers.some((s) => s.id === d.srv)) out.srv = 'not_found';
   if (d.auth === 'password' && !trimWs(d.user)) out.user = 'required';
   if (!secretOf(d) && !storedSecret(d, saved)) out[d.auth === 'token' ? 'token' : 'pass'] = 'required';
   return out;
@@ -296,8 +312,8 @@ export function requiredErrors(d: MailDraft, saved: SystemMail): MailErrors {
 /** Text of a field error. */
 export function mailErrorText(field: MailField, code: MailFieldError): string {
   switch (field) {
-    case 'url':
-      return code === 'required' ? m.email_err_url_required() : m.email_err_url();
+    case 'srv':
+      return code === 'not_found' ? m.email_err_srv_gone() : m.email_err_srv_required();
     case 'user':
       return code === 'required' ? m.email_err_user_required() : m.email_err_user();
     case 'pass':
@@ -318,7 +334,7 @@ export function mailErrorsOf(error: unknown): MailErrors {
   const out: MailErrors = {};
   for (const field of FIELD_ORDER) {
     const code = fields[API_FIELD[field]]?.code;
-    if (code === 'required' || code === 'invalid' || code === 'too_long') out[field] = code;
+    if (code === 'required' || code === 'invalid' || code === 'too_long' || code === 'not_found') out[field] = code;
   }
   return out;
 }
@@ -336,12 +352,12 @@ export function firstBadSection(errors: MailErrors): MailSection | null {
 }
 
 /**
- * Check before the request: an address of the server and its form, a token or user and password – a stored secret
- * of the same sign-in method on the same server counts. Returns the text for the status.
+ * Check before the request: a server of the registry, a token or user and password – a stored secret of the same
+ * sign-in method on the same server counts. Returns the text for the status.
  */
-export function precheck(d: MailDraft, saved: SystemMail): string | null {
-  const errors = { ...requiredErrors(d, saved), ...liveErrors(d) };
-  if (errors.url) return mailErrorText('url', errors.url);
+export function precheck(d: MailDraft, saved: SystemMail, servers: readonly MailServer[]): string | null {
+  const errors = { ...requiredErrors(d, saved, servers), ...liveErrors(d) };
+  if (errors.srv) return mailErrorText('srv', errors.srv);
   if (d.auth === 'token')
     return errors.token ? (errors.token === 'required' ? m.email_err_no_token() : m.email_err_token()) : null;
   if (errors.user === 'required' || errors.pass === 'required') return m.email_err_no_login();
@@ -438,6 +454,8 @@ export class SystemMailPage {
   readonly loading = new Loading();
   /** Stored state (after `PUT` the response). */
   saved = $state.raw<SystemMail>(NO_MAIL);
+  /** Servers of the Stalwart registry for the pick list. */
+  servers = $state.raw<MailServer[]>([]);
   /** Inputs on top of the stored state. */
   edits = $state.raw<Partial<MailDraft>>({});
   base = $derived(draftOf(this.saved));
@@ -450,7 +468,7 @@ export class SystemMailPage {
   serverErrors = $state.raw<MailErrors>({});
   /**
    * "Save" found a required field missing: from then on the fields the account needs show their error, derived
-   * from the current draft and the stored account (a restored address brings the stored secret back).
+   * from the current draft and the stored account (the stored server chosen again brings the stored secret back).
    */
   showRequired = $state(false);
   /**
@@ -460,7 +478,7 @@ export class SystemMailPage {
   errors = $derived.by((): MailErrors => {
     const d = this.draft;
     const live = liveErrors(d);
-    const required = this.showRequired ? requiredErrors(d, this.saved) : {};
+    const required = this.showRequired ? requiredErrors(d, this.saved, this.servers) : {};
     const out: MailErrors = {};
     for (const k of FIELD_ORDER) {
       if (!shownField(k, d.auth)) continue;
@@ -519,12 +537,18 @@ export class SystemMailPage {
     this.#scrollTo = scrollTo;
   }
 
-  /** Loads the account; with `unchecked` the page then checks silently. */
+  /** Loads the account and the registry's servers; with `unchecked` the page then checks silently. */
   async load(): Promise<void> {
     const seq = ++this.#seq;
     try {
-      const mail = await this.loading.run(api<SystemMail>('GET', 'admin/system-mail'));
+      const [mail, list] = await this.loading.run(
+        Promise.all([
+          api<SystemMail>('GET', 'admin/system-mail'),
+          api<{ servers: MailServer[] }>('GET', 'admin/stalwart/servers'),
+        ]),
+      );
       if (seq !== this.#seq || this.#disposed || this.saving) return;
+      this.servers = list.servers.map(({ id, label, url, host }) => ({ id, label, url, host }));
       this.#adopt(mail);
       this.status = 'ready';
       if (mail.status === 'unchecked') void this.test(true);
@@ -604,7 +628,7 @@ export class SystemMailPage {
     const d = this.draft;
     const conn = connOf(d);
     const cred = this.#credSeq;
-    const local = precheck(d, this.saved);
+    const local = precheck(d, this.saved, this.servers);
     if (local) {
       this.#fail(conn, local);
       return;
@@ -651,9 +675,7 @@ export class SystemMailPage {
     const id = this.saved.identity_id;
     const b = this.base;
     const same =
-      normUrl(d.url) === b.url &&
-      d.auth === b.auth &&
-      (d.auth === 'token' ? secretOf(d) === '' : trimWs(d.user) === b.user);
+      d.srv === b.srv && d.auth === b.auth && (d.auth === 'token' ? secretOf(d) === '' : trimWs(d.user) === b.user);
     if (id === null || same) return {};
     return this.good === connOf(d) && this.identities.some((i) => i.id === id) ? {} : { identity_id: null };
   }
@@ -726,7 +748,7 @@ export class SystemMailPage {
   async save(): Promise<void> {
     if (!this.dirty || this.saving) return;
     const d = this.draft;
-    const required = requiredErrors(d, this.saved);
+    const required = requiredErrors(d, this.saved, this.servers);
     const bad = firstBadSection({ ...required, ...this.errors });
     if (bad) {
       if (Object.keys(required).length > 0) this.showRequired = true;
@@ -837,9 +859,12 @@ export interface SystemMailValues {
   mailNotOk: boolean;
   mailRows: { k: string; v: string; sep: boolean }[];
   mailF: MailDraft;
-  mailOn: Record<'url' | 'user' | 'name' | 'replyTo', (value: string) => void>;
-  mailErr: Record<'url' | 'user' | 'name' | 'replyTo', MailFieldState>;
-  mailUrlSub: string;
+  mailOn: Record<'user' | 'name' | 'replyTo', (value: string) => void>;
+  mailErr: Record<'srv' | 'user' | 'name' | 'replyTo', MailFieldState>;
+  /** "Mail server" pick list; only with servers in the registry (`mailSrvHas`). */
+  selMailSrv: SelectValues;
+  mailSrvHas: boolean;
+  mailSrvSub: string;
   mailAuthOpts: SegOption<MailAuth>[];
   mailIsPw: boolean;
   mailSecret: MailSecretValues;
@@ -858,7 +883,12 @@ export interface SystemMailValues {
   mailDiscard: () => void;
 }
 
-export interface SystemMailContext {
+export interface SystemMailInput extends SelectState<MailPick> {
+  /** Clock for "Last checked". */
+  now?: number | undefined;
+}
+
+export interface SystemMailContext extends SelectContext<MailPick> {
   scrollTo: (section: MailSection) => void;
 }
 
@@ -870,11 +900,12 @@ function fromOf(name: string, id: MailIdentity | undefined, user: string): strin
   return shown ? `${shown} <${email}>` : email;
 }
 
-export function systemMailValues(p: SystemMailPage, now: number | undefined, ctx: SystemMailContext): SystemMailValues {
+export function systemMailValues(p: SystemMailPage, input: SystemMailInput, ctx: SystemMailContext): SystemMailValues {
   const d = p.draft;
   const token = d.auth === 'token';
-  const host = hostOf(d.url);
-  const origin = 'origin' in mailUrlOf(d.url) ? normUrl(d.url) : '';
+  const server = p.servers.find((s) => s.id === d.srv);
+  const host = server?.host ?? '';
+  const origin = server ? server.url.replace(/\/+$/, '') : '';
   const key = p.key;
   const ok = key === 'ok';
   const shownHost = host || m.email_host_fallback();
@@ -896,6 +927,19 @@ export function systemMailValues(p: SystemMailPage, now: number | undefined, ctx
   const canSend = ok && !p.sending;
   const send = () => void p.send();
   const secretField = token ? 'token' : 'pass';
+  const has = p.servers.length > 0;
+  const select = selectValues(
+    'mailsrv',
+    m.email_srv_label(),
+    p.servers.map((s) => ({ v: s.id, l: s.label, sub: s.host })),
+    d.srv,
+    (v) => p.set('srv', v),
+    !has,
+    input,
+    ctx,
+  );
+  // Without a server of the registry (none chosen, or removed meanwhile) the button asks for one.
+  if (!server) select.label = m.email_srv_choose();
   return {
     mailTabs: MAIL_TABS.map(([section, label]) => ({ label: label(), onClick: () => ctx.scrollTo(section) })),
     mSt: { key, ...card[key] },
@@ -908,17 +952,18 @@ export function systemMailValues(p: SystemMailPage, now: number | undefined, ctx
     mailRows: [
       [m.email_row_session(), origin ? `${origin}/.well-known/jmap` : ''],
       [m.email_row_account(), token ? m.email_row_token() : trimWs(d.user)],
-      [m.email_row_checked(), p.checkedAt === null ? '' : ago(p.checkedAt, now)],
+      [m.email_row_checked(), p.checkedAt === null ? '' : ago(p.checkedAt, input.now)],
     ].map(([k = '', v = ''], i) => ({ k, v, sep: i > 0 })),
     mailF: d,
     mailOn: {
-      url: (v) => p.set('url', v),
       user: (v) => p.set('user', v),
       name: (v) => p.set('name', v),
       replyTo: (v) => p.set('replyTo', v),
     },
-    mailErr: { url: errorOf('url'), user: errorOf('user'), name: errorOf('name'), replyTo: errorOf('replyTo') },
-    mailUrlSub: host ? m.email_url_sub({ host }) : m.email_url_desc(),
+    mailErr: { srv: errorOf('srv'), user: errorOf('user'), name: errorOf('name'), replyTo: errorOf('replyTo') },
+    selMailSrv: select,
+    mailSrvHas: has,
+    mailSrvSub: host ? m.email_srv_sub({ host }) : m.email_srv_desc(),
     mailAuthOpts: segOptions<MailAuth>(
       ['password', 'token'],
       d.auth,

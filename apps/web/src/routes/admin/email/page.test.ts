@@ -1,8 +1,8 @@
-import { fireEvent, screen, within } from '@testing-library/svelte';
+import { createEvent, fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ui } from '@roedy/ui';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
-import { NO_MAIL, type SystemMail } from '#lib/system-mail.svelte.ts';
+import { NO_MAIL, type MailServer, type SystemMail } from '#lib/system-mail.svelte.ts';
 import Page from './+page.svelte';
 
 vi.mock('$app/navigation', () => ({ goto: vi.fn(() => Promise.resolve()) }));
@@ -10,8 +10,14 @@ const sections = vi.hoisted(() => ({ scrollToSection: vi.fn() }));
 vi.mock('#lib/sections.ts', () => sections);
 
 const IDS = [{ id: 'i1', name: 'Example Org', email: 'noreply@example.com' }];
+const SERVERS: MailServer[] = [
+  { id: 's1', label: 'Example mail', url: 'https://mail.example.com/', host: 'mail.example.com' },
+  { id: 's2', label: 'Other mail', url: 'https://other.example.com/', host: 'other.example.com' },
+];
+/** `GET admin/stalwart/servers` (the page reads only `servers`). */
+const REGISTRY = { body: { servers: SERVERS, redirect_uri: 'https://hub.example.com/cb', system_mail_server: 's1' } };
 const STORED: SystemMail = {
-  url: 'https://mail.example.com',
+  server_id: 's1',
   auth: 'password',
   user: 'noreply@example.com',
   has_secret: true,
@@ -30,14 +36,20 @@ afterEach(() => {
   resetSignedIn();
 });
 
-function renderPage(mail: SystemMail | null = STORED, routes: ApiRoutes = {}) {
+function renderPage(mail: SystemMail | null = STORED, routes: ApiRoutes = {}, servers: MailServer[] = SERVERS) {
   return renderSignedIn(Page, {
     path: '/admin/email',
-    api: { 'GET admin/system-mail': mail ? [{ body: mail }] : [() => new Promise(() => {})], ...routes },
+    api: {
+      'GET admin/system-mail': mail ? [{ body: mail }] : [() => new Promise(() => {})],
+      'GET admin/stalwart/servers': [{ body: { ...REGISTRY.body, servers } }],
+      ...routes,
+    },
   });
 }
 
 const field = (label: string) => screen.getByLabelText(label, { selector: 'input' });
+/** "Mail server": named by the row's label and the chosen server. */
+const server = (value: string) => screen.getByRole('combobox', { name: `Mail server ${value}` });
 const bar = () => screen.queryByRole('region', { name: 'Unsaved changes' });
 const ready = () =>
   vi.waitFor(() => expect(screen.getByRole('heading', { level: 2, name: 'Status' })).toBeInTheDocument());
@@ -60,8 +72,8 @@ describe('Administration › Email page', () => {
     expect(view.getByText('JMAP session with mail.example.com is active.')).toBeInTheDocument();
     expect(view.getByText('https://mail.example.com/.well-known/jmap')).toBeInTheDocument();
     expect(view.getByText('5 min ago')).toBeInTheDocument();
-    expect(field('Server address')).toHaveValue('https://mail.example.com');
-    expect(field('Server address')).toHaveAttribute('type', 'url');
+    expect(server('Example mail')).toHaveAttribute('aria-expanded', 'false');
+    expect(view.getByText('JMAP session via mail.example.com')).toBeInTheDocument();
     expect(field('Username')).toHaveValue('noreply@example.com');
     expect(field('Password')).toHaveValue('');
     expect(field('Password')).toHaveAttribute('placeholder', '••••••••');
@@ -82,7 +94,93 @@ describe('Administration › Email page', () => {
     expect(view.getByText('Not set up')).toBeInTheDocument();
     expect(view.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
     expect(view.getByText('Available after a successful connection test.')).toBeInTheDocument();
-    expect(field('Server address')).toHaveAttribute('placeholder', 'https://mail.example.com');
+    expect(server('Choose server')).toBeInTheDocument();
+    expect(view.getByText('The sending account’s Stalwart server')).toBeInTheDocument();
+  });
+
+  it('chooses the server in the pick list with the mouse and the keyboard', async () => {
+    const view = renderPage();
+    await ready();
+    const btn = server('Example mail');
+    await fireEvent.click(btn);
+    const list = view.getByRole('listbox', { name: 'Mail server' });
+    expect(btn).toHaveAttribute('aria-expanded', 'true');
+    expect(btn).toHaveAttribute('aria-controls', list.id);
+    const [first, other] = within(list).getAllByRole('option');
+    expect(first).toHaveAttribute('aria-selected', 'true');
+    expect(other).toHaveTextContent('other.example.com');
+    const down = createEvent.mouseDown(other as HTMLElement);
+    await fireEvent(other as HTMLElement, down);
+    expect(down.defaultPrevented).toBe(true);
+    await fireEvent.click(other as HTMLElement);
+    expect(view.queryByRole('listbox')).toBeNull();
+    expect(server('Other mail')).toBeInTheDocument();
+    expect(view.getByText('Not checked')).toBeInTheDocument();
+    // The stored password belongs to the previous server.
+    expect(field('Password')).toHaveAttribute('placeholder', '');
+    expect(bar()).not.toBeNull();
+
+    await fireEvent.keyDown(server('Other mail'), { key: 'ArrowDown' });
+    const again = view.getByRole('listbox', { name: 'Mail server' });
+    const opts = within(again).getAllByRole('option');
+    expect(server('Other mail')).toHaveAttribute('aria-activedescendant', opts[1]?.id);
+    await fireEvent.keyDown(server('Other mail'), { key: 'ArrowDown' });
+    expect(server('Other mail')).toHaveAttribute('aria-activedescendant', opts[0]?.id);
+    await fireEvent.keyDown(server('Other mail'), { key: 'Enter' });
+    expect(view.queryByRole('listbox')).toBeNull();
+    expect(server('Example mail')).toBeInTheDocument();
+    expect(field('Password')).toHaveAttribute('placeholder', '••••••••');
+    expect(bar()).toBeNull();
+  });
+
+  it('opens the sheet for the server on mobile', async () => {
+    setPhone(true);
+    const view = renderPage();
+    await ready();
+    const btn = view.getByRole('button', { name: 'Mail server Example mail' });
+    expect(btn).toHaveAttribute('aria-haspopup', 'dialog');
+    await fireEvent.click(btn);
+    // On mobile the layout shows the list as a sheet (`ui.pick`).
+    expect(ui.menu).toBe('pick');
+    expect(view.queryByRole('listbox')).toBeNull();
+    const pick = ui.pick?.();
+    expect(pick?.title).toBe('Mail server');
+    pick?.opts[1]?.onClick();
+    expect(ui.menu).toBeNull();
+    await vi.waitFor(() => expect(view.getByRole('button', { name: 'Mail server Other mail' })).toBeInTheDocument());
+    view.unmount();
+    expect(ui.pick).toBeNull();
+  });
+
+  it('shows a hint instead of the pick list without a server, and asks for one on saving', async () => {
+    const view = renderPage(NO_MAIL, {}, []);
+    await ready();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(
+      view.getByText('No Stalwart server yet. Add one under Administration › Stalwart servers.'),
+    ).toBeInTheDocument();
+    await fireEvent.input(field('Username'), { target: { value: 'noreply@example.com' } });
+    await fireEvent.input(field('Password'), { target: { value: 'pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    expect(ui.toast).toMatchObject({ text: 'Please check the highlighted fields', error: false });
+    expect(sections.scrollToSection.mock.calls.at(-1)?.[1]).toBe('conn');
+    expect(view.getByRole('alert')).toHaveTextContent('Choose the mail server.');
+    expect(view.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+  });
+
+  it('marks the server when it was removed from the registry', async () => {
+    const view = renderPage({ ...STORED, server_id: null, has_secret: false, status: 'err', reason: 'unreachable' });
+    await ready();
+    await fireEvent.input(field('Password'), { target: { value: 'pw' } });
+    await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
+    const btn = server('Choose server');
+    const alert = view.getByRole('alert');
+    expect(alert).toHaveTextContent('Choose the mail server.');
+    expect(btn).toHaveAttribute('aria-invalid', 'true');
+    expect(btn).toHaveAttribute('aria-describedby', alert.id);
+    await fireEvent.click(btn);
+    await fireEvent.click(within(view.getByRole('listbox')).getAllByRole('option')[0] as HTMLElement);
+    expect(view.queryByRole('alert')).toBeNull();
   });
 
   it('tests the connection and shows "No connection" with the reason', async () => {
@@ -122,16 +220,18 @@ describe('Administration › Email page', () => {
   it('shows field errors at the field, marks a missing password on saving and sends nothing', async () => {
     const view = renderPage();
     await ready();
-    await fireEvent.input(field('Server address'), { target: { value: 'mail.example.com' } });
-    const input = field('Server address');
+    await fireEvent.input(field('Username'), { target: { value: 'no reply' } });
+    const input = field('Username');
     expect(input).toHaveAttribute('aria-invalid', 'true');
     const alert = view.getByRole('alert');
-    expect(alert).toHaveTextContent('Enter the address as https://mail.example.com, without a path.');
+    expect(alert).toHaveTextContent('Enter a username without spaces, at most 254 characters.');
     expect(input).toHaveAttribute('aria-describedby', alert.id);
     expect(input.parentElement?.contains(alert)).toBe(false);
 
-    await fireEvent.input(field('Server address'), { target: { value: 'https://other.example.com' } });
+    await fireEvent.input(field('Username'), { target: { value: 'noreply@example.com' } });
     expect(view.queryByRole('alert')).toBeNull();
+    await fireEvent.click(server('Example mail'));
+    await fireEvent.click(within(view.getByRole('listbox')).getByRole('option', { name: /Other mail/ }));
     await fireEvent.click(within(bar() as HTMLElement).getByRole('button', { name: 'Save' }));
     expect(ui.toast).toMatchObject({ text: 'Please check the highlighted fields', error: false });
     expect(sections.scrollToSection.mock.calls.at(-1)?.[1]).toBe('conn');
@@ -204,7 +304,10 @@ describe('Administration › Email page', () => {
   it('shows the card instead of tabs and sections when the first load fails, and reloads', async () => {
     const view = renderSignedIn(Page, {
       path: '/admin/email',
-      api: { 'GET admin/system-mail': [{ status: 500, body: { error: 'internal' } }, { body: STORED }] },
+      api: {
+        'GET admin/system-mail': [{ status: 500, body: { error: 'internal' } }, { body: STORED }],
+        'GET admin/stalwart/servers': [REGISTRY, REGISTRY],
+      },
     });
     await vi.waitFor(() => expect(view.getByText('Couldn’t load the email settings')).toBeInTheDocument());
     expect(view.queryByRole('button', { name: 'Connection' })).toBeNull();
