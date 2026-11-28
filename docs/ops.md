@@ -209,8 +209,8 @@ To take an app out of service, switch it off in the administration first, then s
 `COMPOSE_PROFILES=mail,contacts` without `calendar`), so that the next `docker compose up -d` leaves it stopped.
 Compose does not stop the running container of a profile that is no longer listed, not even with `--remove-orphans`;
 its volume and data stay. To bring it back, add the profile and run `docker compose up -d`, wait until the container
-is healthy (`docker compose ps`), switch the app on in Administration › Apps and wait until it shows online there: its
-health is not checked while it is off. The hub has no Docker socket and never starts or stops containers itself.
+is running (`docker compose ps`), switch the app on in Administration › Apps and wait until it shows online there: the
+hub checks its health from then on, not while it is off. The hub has no Docker socket and never starts or stops containers itself.
 
 While an app is switched off, its internal API keeps working, so that its container can start, send its manifest and
 catch up on events; only access tokens for users' Stalwart accounts are refused (`503 app_disabled`), so a switched-off

@@ -199,6 +199,8 @@ export class AppsPage {
   #ordering = 0;
   /** An order write failed: load the list once all have settled. */
   #reconcile = false;
+  /** Loads on their way: one a switch discards is replaced (it may be the reload after a failed order write). */
+  #loadsOut = 0;
 
   start(): void {
     void this.load();
@@ -206,6 +208,7 @@ export class AppsPage {
 
   async load(): Promise<void> {
     const seq = ++this.#seq;
+    this.#loadsOut++;
     try {
       const { apps } = await this.loading.run(api<{ apps: AdminApp[] }>('GET', 'admin/apps'));
       if (seq !== this.#seq || this.#disposed) return;
@@ -218,6 +221,8 @@ export class AppsPage {
         this.failure = loadFailText(error);
         this.status = 'failed';
       } else ui.toasts.error(failText(error, m.apps_list_failed()));
+    } finally {
+      this.#loadsOut--;
     }
   }
 
@@ -349,12 +354,15 @@ export class AppsPage {
       done: (next) => {
         settle();
         if (this.#disposed) return;
-        // A list load still on its way may predate the switch: it would show the old state.
+        // A list load still on its way may predate the switch: it would show the old state. It is discarded and
+        // loaded again after the switch, so that what it was for (e.g. the order after a failed move) still applies.
+        const discarded = this.#loadsOut > 0;
         this.#seq++;
         // Only the switch and the event delivery (switching on resets its backoff): a move on its way keeps its order.
         this.rows = this.rows.map((a) =>
           a.slug === slug ? { ...a, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events } : a,
         );
+        if (discarded) void this.load();
       },
       failed: (error) => {
         settle();
@@ -414,6 +422,8 @@ export class AppPage {
   /** Default saves not settled yet; a reload waits for them (`#reload`). */
   #saving = 0;
   #reloadAfterSaves = false;
+  /** Loads on their way: one a switch discards is replaced. */
+  #loadsOut = 0;
 
   constructor(slug: string, ctx: AppPageContext) {
     this.#slug = slug;
@@ -430,6 +440,7 @@ export class AppPage {
 
   async load(): Promise<void> {
     const seq = ++this.#seq;
+    this.#loadsOut++;
     try {
       const { app } = await this.loading.run(api<{ app: AdminApp }>('GET', `admin/apps/${this.#slug}`));
       if (seq !== this.#seq || this.#disposed) return;
@@ -447,6 +458,8 @@ export class AppPage {
         this.failure = loadFailText(error);
         this.status = 'failed';
       } else ui.toasts.error(failText(error, m.apps_app_failed()));
+    } finally {
+      this.#loadsOut--;
     }
   }
 
@@ -524,10 +537,13 @@ export class AppPage {
       done: (next) => {
         this.busy = false;
         if (this.#disposed || !this.app) return;
-        // A load still on its way may predate the switch: it would show the old state.
+        // A load still on its way may predate the switch: it would show the old state. It is discarded and
+        // loaded again after the switch.
+        const discarded = this.#loadsOut > 0;
         this.#seq++;
         // Only the switch: the response may predate a save of the default.
         this.app = { ...this.app, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events };
+        if (discarded) this.#reload();
       },
       failed: (error) => {
         this.busy = false;

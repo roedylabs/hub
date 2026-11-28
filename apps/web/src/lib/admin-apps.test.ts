@@ -205,8 +205,12 @@ describe('Administration › Apps list', () => {
   it('keeps a switch against a list load that predates it, with the delivery it returns', async () => {
     let answer: (reply: { body: unknown }) => void = () => {};
     const late = new Promise<{ body: unknown }>((resolve) => (answer = resolve));
-    const { p } = await list({
-      'GET admin/apps': [{ body: { apps: APPS } }, () => late],
+    const { p, calls } = await list({
+      'GET admin/apps': [
+        { body: { apps: APPS } },
+        () => late,
+        { body: { apps: [pairedApp(), pendingApp(), offlineApp({ enabled: false })] } },
+      ],
       'PATCH admin/apps/notes': [
         { body: { app: offlineApp({ enabled: false, disabled_at: '2026-10-26T11:00:00Z' }) } },
       ],
@@ -220,6 +224,8 @@ describe('Administration › Apps list', () => {
     await tick();
     await tick();
     expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false);
+    // The discarded load is replaced by one after the switch.
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(3);
     // Switching on returns the reset delivery: no stale warning in the row.
     p.rows = p.rows.map((a) => (a.slug === 'mail' ? disabledApp() : a));
     p.setEnabled('mail', true);
@@ -515,8 +521,12 @@ describe('Administration › Apps › an app', () => {
     const save = new Promise<{ body: unknown }>((resolve) => (answerSave = resolve));
     let answerLoad: (reply: { body: unknown }) => void = () => {};
     const load = new Promise<{ body: unknown }>((resolve) => (answerLoad = resolve));
-    const { p } = await app({
-      'GET admin/apps/mail': [{ body: { app: pairedApp() } }, () => load],
+    const { p, calls } = await app({
+      'GET admin/apps/mail': [
+        { body: { app: pairedApp() } },
+        () => load,
+        { body: { app: disabledApp({ access_default: 'selected' }) } },
+      ],
       'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
       'PATCH admin/apps/mail': [() => save, { body: { app: disabledApp({ access_default: 'selected' }) } }],
     });
@@ -533,6 +543,11 @@ describe('Administration › Apps › an app', () => {
     await tick();
     expect(p.app?.enabled).toBe(false);
     expect(p.app?.access_default).toBe('selected');
+    // The discarded load is replaced once the default save has settled.
+    await vi.waitFor(() =>
+      expect(calls.filter((c) => c.path === 'admin/apps/mail' && c.method === 'GET')).toHaveLength(3),
+    );
+    expect(p.app?.enabled).toBe(false);
   });
 
   it('removes the app after confirmation and leaves the page', async () => {

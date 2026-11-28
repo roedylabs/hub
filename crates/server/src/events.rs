@@ -223,11 +223,11 @@ async fn supervise(state: AppState) {
             }
             Err(error) => tracing::warn!("event delivery: apps not read: {error:#}"),
         }
-        while tasks.try_join_next().is_some() {}
         tokio::select! {
             _ = changed.changed() => {}
             // A worker that ended (its app switched off, or gone) while the
-            // app came back in the meantime: look again at once.
+            // app came back in the meantime: look again at once. Every
+            // completion is taken here, one per pass, so none goes unseen.
             _ = tasks.join_next(), if !tasks.is_empty() => {}
             () = tokio::time::sleep(state.events.schedule.recheck) => {}
         }

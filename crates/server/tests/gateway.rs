@@ -1483,6 +1483,34 @@ async fn switching_the_app_off_and_on() {
             .is_ok()
     );
 
+    // A request whose session ends while it waits for the app is still
+    // stopped when the app is switched off afterwards.
+    let late = hub.env.session_for("max").await;
+    let started = Instant::now();
+    let (waiting, _) = tokio::join!(hub.get("/example/slow?ms=5000", Some(&late)), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let reply = hub
+            .env
+            .as_user(&late, Method::POST, "/auth/logout", None)
+            .await;
+        assert_eq!(reply.status, StatusCode::NO_CONTENT);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        switch(&hub, false).await
+    });
+    let (status, _, body) = json_of(waiting).await;
+    assert_eq!(
+        (status, &body),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({ "error": "app_disabled" })
+        )
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+
     // Every switch is in the audit log, the repeated one not.
     let actions: Vec<String> = hub
         .env
@@ -1494,7 +1522,13 @@ async fn switching_the_app_off_and_on() {
         .await;
     assert_eq!(
         actions,
-        ["apps.disable", "apps.enable", "apps.disable", "apps.enable"]
+        [
+            "apps.disable",
+            "apps.enable",
+            "apps.disable",
+            "apps.enable",
+            "apps.disable"
+        ]
     );
 }
 

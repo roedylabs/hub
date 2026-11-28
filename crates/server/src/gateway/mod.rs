@@ -512,6 +512,9 @@ async fn forward(
             app_id: &app.id,
         },
     ));
+    // Until the app's response headers: the app alone, so that switching
+    // it off still stops the request once its session has ended.
+    let mut app_watch = gateway.streams.watch(Owner::anonymous(&app.id));
     // Switched off (or removed) since the app was looked up: its streams
     // were ended before this one was registered, and the table says so.
     let gone = || match state.apps.get(slug) {
@@ -539,25 +542,37 @@ async fn forward(
         gateway.limits.response,
     );
     tokio::pin!(respond);
-    let answer = tokio::select! {
-        biased;
-        answer = &mut respond => answer,
-        () = watch.ended() => match gone() {
-            // Switched off or removed while the request was on its way:
-            // dropping it ends the upload and the connection to the app.
-            Some(error) => {
-                tracing::debug!(
-                    slug,
-                    request_id = request_id.to_str().unwrap_or_default(),
-                    "request stopped: app switched off or removed"
-                );
-                return Err(error);
-            }
-            // The session ended (or the server shuts down): the response
-            // still goes out, and its body ends at once.
-            None => respond.await,
-        },
+    // Switched off or removed while the request was on its way: dropping it
+    // ends the upload and the connection to the app. Checked before a
+    // response that is ready at the same moment.
+    let stopped = |error: GatewayError| {
+        tracing::debug!(
+            slug,
+            request_id = request_id.to_str().unwrap_or_default(),
+            "request stopped: app switched off or removed"
+        );
+        Err(error)
     };
+    let mut session_ended = false;
+    let answer = loop {
+        tokio::select! {
+            biased;
+            () = app_watch.ended() => match gone() {
+                Some(error) => return stopped(error),
+                // The server shuts down: the response still goes out, and
+                // its body ends at once.
+                None => break (&mut respond).await,
+            },
+            () = watch.ended(), if !session_ended => match gone() {
+                Some(error) => return stopped(error),
+                // The session ended: the response still goes out, and its
+                // body ends at once – unless the app is switched off first.
+                None => session_ended = true,
+            },
+            answer = &mut respond => break answer,
+        }
+    };
+    drop(app_watch);
     let mut from_app = match answer {
         Some(Ok(response)) => response,
         Some(Err(error)) => {
