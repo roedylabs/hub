@@ -6,7 +6,7 @@
  *
  * Taken over from Roedy Mail (`apps/web/src/lib/settings-nav.ts`), trimmed to
  * the hub's pages: Stalwart accounts and servers in place of mail accounts and
- * servers, no app settings, no "Advanced settings" and no filter.
+ * servers, General with the settings every app applies, no app settings, no "Advanced settings" and no filter.
  */
 import type { IconName, LogoValues } from '@roedy/ui';
 import { m } from '#lib/paraglide/messages.js';
@@ -21,6 +21,7 @@ export type PanelRoute =
   | '/account/accounts'
   | '/account/appearance'
   | '/account/language'
+  | '/account/general'
   | '/admin/users'
   | '/admin/apps'
   | '/admin/organization'
@@ -70,6 +71,7 @@ function accountGroups(): PanelGroup[] {
       pages: [
         page('appearance', '/account/appearance', m.nav_appearance(), 'ti-palette', m.nav_appearance_desc()),
         page('language', '/account/language', m.nav_language(), 'ti-language', m.nav_language_desc()),
+        page('general', '/account/general', m.nav_general(), 'ti-adjustments-horizontal', m.nav_general_desc()),
       ],
     },
   ];

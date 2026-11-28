@@ -24,10 +24,28 @@ notification bell and notice bar) comes at run time from the hub
 ## Use
 
 ```ts
-// Once at start: the package's texts follow the app's language, `ui.dark` its colour scheme.
-import { connectSettings } from '@roedy/ui';
-connectSettings({ lang: () => prefs.lang, mode: () => prefs.values.mode });
+// Once at start: the package follows the user's shared settings in the hub.
+import { connectHub } from '@roedy/ui';
+connectHub();
 ```
+
+`connectHub()` reads the hub's shared settings (`docs/app-contract.md` ›
+`GET /api/v1/session`, `prefs`): first the copy in
+`localStorage["roedy.hub.prefs"]`, so that nothing flashes, then
+`GET /api/v1/session`, and changes in another tab (`storage` events). From
+then on the package's texts follow the language, `ui.dark` the colour scheme,
+`<html>` gets `data-font-size`, `data-density` and `data-animations`
+(`@roedy/tokens`), `ui.motion`, `ui.undoMs`, `ui.confirmDelete`,
+`ui.shortcuts` and `ui.developer` follow the settings, and `formatDate`,
+`formatShortDate`, `formatTime`, `formatNumber` and `firstDayOfWeek` use the
+user's formats and time zone (with "automatic" the device's). `hubPrefs()`
+returns the values, e.g. the accent for `applyTheme()` or the region. The app
+still decides what the settings mean for its own features: it skips `ask()`
+while `ui.confirmDelete` is off, ignores its shortcuts while `ui.shortcuts`
+is off and shows its developer page only with `ui.developer`.
+
+The hub's own web app connects its state instead:
+`connectSettings({ lang: () => prefs.lang, mode: () => prefs.values.mode, … })`.
 
 ```svelte
 <script lang="ts">
@@ -47,8 +65,9 @@ fonts and motion, in light and dark.
 | Components | `AccountMenu`, `ColorEditor`, `CommandPalette`, `ConfirmDialog`, `DebugBar`, `DirtyBar`, `ErrorView`, `FirstLoad`, `Header`, `Icon`, `LicensesDialog`, `LoadCard`, `Logo`, `PickerList`, `SettingsNav`, `Sheet`, `ShortcutsDialog`, `Skeleton`, `TimePicker`, `Toast` (with "Undo" and swiping), `Tooltip` |
 | Actions | `focustrap`, `radiogroup`, `scrollbar`, `tablist`, `tooltip`, `dialogDrag` and the swipe gestures (`swipe.ts`) |
 | Shell state | `ui` (layout, dark theme and motion, menus, the page's dialog, confirmation, command palette and shortcuts help, toasts, tooltip), `Loading`, `network` (connection state, `appFetch`, `pollVisible`), `devLog` (developer log) |
+| Shared settings | `connectHub`, `hubPrefs`, `prefs` (choices, `REGION_FORMATS` and `resolveFormats`, `HubPrefs`, `readHubPrefs`, `applyDisplay`, `effectiveZone`) |
 | Helpers | `api` (the hub's browser API, `/api/v1`), `ago`, `waitText`/`clockText`, `theme` (`applyTheme`), `color` and the colour editor's values, `errors` (error pages, the gateway's codes), `keys`, `landmark`, `logo`, `branding`, `shell` (values of the shell components, command palette, shortcuts), `Reconnect` ("No connection" with retries), `icons`, `undo` (`Toasts`: deferred actions with "Undo"), `date`, `time-picker`, `licenses` (the app's licence list), `developer` (debug bar), `AppWorker` (the app's service worker and new-build detection) |
-| Texts | `texts()` (the package's `en`/`de` tables), `connectSettings()` |
+| Texts and settings | `texts()` (the package's `en`/`de` tables), `connectSettings()` |
 | Testing (`@roedy/ui/testing`) | `pointer`/`swipe` gestures in jsdom, WCAG contrast, axe-core (`violations()`, needs `axe-core`) |
 
 `Icon` takes the name of a registered icon (`ti-…`, `icons.ts`: names in data –

@@ -9,9 +9,10 @@
  * Taken over from the hub's web app, which took it over from Roedy Mail
  * (`apps/web/src/lib/state/ui.svelte.ts`) without the sidebar, splash screen
  * and the app's commands and shortcuts (each app passes its own to
- * `CommandPalette` and `ShortcutsDialog`). The undo delay is a settable field
- * (`undoMs`) instead of Mail's setting `gUndo`. There is no "Ask before
- * deleting" setting: `ask()` always asks.
+ * `CommandPalette` and `ShortcutsDialog`). Animations, the undo delay, "Ask
+ * before deleting", keyboard shortcuts and developer mode come from the
+ * connected settings (`connectSettings`, `connectHub`); `ask()` itself always
+ * asks – the app skips it while `confirmDelete` is off.
  */
 import { MOBILE_BP, NARROW } from '@roedy/tokens';
 import type { Snippet } from 'svelte';
@@ -23,7 +24,7 @@ import type { PickerValues } from '../shell.ts';
 import { settings } from '../settings.svelte.ts';
 import { texts } from '../i18n.ts';
 import { isDarkMode } from '../theme.ts';
-import { Toasts, UNDO_MS, type ToastItem } from '../undo.ts';
+import { Toasts, type ToastItem } from '../undo.ts';
 import { devLog } from './devlog.svelte.ts';
 
 const t = texts({
@@ -83,12 +84,27 @@ export class Ui {
   dark = $derived(isDarkMode(settings().mode(), this.systemDark.current));
   /** System setting "reduce motion" (`prefers-reduced-motion`). */
   #reduceMotion = new MediaQuery('(prefers-reduced-motion: reduce)');
-  /** Animations of this page: an app's setting (Roedy Mail's "Animations") turns them off, as do tests. */
+  /** Animations of this page besides the setting: tests turn them off. */
   animations = $state(true);
 
-  /** Motion on: animations and no reduced motion in the system. */
+  /** Motion on: animations (the setting and `animations`) and no reduced motion in the system. */
   get motion(): boolean {
-    return this.animations && !this.#reduceMotion.current;
+    return this.animations && settings().animations() && !this.#reduceMotion.current;
+  }
+
+  /** "Ask before deleting" of the settings: whether the app confirms a deletion (`ask()`) first. */
+  get confirmDelete(): boolean {
+    return settings().confirmDelete();
+  }
+
+  /** Keyboard shortcuts of the settings: whether the app's shortcuts (and the palette's key) apply. */
+  get shortcuts(): boolean {
+    return settings().shortcuts();
+  }
+
+  /** Developer mode of the settings: developer page, debug bar and technical details. */
+  get developer(): boolean {
+    return settings().developer();
   }
   #coarse = new MediaQuery('(pointer: coarse)');
   /** Tablet: desktop layout on a coarse primary pointer (touch). */
@@ -114,8 +130,14 @@ export class Ui {
 
   /** Displayed toast; actions with undo via `toasts.defer()`, notices go into the developer log. */
   toast = $state<ToastItem | null>(null);
-  /** Display duration of a toast with undo in ms: the app's undo delay (`UNDO_DELAYS`). */
-  undoMs = $state<number>(UNDO_MS);
+  #undoMs = $state<number | null>(null);
+  /** Display duration of a toast with undo in ms: the undo delay of the settings, unless set here (tests). */
+  get undoMs(): number {
+    return this.#undoMs ?? settings().undoDelay() * 1000;
+  }
+  set undoMs(ms: number | null) {
+    this.#undoMs = ms;
+  }
   readonly toasts = new Toasts(
     (toast) => {
       this.toast = toast;

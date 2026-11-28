@@ -24,7 +24,8 @@ describe('settings navigation', () => {
         'Display & language',
         [
           ['Appearance', '/account/appearance', 'ti-palette'],
-          ['Language', '/account/language', 'ti-language'],
+          ['Language & region', '/account/language', 'ti-language'],
+          ['General', '/account/general', 'ti-adjustments-horizontal'],
         ],
       ],
     ]);

@@ -6,7 +6,9 @@
  * (see there), so that templates and `$derived` follow a change without a reload.
  *
  * The language last used is kept in the shared preferences
- * (`#lib/shared-prefs.ts`), which the apps read as well.
+ * (`#lib/shared-prefs.ts`, `language`), which the apps read as well; so are
+ * colour scheme, font size and animations for the pages without sign-in
+ * (`guestPrefs()`).
  *
  * Date and number formats in words follow the language (`intlLocale()`):
  * English uses `en-GB` – day before month ("Tue 10 November") and time zone
@@ -17,7 +19,8 @@
  * Taken over from Roedy Mail (`apps/web/src/lib/locale.ts`).
  */
 import { baseLocale, getLocale, isLocale, type Locale } from '#lib/paraglide/runtime.js';
-import { readSharedPrefs, writeSharedPrefs } from '#lib/shared-prefs.ts';
+import { readSharedPrefs } from '#lib/shared-prefs.ts';
+import type { Settings } from '#lib/state/prefs.svelte.ts';
 
 export type Lang = Locale;
 
@@ -25,8 +28,8 @@ export type Lang = Locale;
 export function deviceLang(): Lang {
   // Without a document (tests under Node, service worker) the base language applies.
   if (!('document' in globalThis)) return baseLocale;
-  const stored = readSharedPrefs().locale;
-  if (stored) return stored;
+  const stored = readSharedPrefs().language;
+  if (stored && stored !== 'system' && isLocale(stored)) return stored;
   const tags = navigator.languages?.length ? navigator.languages : [navigator.language];
   for (const tag of tags) {
     const base = tag?.toLowerCase().split('-')[0];
@@ -35,12 +38,15 @@ export function deviceLang(): Lang {
   return baseLocale;
 }
 
-/**
- * Remembers the language of the account for the pages without sign-in on this
- * device; `system` forgets it, so that they follow the browser as well.
- */
-export function rememberLang(lang: Lang | 'system'): void {
-  writeSharedPrefs({ locale: lang === 'system' ? null : lang });
+/** What the pages without sign-in take over from the shared preferences: colour scheme, font size, animations. */
+export function guestPrefs(): Partial<Pick<Settings, 'mode' | 'font_size' | 'animations'>> {
+  if (!('document' in globalThis)) return {};
+  const { theme, font_size, animations } = readSharedPrefs();
+  const out: Partial<Pick<Settings, 'mode' | 'font_size' | 'animations'>> = {};
+  if (theme && theme !== 'system') out.mode = theme;
+  if (font_size) out.font_size = font_size;
+  if (animations !== undefined) out.animations = animations;
+  return out;
 }
 
 /** Language tag for `Intl` (date in words, numbers, time zone abbreviations). */

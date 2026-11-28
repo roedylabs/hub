@@ -1,21 +1,26 @@
 /**
- * Values of the Settings › Appearance page: colour scheme (`modeCards`) and
+ * Values of the Account › Appearance page: colour scheme (`modeCards`),
  * accent colour (`accentOpts` and the sixth tile `accentMore` for a custom
  * colour from the colour editor; locked without `userAccent` of the
- * branding), plus the segment and switch types the other settings pages use.
- * Changes go through `prefs.set()`; the layout applies the theme at once
- * (`applyTheme()` in `#lib/theme.ts`).
+ * branding), font size, animations and density, plus the segment and switch
+ * types the other settings pages use. Changes go through `prefs.set()`; the
+ * layout applies theme, font size, density and animations at once
+ * (`applyTheme()`, `applyDisplay()` of `@roedy/ui`), and the apps follow
+ * through the shared settings.
  *
- * Taken over from Roedy Mail (`apps/web/src/lib/appearance.ts`), trimmed to
- * colour scheme and accent: the hub has no font size, animations setting,
- * density, mailbox design or sidebar. `Toggle` comes from Mail's
- * `banner.svelte.ts`.
+ * Taken over from Roedy Mail (`apps/web/src/lib/appearance.ts`) without the
+ * mailbox design and the sidebar, which stay with Mail. `Toggle` comes from
+ * Mail's `banner.svelte.ts`.
  */
 import { ACCENTS, MODE_PREV, type AccentName } from '@roedy/tokens';
 import {
   accentInk,
   accentOf,
   type Branding,
+  DENSITIES,
+  type Density,
+  FONT_SIZES,
+  type FontSize,
   type HexColor,
   type IconName,
   isHexColor,
@@ -27,7 +32,7 @@ import { m } from '#lib/paraglide/messages.js';
 import type { Settings } from '#lib/state/prefs.svelte.ts';
 
 /** Sections of the page (`data-sec`, `tabs`). */
-export type AppearanceSection = 'mode' | 'accent';
+export type AppearanceSection = 'mode' | 'accent' | 'text' | 'layout';
 
 /** Option of a segmented control. */
 export interface SegOption<T extends string> {
@@ -90,10 +95,13 @@ export interface AppearanceValues {
   accentMore: AccentMore;
   /** Without `userAccent` the branding sets the accent colour: selection locked (`accOp`, `accPe`). */
   accLocked: boolean;
+  fontOpts: SegOption<FontSize>[];
+  densityOpts: SegOption<Density>[];
+  tgAnim: Toggle;
 }
 
 export interface AppearanceInput {
-  values: Pick<Settings, 'mode' | 'accent'>;
+  values: Pick<Settings, 'mode' | 'accent' | 'font_size' | 'density' | 'animations'>;
   brand: Pick<Branding, 'userAccent' | 'color'>;
 }
 
@@ -116,6 +124,19 @@ export function accentLabel(name: AccentName): string {
   }[name]();
 }
 
+const LABELS: Record<FontSize | Density, () => string> = {
+  small: m.appearance_font_small,
+  medium: m.appearance_font_medium,
+  large: m.appearance_font_large,
+  compact: m.appearance_compact,
+  normal: m.appearance_density_normal,
+  comfortable: m.appearance_density_comfortable,
+};
+
+function seg<T extends keyof typeof LABELS>(opts: readonly T[], current: T, set: (value: T) => void): SegOption<T>[] {
+  return opts.map((value) => ({ value, label: LABELS[value](), on: value === current, onClick: () => set(value) }));
+}
+
 export function appearanceValues(input: AppearanceInput, ctx: AppearanceContext): AppearanceValues {
   const { values, brand } = input;
   const mode = modeName(values.mode);
@@ -125,6 +146,8 @@ export function appearanceValues(input: AppearanceInput, ctx: AppearanceContext)
     tabs: [
       { label: m.appearance_tab_mode(), onClick: () => ctx.scrollTo('mode') },
       { label: m.appearance_tab_accent(), onClick: () => ctx.scrollTo('accent') },
+      { label: m.appearance_tab_text(), onClick: () => ctx.scrollTo('text') },
+      { label: m.appearance_tab_layout(), onClick: () => ctx.scrollTo('layout') },
     ],
     modeCards: MODES.map((name) => ({
       name,
@@ -153,5 +176,8 @@ export function appearanceValues(input: AppearanceInput, ctx: AppearanceContext)
       },
     },
     accLocked: locked,
+    fontOpts: seg(FONT_SIZES, values.font_size, (font_size) => ctx.set({ font_size })),
+    densityOpts: seg(DENSITIES, values.density, (density) => ctx.set({ density })),
+    tgAnim: { on: values.animations, onClick: () => ctx.set({ animations: !values.animations }) },
   };
 }

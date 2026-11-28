@@ -43,6 +43,7 @@ afterEach(() => {
   session.current = null;
   session.status = 'idle';
   session.failure = null;
+  localStorage.clear();
   prefs.reset();
   ui.reset();
   page.url = new URL('http://localhost/');
@@ -141,8 +142,16 @@ describe('root layout', () => {
     expect(document.documentElement.lang).toBe('en');
     expect(calls.map((c) => c.path)).toEqual(['public/config', 'session', 'settings']);
     expect(document.title).toBe('Example Org');
-    // The apps read theme and language before their first request.
-    expect(JSON.parse(localStorage.getItem('roedy.hub.prefs') ?? '{}')).toEqual({ theme: 'dark', locale: 'en' });
+    // The apps read the shared settings before their first request.
+    expect(JSON.parse(localStorage.getItem('roedy.hub.prefs') ?? '{}')).toMatchObject({
+      theme: 'dark',
+      accent: 'sage',
+      language: 'en',
+      font_size: 'medium',
+      date_format: 'iso',
+    });
+    // Font size, density and animations on `<html>`.
+    expect(document.documentElement.dataset).toMatchObject({ fontSize: 'medium', density: 'normal' });
   });
 
   it('shows "No connection" with "Try again" when the hub does not answer', async () => {

@@ -36,6 +36,7 @@
   import {
     AccountMenu,
     type AccountMenuValues,
+    applyDisplay,
     applyTheme,
     ConfirmDialog,
     confirmValues,
@@ -171,6 +172,18 @@
 
   $effect(() => {
     applyTheme(document.documentElement, themeOf(prefs.values, session.branding, ui.systemDark.current));
+  });
+
+  // Font size, density and animations on `<html>` (`@roedy/tokens`).
+  $effect(() => {
+    const { font_size, density, animations } = prefs.values;
+    applyDisplay(document.documentElement, { fontSize: font_size, density, animations });
+  });
+
+  // The accent the apps get depends on the branding (`userAccent`): renew the shared preferences when it changes.
+  $effect(() => {
+    void session.branding.userAccent;
+    if (untrack(() => prefs.remote)) untrack(() => prefs.share());
   });
 
   // Language on `<html lang>` (WCAG 3.1.1).

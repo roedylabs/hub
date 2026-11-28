@@ -2,7 +2,8 @@
 // connection from `network`.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { network } from './state/network.svelte.ts';
-import { ERROR_TOAST_MS, TOAST_MS, Toasts, UNDO_DELAYS, UNDO_MS, type ToastItem } from './undo.ts';
+import { UNDO_DELAYS } from './prefs.ts';
+import { ERROR_TOAST_MS, TOAST_MS, Toasts, UNDO_MS, type ToastItem } from './undo.ts';
 
 let shown: (ToastItem | null)[];
 let toasts: Toasts;
@@ -256,7 +257,7 @@ describe('Toasts', () => {
   });
 
   it('shows a toast with undo for 5 s without an undo delay', async () => {
-    expect(UNDO_DELAYS).toContain(UNDO_MS);
+    expect(UNDO_DELAYS.map((s) => s * 1000)).toContain(UNDO_MS);
     const own = new Toasts((t) => shown.push(t));
     const a = action();
     own.defer(a);

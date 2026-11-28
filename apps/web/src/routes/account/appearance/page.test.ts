@@ -1,5 +1,5 @@
-// Taken over from Roedy Mail (`apps/web/src/routes/settings/appearance/page.test.ts`), trimmed to colour scheme and
-// accent, plus saving through `PUT settings`.
+// Taken over from Roedy Mail (`apps/web/src/routes/settings/appearance/page.test.ts`) without the sidebar and the
+// mailbox design, plus saving through `PUT settings`.
 import { fireEvent, screen, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
@@ -31,19 +31,22 @@ afterEach(() => {
 });
 
 describe('Appearance page', () => {
-  it('shows header, tabs, both sections and the defaults', () => {
+  it('shows header, tabs, the sections and the defaults', () => {
     const view = renderSignedIn(Page, { role: 'user' });
     expect(view.getByRole('heading', { level: 1 })).toHaveTextContent('Appearance');
-    expect(view.getByText('Color scheme and accent color.')).toBeInTheDocument();
-    const tabs = ['Color scheme', 'Accent color'];
+    expect(view.getByText('Color scheme, accent, text size and layout.')).toBeInTheDocument();
+    const tabs = ['Color scheme', 'Accent color', 'Text & animation', 'Layout'];
     expect(view.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(tabs);
     for (const t of tabs) expect(view.getByRole('button', { name: t })).toBeInTheDocument();
     expect(view.getByText('Light, dark, or matching your system.')).toBeInTheDocument();
     expect(view.getByText('For icons, highlights, and selection.')).toBeInTheDocument();
     expect(view.queryByText(LOCKED)).toBeNull();
-    // Nothing of Roedy Mail's other sections.
-    expect(view.queryByRole('switch')).toBeNull();
-    expect(view.container.querySelectorAll('[data-sec]')).toHaveLength(2);
+    // Nothing of Roedy Mail's own settings (sidebar, mailbox design).
+    expect(view.getAllByRole('switch')).toHaveLength(1);
+    expect(view.container.querySelectorAll('[data-sec]')).toHaveLength(4);
+    expect(checked('Font size')).toHaveTextContent('Medium');
+    expect(checked('Density')).toHaveTextContent('Normal');
+    expect(view.getByRole('switch', { name: 'Animations' })).toHaveAttribute('aria-checked', 'true');
 
     expect(
       group('Color scheme')
@@ -77,6 +80,31 @@ describe('Appearance page', () => {
     await fireEvent.click(group('Accent color').getByRole('radio', { name: 'Sky' }));
     expect(prefs.values.accent).toBe('sky');
     expect(checked('Accent color')).toHaveTextContent('Sky');
+  });
+
+  it('selects font size, animations and density via prefs', async () => {
+    const view = renderSignedIn(Page);
+    expect(
+      group('Font size')
+        .getAllByRole('radio')
+        .map((r) => r.textContent.trim()),
+    ).toEqual(['Small', 'Medium', 'Large']);
+    await fireEvent.click(group('Font size').getByRole('radio', { name: 'Large' }));
+    expect(prefs.values.font_size).toBe('large');
+    expect(checked('Font size')).toHaveTextContent('Large');
+    const anim = view.getByRole('switch', { name: 'Animations' });
+    await fireEvent.click(anim);
+    expect(prefs.values.animations).toBe(false);
+    expect(anim).toHaveAttribute('aria-checked', 'false');
+    expect(
+      group('Density')
+        .getAllByRole('radio')
+        .map((r) => r.textContent.trim()),
+    ).toEqual(['Compact', 'Normal', 'Comfortable']);
+    await fireEvent.click(group('Density').getByRole('radio', { name: 'Compact' }));
+    expect(prefs.values.density).toBe('compact');
+    await fireEvent.click(view.getByRole('button', { name: 'Layout' }));
+    expect(scrollToSection).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'layout', false);
   });
 
   it('saves the choices of a signed-in account with PUT settings, one request after the other', async () => {
