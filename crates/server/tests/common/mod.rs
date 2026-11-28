@@ -26,7 +26,7 @@ use roedy_hub_server::{
     db::{
         self, Db,
         repo::{
-            totp_devices,
+            stalwart_servers, totp_devices,
             users::{self, NewUser, Role},
         },
     },
@@ -106,12 +106,41 @@ impl Env {
     }
 
     /// Stores a sending account on the JMAP server `url` with the fake's
-    /// credentials (`fake_jmap::MAIL_USER`, `MAIL_PASSWORD`).
+    /// credentials (`fake_stalwart::MAIL_USER`, `MAIL_PASSWORD`); the server goes
+    /// into the Stalwart registry first (ID `system`) unless it is there.
     pub async fn configure_mail(&self, url: &str, user: &str, password: &str) {
-        let mail = SystemMail::new(&self.state.secrets, url, user, password, None).unwrap();
+        let server_id = self.add_server("system", url).await;
+        let mail = SystemMail::new(&self.state.secrets, &server_id, user, password, None).unwrap();
         db::call(&self.state.db, move |conn| system_mail::save(conn, &mail))
             .await
             .unwrap();
+    }
+
+    /// A Stalwart server in the registry with the origin of `url`, without an
+    /// OAuth client; returns its ID (an existing one with the origin keeps
+    /// its own).
+    pub async fn add_server(&self, id: &str, url: &str) -> String {
+        let origin = Url::parse(url).unwrap().origin().ascii_serialization();
+        let id = id.to_owned();
+        db::call(&self.state.db, move |conn| {
+            if let Some(server) = stalwart_servers::find_by_base_url(conn, &origin)? {
+                return Ok(server.id);
+            }
+            stalwart_servers::insert(
+                conn,
+                &id,
+                &stalwart_servers::Fields {
+                    label: "Stalwart",
+                    base_url: &origin,
+                    domains: &[],
+                    client_id: None,
+                },
+                None,
+            )?;
+            Ok(id)
+        })
+        .await
+        .unwrap()
     }
 
     pub async fn sql<T: Send + 'static>(

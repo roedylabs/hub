@@ -3,13 +3,13 @@
 //! change, invitations and the security notices.
 
 mod common;
-mod fake_jmap;
+mod fake_stalwart;
 
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use common::{Env, PASSWORD, code, env};
-use fake_jmap::{MAIL_PASSWORD, MAIL_USER, MailState, Options, Server};
+use fake_stalwart::{MAIL_PASSWORD, MAIL_USER, MailState, Options, Server};
 use roedy_hub_server::{auth::session, db::repo::users::Role};
 use serde_json::{Value, json};
 
@@ -78,13 +78,14 @@ async fn administrators_set_and_test_the_sending_account() {
     env.add_user("max", "max@example.com", Role::User).await;
     let admin = env.session_for("anna").await;
     let user = env.session_for("max").await;
+    let server = env.add_server("s1", &fake.url).await;
 
     let shown = env
         .as_user(&admin, Method::GET, "/admin/system-mail", None)
         .await;
     assert_eq!(shown.status, StatusCode::OK);
     assert_eq!(shown.json()["status"], "none");
-    assert_eq!(shown.json()["url"], Value::Null);
+    assert_eq!(shown.json()["server_id"], Value::Null);
     let me = env.as_user(&admin, Method::GET, "/auth/me", None).await;
     assert_eq!(me.json()["system_mail_configured"], false);
     // Only for administrators.
@@ -103,7 +104,7 @@ async fn administrators_set_and_test_the_sending_account() {
     // A wrong password is stored, but checked right away.
     let put = |body: Value| env.as_user(&admin, Method::PUT, "/admin/system-mail", Some(body));
     let reply = put(json!({
-        "url": fake.url, "user": MAIL_USER, "app_password": "wrong",
+        "server_id": server, "user": MAIL_USER, "app_password": "wrong",
     }))
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -114,18 +115,18 @@ async fn administrators_set_and_test_the_sending_account() {
     let reply = put(json!({ "app_password": MAIL_PASSWORD })).await;
     let view = reply.json();
     assert_eq!(view["status"], "ok", "{view}");
-    assert_eq!(view["url"], fake.url);
+    assert_eq!(view["server_id"], server);
     assert_eq!(view["has_secret"], true);
     assert_eq!(view["identities"].as_array().unwrap().len(), 2);
     assert!(!reply.body.contains(MAIL_PASSWORD));
     let me = env.as_user(&admin, Method::GET, "/auth/me", None).await;
     assert_eq!(me.json()["system_mail_configured"], true);
 
-    // Missing fields and an address that is no server.
-    let reply = put(json!({ "url": "https://mail.example.com/jmap" })).await;
+    // A server that is not in the registry.
+    let reply = put(json!({ "server_id": "unknown" })).await;
     assert_eq!(
         reply.json()["fields"],
-        json!({ "url": { "code": "invalid" } })
+        json!({ "server_id": { "code": "not_found" }, "app_password": { "code": "required" } })
     );
 
     // Test without saving, then a test email.
@@ -767,7 +768,7 @@ async fn authenticator_changes_send_notices() {
 #[tokio::test]
 async fn unreachable_server_does_not_block_sign_in() {
     let env = env().await;
-    env.configure_mail(&fake_jmap::unreachable_url(), MAIL_USER, MAIL_PASSWORD)
+    env.configure_mail(&fake_stalwart::unreachable_url(), MAIL_USER, MAIL_PASSWORD)
         .await;
     env.add_user("max", "max@example.com", Role::User).await;
     assert_eq!(env.login("max", PASSWORD).await.status, StatusCode::OK);
