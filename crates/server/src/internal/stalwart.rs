@@ -14,7 +14,6 @@
 
 use axum::{
     Json,
-    body::Bytes,
     extract::{Path, State},
     http::StatusCode,
 };
@@ -24,7 +23,7 @@ use serde_json::{Value, json};
 
 use super::PairedApp;
 use crate::{
-    api::{ApiError, stalwart::accounts::token_error},
+    api::{ApiError, JsonBody, stalwart::accounts::token_error},
     app::AppState,
     db::{
         self,
@@ -105,7 +104,7 @@ pub async fn accounts(
 /// Body of `POST …/token`, optional.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TokenBody {
+pub struct TokenBody {
     #[serde(default)]
     refresh: bool,
 }
@@ -114,16 +113,12 @@ pub async fn access_token(
     State(state): State<AppState>,
     PairedApp(app, _): PairedApp,
     Path((sub, id)): Path<(String, String)>,
-    body: Bytes,
+    body: Option<JsonBody<TokenBody>>,
 ) -> Result<Json<Value>, ApiError> {
     if !requested(&app)?.backend {
         return Err(not_requested());
     }
-    let body: TokenBody = if body.iter().all(u8::is_ascii_whitespace) {
-        TokenBody::default()
-    } else {
-        serde_json::from_slice(&body).map_err(|error| ApiError::BadRequest(error.to_string()))?
-    };
+    let body = body.map(|JsonBody(body)| body).unwrap_or_default();
     let (app_id, user) = (app.id.clone(), sub.clone());
     let active = db::call(&state.db, move |conn| access(conn, &app, &user)).await?;
     match active {

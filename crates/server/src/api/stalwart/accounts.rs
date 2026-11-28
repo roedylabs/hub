@@ -48,7 +48,6 @@ use std::{
 
 use axum::{
     Json, Router,
-    body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
@@ -167,20 +166,16 @@ struct TokenBody {
 }
 
 /// Access token for the browser; API responses carry `Cache-Control:
-/// no-store`. The body is optional.
+/// no-store`. The body is optional (without `Content-Type`).
 async fn access_token(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     headers: HeaderMap,
     Path(id): Path<String>,
-    body: Bytes,
+    body: Option<JsonBody<TokenBody>>,
 ) -> Result<Json<Value>, ApiError> {
     require_requested_with(&headers)?;
-    let body: TokenBody = if body.iter().all(u8::is_ascii_whitespace) {
-        TokenBody::default()
-    } else {
-        serde_json::from_slice(&body).map_err(|error| ApiError::BadRequest(error.to_string()))?
-    };
+    let body = body.map(|JsonBody(body)| body).unwrap_or_default();
     state
         .limiter
         .acquire(&TOKEN_LIMIT, Key::User(user.id.clone()))?;

@@ -628,6 +628,15 @@ async fn accounts_with_a_token_and_custom_servers() {
         .await;
     assert_eq!(token.json()["access_token"], MAIL_TOKEN);
     assert_eq!(token.json()["expires_at"], Value::Null);
+    // The body is optional, but must fit when it is there.
+    let odd = hub
+        .max(
+            Method::POST,
+            &format!("/stalwart/accounts/{id}/token"),
+            Some(json!({ "refresh": "yes" })),
+        )
+        .await;
+    assert_eq!(odd.status, StatusCode::BAD_REQUEST, "{}", odd.body);
     // The address of the server counts as that server.
     let dup = create(json!({ "url": fake.url, "email": MAIL_USER, "token": MAIL_TOKEN })).await;
     assert_eq!(dup.error(), "dup", "{}", dup.body);
