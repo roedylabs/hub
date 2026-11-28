@@ -3,7 +3,7 @@ import { AppPage, AppsPage, internalUrlError, slugError, slugErrorText } from '#
 import { mockApi } from '#lib/state/fetch-mock.ts';
 import { session } from '#lib/state/session.svelte.ts';
 import { ui } from '@roedy/ui';
-import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { resetSignedIn, signIn } from '#lib/test/signed-in.ts';
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -173,6 +173,42 @@ describe('Administration › Apps list', () => {
     p.copyShown();
     await vi.waitFor(() => expect(ui.toast?.text).toBe('Pairing code copied'));
     expect(writeText).toHaveBeenCalledWith(PAIRING.code);
+  });
+
+  it('switches an app off after confirmation and on at once', async () => {
+    const { p, calls } = await list({
+      'PATCH admin/apps/mail': [{ body: { app: disabledApp() } }, { body: { app: pairedApp() } }],
+    });
+    p.setEnabled('mail', false);
+    expect(ui.confirm).toMatchObject({ title: 'Switch off Mail?', ok: 'Switch off', icon: 'ti-plug-off' });
+    expect(p.switching).toEqual([]);
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(0);
+    // Cancelling changes nothing.
+    ui.confirmCancel();
+    expect(p.rows[0]?.enabled).toBe(true);
+    p.setEnabled('mail', false);
+    ui.confirmOk();
+    expect(p.switching).toEqual(['mail']);
+    await vi.waitFor(() => expect(p.rows[0]?.enabled).toBe(false));
+    expect(p.switching).toEqual([]);
+    expect(calls.at(-1)).toMatchObject({ method: 'PATCH', path: 'admin/apps/mail', body: { enabled: false } });
+    expect(ui.toast?.text).toBe('Mail switched off');
+    // On: no question.
+    p.setEnabled('mail', true);
+    expect(ui.confirm).toBeNull();
+    await vi.waitFor(() => expect(p.rows[0]?.enabled).toBe(true));
+    expect(calls.at(-1)).toMatchObject({ body: { enabled: true } });
+    expect(ui.toast?.text).toBe('Mail switched on');
+    expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'wiki', 'notes']);
+  });
+
+  it('reloads the list when switching fails', async () => {
+    const { p, calls } = await list({ 'PATCH admin/apps/notes': [{ status: 500, body: { error: 'internal' } }] });
+    p.setEnabled('notes', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('The app wasn’t switched. Please try again.'));
+    await vi.waitFor(() => expect(calls.at(-1)).toMatchObject({ method: 'GET', path: 'admin/apps' }));
+    expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(true);
   });
 
   it('reloads the account when the role was lost', async () => {
@@ -396,6 +432,40 @@ describe('Administration › Apps › an app', () => {
     late({ body: { app: pairedApp() } });
     await tick();
     expect(p.app?.access_default).toBe('selected');
+  });
+
+  it('switches the app off after confirmation and on again', async () => {
+    const { p, calls } = await app({
+      'GET admin/apps/mail': [{ body: { app: pairedApp() } }, { body: { app: disabledApp() } }],
+      'GET admin/apps/mail/users': [{ body: USERS }, { body: USERS }],
+      'PATCH admin/apps/mail': [
+        { body: { app: disabledApp() } },
+        { status: 500, body: { error: 'internal' } },
+        { body: { app: pairedApp() } },
+      ],
+    });
+    p.setEnabled(false);
+    expect(p.busy).toBe(false);
+    expect(ui.confirm).toMatchObject({ title: 'Switch off Mail?' });
+    ui.confirmOk();
+    expect(p.busy).toBe(true);
+    await vi.waitFor(() => expect(p.app?.enabled).toBe(false));
+    expect(p.busy).toBe(false);
+    expect(p.app?.disabled_at).toBe('2026-10-26T11:00:00Z');
+    expect(p.app?.events.pending).toBe(2);
+    // A failure says so and loads the app again.
+    p.setEnabled(true);
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('The app wasn’t switched. Please try again.'));
+    await vi.waitFor(() => expect(calls.at(-1)?.path).toBe('admin/apps/mail/users'));
+    expect(p.app?.enabled).toBe(false);
+    p.setEnabled(true);
+    await vi.waitFor(() => expect(ui.toast?.text).toBe('Mail switched on'));
+    expect(p.app?.enabled).toBe(true);
+    expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([
+      { enabled: false },
+      { enabled: true },
+      { enabled: true },
+    ]);
   });
 
   it('removes the app after confirmation and leaves the page', async () => {

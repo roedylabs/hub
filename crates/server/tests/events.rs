@@ -1,7 +1,8 @@
 //! Events over real connections with the example app: which change gives
 //! which event to which app, delivery in order with backoff (app down, 5xx,
 //! timeout), giving up and resuming, redelivery, catching up with `410`,
-//! the example's checks of forged events and the removal of an app.
+//! the example's checks of forged events, switching an app off and on and
+//! the removal of an app.
 //!
 //! The delivery here looks again only after 30 s without a wake-up, so
 //! every event that arrives sooner shows the wake-up after the commit.
@@ -849,6 +850,67 @@ async fn the_example_rejects_forged_events() {
         (204, String::new())
     );
     assert_eq!(hub.example.highest_seq(), 4);
+}
+
+#[tokio::test]
+async fn a_switched_off_app_gets_its_events_once_it_is_on_again() {
+    // A backoff of an hour: only switching the app on lets the waiting
+    // events go out at once.
+    let hub = hub_with(Schedule {
+        delays: vec![Duration::from_secs(3600)],
+        ..fast()
+    })
+    .await;
+    let example = &hub.example;
+    arrived(example, 0, 3).await;
+    let eva = hub.user_id("eva").await;
+    example.fail_events(Some(503));
+    hub.admin(Method::POST, &format!("/users/{eva}/lock"), None)
+        .await;
+    until_async("a failure", || async {
+        hub.state(&hub.app_id).await.attempts == 1
+    })
+    .await;
+    example.fail_events(None);
+
+    let reply = hub
+        .admin(
+            Method::PATCH,
+            "/admin/apps/example",
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    // Events are still written, but none goes out.
+    hub.admin(Method::POST, &format!("/users/{eva}/unlock"), None)
+        .await;
+    assert_eq!(hub.stored(&hub.app_id).await.len(), 5);
+    tokio::time::sleep(ms(300)).await;
+    assert_eq!(example.highest_seq(), 3);
+    let state = hub.state(&hub.app_id).await;
+    assert_eq!((state.delivered_seq, state.last_seq), (3, 5));
+    // The internal API stays open: the app can catch up while it is off.
+    let reply = hub.catch_up("?after=3").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.json()["events"].as_array().unwrap().len(), 2);
+
+    let reply = hub
+        .admin(
+            Method::PATCH,
+            "/admin/apps/example",
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        arrived(example, 3, 2).await,
+        [of_user("user.locked", &eva), of_user("user.unlocked", &eva)]
+    );
+    until_async("the acknowledgement", || async {
+        hub.state(&hub.app_id).await.delivered_seq == 5
+    })
+    .await;
+    assert_eq!(hub.state(&hub.app_id).await.attempts, 0);
 }
 
 #[tokio::test]

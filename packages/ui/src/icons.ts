@@ -190,6 +190,7 @@ import IconPlayerPlay from '@tabler/icons-svelte-runes/icons/player-play';
 import IconPlug from '@tabler/icons-svelte-runes/icons/plug';
 import IconPlugConnected from '@tabler/icons-svelte-runes/icons/plug-connected';
 import IconPlugConnectedX from '@tabler/icons-svelte-runes/icons/plug-connected-x';
+import IconPlugOff from '@tabler/icons-svelte-runes/icons/plug-off';
 import IconPlus from '@tabler/icons-svelte-runes/icons/plus';
 import IconQrcode from '@tabler/icons-svelte-runes/icons/qrcode';
 import IconQuestionMark from '@tabler/icons-svelte-runes/icons/question-mark';
@@ -458,6 +459,7 @@ export const icons = registry({
   'ti-plug': IconPlug,
   'ti-plug-connected': IconPlugConnected,
   'ti-plug-connected-x': IconPlugConnectedX,
+  'ti-plug-off': IconPlugOff,
   'ti-plus': IconPlus,
   'ti-qrcode': IconQrcode,
   'ti-question-mark': IconQuestionMark,

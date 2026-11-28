@@ -5,6 +5,8 @@
   "audit.apps.access_revoke": " hat {name} den Zugriff auf {slug} entzogen",
   "audit.apps.access_role": " hat die Rolle von {name} in {slug} auf {app_role} geändert",
   "audit.apps.create": " hat die App {slug} hinzugefügt",
+  "audit.apps.disable": " hat die App {slug} ausgeschaltet",
+  "audit.apps.enable": " hat die App {slug} eingeschaltet",
   "audit.apps.invite_access": " hat in der Einladung an {email} Zugriff auf {slug} mit der Rolle {app_role} festgelegt",
   "audit.apps.invite_access.none": " hat in der Einladung an {email} keinen Zugriff auf {slug} festgelegt",
   "audit.apps.order": " hat die Reihenfolge der Apps geändert",

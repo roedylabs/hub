@@ -1,7 +1,7 @@
 import { fireEvent, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ui } from '@roedy/ui';
-import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { page } from '#lib/test/page.svelte.ts';
 import { renderSignedIn, resetSignedIn, type ApiRoutes } from '#lib/test/signed-in.ts';
 import Page from './+page.svelte';
@@ -59,6 +59,33 @@ describe('Administration › Apps › an app', () => {
     expect(view.getByText('Without access (1)')).toBeInTheDocument();
     await fireEvent.click(view.getByRole('button', { name: 'Manage access' }));
     expect(nav.goto).toHaveBeenCalledWith('/admin/users');
+  });
+
+  it('switches the app off after confirmation and shows it as off', async () => {
+    const view = open('mail', {
+      'GET admin/apps/mail': [{ body: { app: pairedApp() } }],
+      'GET admin/apps/mail/users': [{ body: USERS }],
+      'PATCH admin/apps/mail': [{ body: { app: disabledApp() } }, { body: { app: pairedApp() } }],
+    });
+    const toggle = await view.findByRole('switch', { name: 'Switched on' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toHaveAccessibleDescription(
+      'People with access see the app on the home page and in the app switcher.',
+    );
+    await fireEvent.click(toggle);
+    expect(ui.confirm?.text).toMatch(/answers “Switched off” for everyone/);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    expect(toggle).toHaveAccessibleDescription(/events wait until it’s on again/);
+    expect(view.getByText('Switched off', { selector: '.st' })).toBeInTheDocument();
+    // Its waiting events are no problem to report.
+    expect(view.queryByRole('note')).toBeNull();
+    await fireEvent.click(toggle);
+    await vi.waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    expect(view.calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([
+      { enabled: false },
+      { enabled: true },
+    ]);
   });
 
   it('changes the access default with the keyboard-accessible radio group', async () => {

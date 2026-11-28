@@ -1,14 +1,14 @@
 /**
  * axe-core over the page of an app in every state (paired with roles and
- * who has access, pending with a new pairing code, offline with failing
- * events, not found, failure card), desktop and mobile, light and dark. The
+ * who has access, switched off, pending with a new pairing code, offline
+ * with failing events, not found, failure card), desktop and mobile, light and dark. The
  * colour contrast is left to the browser audit
  * (`scripts/a11y/scenarios/apps.mjs`).
  */
 import { fireEvent, type RenderResult } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, PAIRING, pendingApp } from '#lib/test/apps.ts';
 import { violations } from '@roedy/ui/testing';
 import { page } from '#lib/test/page.svelte.ts';
 import { renderSignedIn, resetSignedIn, setPhone, type ApiRoutes } from '#lib/test/signed-in.ts';
@@ -44,6 +44,10 @@ const paired = (): ApiRoutes => ({
   'GET admin/apps/mail': [{ body: { app: pairedApp() } }],
   'GET admin/apps/mail/users': [{ body: USERS }],
 });
+const off = (): ApiRoutes => ({
+  'GET admin/apps/mail': [{ body: { app: disabledApp() } }],
+  'GET admin/apps/mail/users': [{ body: USERS }],
+});
 const pending = (): ApiRoutes => ({
   'GET admin/apps/wiki': [{ body: { app: pendingApp('2099-01-01T00:00:00Z') } }],
   'POST admin/apps/wiki/pairing-code': [{ body: { app: pendingApp('2099-01-01T00:00:00Z'), pairing: PAIRING } }],
@@ -57,6 +61,8 @@ const withCode = async (v: View) => {
 const CASES: [string, () => Promise<View>][] = [
   ['paired (desktop)', () => app('mail', paired(), withAccess)],
   ['paired (mobile)', () => app('mail', paired(), withAccess, true)],
+  ['switched off (desktop)', () => app('mail', off(), withAccess)],
+  ['switched off (mobile)', () => app('mail', off(), withAccess, true)],
   ['pending with pairing code (desktop)', () => app('wiki', pending(), withCode)],
   ['pending with pairing code (mobile)', () => app('wiki', pending(), withCode, true)],
   [

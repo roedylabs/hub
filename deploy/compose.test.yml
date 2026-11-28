@@ -2,7 +2,8 @@
 # built-in TLS from files (ROEDY_TLS=files, a self-signed certificate for
 # localhost) on 127.0.0.1:8443 (HTTPS) and 127.0.0.1:8080 (HTTP: redirect and
 # ACME HTTP-01 only) instead of 443/80, and the example app (crates/example-app)
-# at <ROEDY_PUBLIC_URL>/example. For the smoke test in CI
+# at <ROEDY_PUBLIC_URL>/example with the profile `example`, like every app
+# (deploy/compose.yml). For the smoke test in CI
 # (scripts/compose-smoke.sh) and the end-to-end suite (scripts/e2e.sh,
 # apps/e2e); never for production.
 #
@@ -10,10 +11,11 @@
 #   just image && just image-example
 #   scripts/test-cert.sh "$PWD/deploy/.test-tls" localhost
 #   export ROEDY_TEST_TLS_DIR="$PWD/deploy/.test-tls" ROEDY_PUBLIC_URL=https://localhost:8443
+#   export COMPOSE_PROFILES=example
 #   docker compose -f deploy/compose.yml -f deploy/compose.test.yml up -d --wait
 #   curl --cacert deploy/.test-tls/cert.pem https://localhost:8443/readyz
 #
-# Every later Compose command needs both variables as well (exported above).
+# Every later Compose command needs these variables as well (exported above).
 # Pairing the example app: Administration › Apps › Add, slug `example`,
 # internal address http://roedy-hub-example:8080, then
 #   ROEDY_EXAMPLE_PAIRING_CODE=rhp_… docker compose -f … -f … up -d roedy-hub-example
@@ -40,6 +42,8 @@ services:
       - ${ROEDY_TEST_TLS_DIR:?set ROEDY_TEST_TLS_DIR to the directory of scripts/test-cert.sh}:/run/roedy-tls:ro
 
   roedy-hub-example:
+    profiles:
+      - example
     image: ${ROEDY_EXAMPLE_IMAGE:-roedy-hub-example:dev}
     container_name: roedy-hub-example
     environment:

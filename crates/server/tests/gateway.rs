@@ -1,7 +1,7 @@
 //! The gateway against the example app over real connections: path and
 //! query, header rules both ways, the identity at the app (including key
-//! rotation), SSE, WebSocket, large bodies, timeouts, the permission cases
-//! and the end of a session's streams.
+//! rotation), SSE, WebSocket, large bodies, timeouts, the permission cases,
+//! the end of a session's streams and switching the app off and on.
 
 mod common;
 
@@ -1321,4 +1321,191 @@ async fn access_changes_reach_the_gateway_at_once() {
         .as_user(&hub.eva, Method::GET, "/session", None)
         .await;
     assert_eq!(reply.status, StatusCode::OK);
+}
+
+/// `PATCH /admin/apps/example` with `enabled` as Anna; the app as returned.
+async fn switch(hub: &Hub, enabled: bool) -> Value {
+    let reply = hub
+        .env
+        .as_user(
+            &hub.anna,
+            Method::PATCH,
+            "/admin/apps/example",
+            Some(json!({ "enabled": enabled })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    reply.json()["app"].clone()
+}
+
+/// The slugs of `GET /api/v1/apps` for `session`.
+async fn listed(hub: &Hub, session: &str) -> Vec<String> {
+    let reply = hub.env.as_user(session, Method::GET, "/apps", None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    reply.json()["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|app| app["slug"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn switching_the_app_off_and_on() {
+    let web = tempfile::tempdir().unwrap();
+    std::fs::write(
+        web.path().join("index.html"),
+        "<!doctype html><html><head><title>Roedy Hub</title></head><body></body></html>",
+    )
+    .unwrap();
+    let hub = hub_with(Limits::default(), Some(web.path())).await;
+    let within = Duration::from_secs(5);
+    assert_eq!(listed(&hub, &hub.max).await, ["example"]);
+
+    // Off: every open stream and WebSocket to the app closes at once – with
+    // a session or without.
+    let mut stream = open_stream(&hub, &hub.max).await;
+    let mut socket = hub.websocket(&hub.max, ORIGIN).await.unwrap();
+    let response = hub.get("/example/sse?count=0&interval_ms=100", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut anonymous = response.into_body();
+    next_frame(&mut anonymous, Duration::from_secs(2))
+        .await
+        .unwrap()
+        .unwrap();
+    let app = switch(&hub, false).await;
+    assert_eq!(app["enabled"], json!(false));
+    assert!(app["disabled_at"].is_string(), "{app}");
+    let (stream_closed, socket_closed, anonymous_closed) = tokio::join!(
+        stream_ends(&mut stream, within),
+        socket_ends(&mut socket, within),
+        stream_ends(&mut anonymous, within)
+    );
+    assert!(stream_closed, "stream still open");
+    assert!(socket_closed, "WebSocket still open");
+    assert!(anonymous_closed, "stream without a session still open");
+
+    // 503 for everyone and every path, administrators included; the
+    // request never reaches the app.
+    for session in [
+        None,
+        Some(hub.max.as_str()),
+        Some(hub.anna.as_str()),
+        Some(hub.eva.as_str()),
+    ] {
+        for path in ["/example/whoami", "/example/", "/example"] {
+            let (status, headers, body) = hub.json(path, session).await;
+            assert_eq!(
+                (status, &body),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &json!({ "error": "app_disabled" })
+                ),
+                "{path}"
+            );
+            assert_eq!(all(&headers, "cache-control"), ["no-store"]);
+        }
+    }
+    let refused = hub.websocket(&hub.max, ORIGIN).await.unwrap_err();
+    let tungstenite::Error::Http(response) = refused else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let response = hub
+        .get("/example/sse?count=0&interval_ms=100", Some(&hub.max))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // A page load gets the hub's error page.
+    let response = hub
+        .send(
+            Method::GET,
+            "/example/",
+            Some(&hub.max),
+            &[("sec-fetch-mode", "navigate")],
+            empty(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("content=\"app_disabled\""));
+    // Not listed, not even for administrators; the administration shows it.
+    assert!(listed(&hub, &hub.max).await.is_empty());
+    assert!(listed(&hub, &hub.anna).await.is_empty());
+    let reply = hub
+        .env
+        .as_user(&hub.anna, Method::GET, "/admin/apps", None)
+        .await;
+    assert_eq!(reply.json()["apps"][0]["enabled"], json!(false));
+    // Its internal API keeps working: it can start and send its manifest.
+    hub.example.send_manifest().await.unwrap();
+    // Switching it off again changes nothing.
+    let again = switch(&hub, false).await;
+    assert_eq!(again["disabled_at"], app["disabled_at"]);
+
+    // On again: forwarded as before, listed again.
+    let app = switch(&hub, true).await;
+    assert_eq!(
+        (&app["enabled"], &app["disabled_at"]),
+        (&json!(true), &Value::Null)
+    );
+    let (status, _, me) = hub.json("/example/whoami", Some(&hub.max)).await;
+    assert_eq!((status, &me["app_role"]), (StatusCode::OK, &json!("user")));
+    assert_eq!(listed(&hub, &hub.max).await, ["example"]);
+    let mut stream = open_stream(&hub, &hub.max).await;
+    assert!(
+        next_frame(&mut stream, Duration::from_secs(2))
+            .await
+            .unwrap()
+            .is_ok()
+    );
+
+    // Both switches are in the audit log, the repeated one not.
+    let actions: Vec<String> = hub
+        .env
+        .sql(|c| {
+            c.prepare("SELECT action FROM audit_log WHERE action LIKE 'apps.%able' ORDER BY id")?
+                .query_map([], |r| r.get(0))?
+                .collect()
+        })
+        .await;
+    assert_eq!(actions, ["apps.disable", "apps.enable"]);
+}
+
+#[tokio::test]
+async fn switching_off_needs_an_administrator_and_a_body() {
+    let hub = hub().await;
+    let reply = hub
+        .env
+        .as_user(
+            &hub.max,
+            Method::PATCH,
+            "/admin/apps/example",
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    for body in [json!({}), json!({ "enabled": "no" })] {
+        let reply = hub
+            .env
+            .as_user(
+                &hub.anna,
+                Method::PATCH,
+                "/admin/apps/example",
+                Some(body.clone()),
+            )
+            .await;
+        assert!(reply.status.is_client_error(), "{body}: {}", reply.status);
+    }
+    let reply = hub
+        .env
+        .as_user(
+            &hub.anna,
+            Method::PATCH,
+            "/admin/apps/nothing",
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    let (status, _, _) = hub.json("/example/whoami", Some(&hub.max)).await;
+    assert_eq!(status, StatusCode::OK);
 }

@@ -6,7 +6,9 @@
 //!
 //! 1. finds the app in the in-memory `apps::AppTable` (a first segment that
 //!    cannot be a slug, or a reserved name, stays with the hub's web app);
-//!    unknown slugs and `/<slug>/_roedy/…` get `404 not_found`;
+//!    unknown slugs and `/<slug>/_roedy/…` get `404 not_found`, an app an
+//!    administrator switched off `503 app_disabled` – for everyone, before
+//!    the session is read;
 //! 2. reads the hub session from its cookie through the [`SessionCache`]
 //!    (10 s; ending a session clears it at once) and decides: a paired app
 //!    gets the request without identity when signed out, with
@@ -27,8 +29,11 @@
 //! The app's responses are marked [`Proxied`]: the hub's own security
 //! headers stay off them.
 //!
-//! Every response body and WebSocket of a session is registered in
-//! [`Streams`]; ending the session closes them.
+//! Every response body and WebSocket is registered in [`Streams`]; ending
+//! its session closes it, and switching the app off closes all of the
+//! app's ([`Streams::end_app`]). A stream registered while the app is
+//! being switched off is closed by the check right after it is registered
+//! (the app table is reloaded before the streams end).
 
 pub mod client;
 pub mod headers;
@@ -167,6 +172,7 @@ pub enum GatewayError {
     OriginMismatch,
     Unreachable,
     NotReady,
+    Disabled,
     Timeout,
     HeadersTooLarge,
     Internal,
@@ -178,7 +184,7 @@ impl GatewayError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::NoAccess | Self::OriginMismatch => StatusCode::FORBIDDEN,
             Self::Unreachable => StatusCode::BAD_GATEWAY,
-            Self::NotReady => StatusCode::SERVICE_UNAVAILABLE,
+            Self::NotReady | Self::Disabled => StatusCode::SERVICE_UNAVAILABLE,
             Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
             Self::HeadersTooLarge => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -192,6 +198,7 @@ impl GatewayError {
             Self::OriginMismatch => "origin_mismatch",
             Self::Unreachable => "app_unreachable",
             Self::NotReady => "app_not_ready",
+            Self::Disabled => "app_disabled",
             Self::Timeout => "app_timeout",
             Self::HeadersTooLarge => "headers_too_large",
             Self::Internal => "internal",
@@ -406,6 +413,9 @@ pub async fn serve(State(state): State<AppState>, request: Request) -> Response 
         Some(app) if !is_reserved_app_path(request.uri().path()) => app,
         _ => return error_response(&state, page_load, GatewayError::NotFound).await,
     };
+    if !app.enabled {
+        return error_response(&state, page_load, GatewayError::Disabled).await;
+    }
     // Before the session is read: a revocation from here on until the
     // stream is registered makes `forward` check the session again.
     let generation = state.gateway.sessions.generation();
@@ -539,11 +549,19 @@ async fn forward(
         );
         return Err(GatewayError::Unreachable);
     }
-    let watch = gateway.streams.watch(signed.map(|signed| Owner {
-        sid: &signed.user.session_id,
-        user_id: &signed.user.id,
-        app_id: &app.id,
-    }));
+    let watch = gateway.streams.watch(signed.map_or_else(
+        || Owner::anonymous(&app.id),
+        |signed| Owner {
+            sid: &signed.user.session_id,
+            user_id: &signed.user.id,
+            app_id: &app.id,
+        },
+    ));
+    // Switched off while the app answered: the streams were ended before
+    // this one was registered, and the table already says so.
+    if state.apps.get(slug).is_none_or(|now| !now.enabled) {
+        gateway.streams.end_app(&app.id);
+    }
     // A session that ended, or an access that went, since it was read
     // (while the app answered) had no stream to close yet.
     if let Some(signed) = signed
@@ -818,6 +836,7 @@ mod tests {
             manifest: None,
             access_default: crate::db::repo::apps::AccessDefault::All,
             health: None,
+            enabled: true,
             icon_version: None,
         }
     }
@@ -889,6 +908,7 @@ mod tests {
             (GatewayError::OriginMismatch, 403, "origin_mismatch"),
             (GatewayError::Unreachable, 502, "app_unreachable"),
             (GatewayError::NotReady, 503, "app_not_ready"),
+            (GatewayError::Disabled, 503, "app_disabled"),
             (GatewayError::Timeout, 504, "app_timeout"),
             (GatewayError::HeadersTooLarge, 431, "headers_too_large"),
             (GatewayError::Internal, 500, "internal"),

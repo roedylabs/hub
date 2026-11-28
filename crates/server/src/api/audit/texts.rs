@@ -281,6 +281,8 @@ fn known(row: &Row, lang: Language) -> Option<Line> {
         )
         .warn(),
         "apps.remove" => with("ti-trash", "slug", &p.text("slug")?),
+        "apps.disable" => with("ti-plug-off", "slug", &p.text("slug")?),
+        "apps.enable" => with("ti-plug", "slug", &p.text("slug")?),
         "apps.order" => plain("ti-layout-list"),
         "apps.access_default" => Line::new(
             "ti-users",
@@ -424,7 +426,7 @@ mod tests {
 
     /// All action keys the hub writes, with their category. A new key
     /// belongs here and in both locale files.
-    const ACTIONS: [(&str, Category); 59] = {
+    const ACTIONS: [(&str, Category); 61] = {
         use Category::{Apps, Login, Settings, System, Users};
         [
             ("auth.login", Login),
@@ -463,6 +465,8 @@ mod tests {
             ("apps.update", Apps),
             ("apps.roles_fallback", Apps),
             ("apps.remove", Apps),
+            ("apps.disable", Apps),
+            ("apps.enable", Apps),
             ("apps.order", Apps),
             ("apps.access_default", Apps),
             ("apps.access_grant", Apps),
@@ -655,6 +659,12 @@ mod tests {
                 Apps,
                 json!({ "slug": "mail", "roles": ["owner", "viewer"] }),
                 ": Roles removed from mail, their users now have the default role: owner, viewer",
+            ),
+            (
+                "apps.disable",
+                Apps,
+                json!({ "slug": "mail" }),
+                " switched off the app mail",
             ),
             (
                 "apps.order",

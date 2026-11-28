@@ -10,7 +10,7 @@ import {
   textIn,
 } from '#lib/apps.ts';
 import { prefs } from '#lib/state/prefs.svelte.ts';
-import { offlineApp, pairedApp, pendingApp } from '#lib/test/apps.ts';
+import { disabledApp, offlineApp, pairedApp, pendingApp } from '#lib/test/apps.ts';
 
 const NOW = Date.parse('2026-10-26T12:00:00Z');
 
@@ -74,6 +74,20 @@ describe('apps', () => {
     });
     expect(appStatus(pendingApp('2026-10-26T11:00:00Z'), NOW).detail).toBe('Pairing code expired');
     expect(appStatus(pendingApp('', { pairing: null }), NOW).detail).toBe('Pairing code expired');
+  });
+
+  it('puts "Switched off" before every other status', () => {
+    expect(appStatus(disabledApp(), NOW)).toMatchObject({
+      kind: 'disabled',
+      label: 'Switched off',
+      detail: 'Switched off 1 hour ago',
+      icon: 'ti-plug-off',
+    });
+    expect(appStatus(disabledApp({ health: 'offline' }), NOW).kind).toBe('disabled');
+    expect(appStatus(pendingApp('2026-10-26T12:09:30Z', { enabled: false }), NOW).kind).toBe('disabled');
+    expect(appStatus(disabledApp({ disabled_at: null }), NOW).detail).toBe('');
+    // Its events wait on purpose: no problem to report.
+    expect(eventsProblem(disabledApp(), NOW)).toBe('');
   });
 
   it('reports failing event deliveries', () => {
