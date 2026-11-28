@@ -521,6 +521,24 @@ fn check_metadata(
     } else if !supports(auth_methods, &default_methods, "none") {
         return Err("no_public_client");
     }
+    // Removing an account revokes its grant there with the same client: with
+    // the secret by Basic or in the body, without one by the ID alone. A
+    // missing list applies with RFC 8414's default (`client_secret_basic`),
+    // as `oauth::revoke` does; without a secret only a list counts.
+    let revocation = &metadata.revocation_endpoint_auth_methods_supported;
+    if has_secret {
+        if !["client_secret_basic", "client_secret_post"]
+            .into_iter()
+            .any(|method| supports(revocation, &default_methods, method))
+        {
+            return Err("revocation_auth");
+        }
+    } else if revocation
+        .as_ref()
+        .is_some_and(|methods| !methods.iter().any(|m| m == "none"))
+    {
+        return Err("revocation_auth");
+    }
     Ok(())
 }
 
@@ -647,6 +665,25 @@ mod tests {
         assert_eq!(
             confidential(list(&["none", "private_key_jwt"])),
             Err("no_confidential_client")
+        );
+
+        // The revocation endpoint must take the same client.
+        let revoking = |methods: Option<Vec<String>>, secret: bool| {
+            let mut metadata = full.clone();
+            metadata.revocation_endpoint_auth_methods_supported = methods;
+            check_metadata(&base, &metadata, secret)
+        };
+        assert_eq!(revoking(None, true), Ok(()));
+        assert_eq!(revoking(list(&["client_secret_post"]), true), Ok(()));
+        assert_eq!(
+            revoking(list(&["none", "private_key_jwt"]), true),
+            Err("revocation_auth")
+        );
+        assert_eq!(revoking(None, false), Ok(()));
+        assert_eq!(revoking(list(&["none"]), false), Ok(()));
+        assert_eq!(
+            revoking(list(&["client_secret_basic"]), false),
+            Err("revocation_auth")
         );
 
         // Stalwart v1 recognises the diagnosis by revocation and protected

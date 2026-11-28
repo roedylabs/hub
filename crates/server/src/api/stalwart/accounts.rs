@@ -897,7 +897,11 @@ async fn add(
     let saved = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(errors) = recheck(&tx, &target)? {
-            return Ok(Err(NotSaved::from(errors.into_error())));
+            // Nothing is stored: a grant from the exchange is of no use.
+            return Ok(Err(NotSaved {
+                error: errors.into_error(),
+                discard: true,
+            }));
         }
         if let Some(existing) = accounts::find(&tx, &user_id, &origin, &account.account_id)? {
             return Ok(Err(NotSaved {
@@ -982,7 +986,11 @@ async fn signed_in_again(
     let saved = db::call(&state.db, move |conn| {
         let tx = conn.transaction()?;
         if let Err(errors) = recheck(&tx, &target)? {
-            return Ok(Err(NotSaved::from(errors.into_error())));
+            // Nothing is stored: a grant from the exchange is of no use.
+            return Ok(Err(NotSaved {
+                error: errors.into_error(),
+                discard: true,
+            }));
         }
         let previous = accounts::credentials(&tx, &row, Some(&user_id))?
             .map(|creds| grant(&tx, creds))
