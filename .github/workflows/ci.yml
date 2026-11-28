@@ -1,8 +1,8 @@
 name: CI
 
 # Lint, type check, tests and dependency policy of the web app and the server,
-# the container image with its budgets and the Compose setup, and the
-# end-to-end suite against that image.
+# a dry run of the shared packages and crates, the container image with its
+# budgets and the Compose setup, and the end-to-end suite against that image.
 # "CI passed" is the single required check for these jobs (ruleset of main).
 #
 # Triggers: pull requests, merge queue, main, weekly (new Rust/Node versions,
@@ -146,6 +146,34 @@ jobs:
       - name: License list
         run: pnpm licenses:server
 
+  # The shared packages as the release publishes them (scripts/packages.sh):
+  # the npm tarballs installed into a SvelteKit app outside the workspace
+  # (type check with the published declarations, build, a rendered component,
+  # Node), `npm publish --dry-run`, and `cargo package` of the crates, which
+  # builds them from the packed sources. Publishes nothing.
+  packages:
+    name: Packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: ./.github/actions/setup-node
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Pack the npm packages
+        run: scripts/packages.sh pack "$RUNNER_TEMP/packages"
+      - name: Use them in an app outside the workspace
+        run: scripts/packages.sh verify "$RUNNER_TEMP/packages"
+      - name: npm publish --dry-run
+        run: scripts/packages.sh publish-npm "$RUNNER_TEMP/packages" --dry-run
+      - name: cargo package
+        run: scripts/packages.sh crates
+
   # Container image and its budgets (docs/plan.md): the amd64 image from
   # `just dist`, ≤ 25 MB, and the smoke test with idle memory ≤ 40 MB with TLS
   # off and on (scripts/image-smoke.sh), then deploy/compose.yml with the
@@ -261,7 +289,7 @@ jobs:
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, web, server, dependencies, image, e2e]
+    needs: [lint, web, server, dependencies, packages, image, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

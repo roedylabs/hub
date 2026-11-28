@@ -1013,7 +1013,7 @@ contract. Every image is built and released in its own repository.
 Ordered by what the new Mail needs first: it can start once 7 and 8.1 are
 merged. Each item is one PR; "API" and "pages" are separate PRs where named.
 
-7. [ ] **Shared interface and packages**
+7. [x] **Shared interface and packages**
    1. [x] **App switcher** – the first web component of the hub's frame.
       Done: `<roedy-app-switcher>` in `GET /api/v1/frame.js` (contract
       § 5.5), source in `apps/web/src/frame`, used by the example app.
@@ -1032,9 +1032,22 @@ merged. Each item is one PR; "API" and "pages" are separate PRs where named.
       `@roedy/tokens` is the source. Left for later: Mail's time field
       around the picker, the palette as an ARIA combobox, building
       `licenses.json` in the hub.
-   3. [ ] **Publishing** – packing (`@sveltejs/package`), versions with the
+   3. [x] **Publishing** – packing (`@sveltejs/package`), versions with the
       hub's release, npm with provenance and crates.io in the release
       workflow, a dry run in CI.
+      Done: `pnpm pack` builds the packages (`svelte-package` for
+      `@roedy/ui`, `tsc` for `@roedy/jmap` and `@roedy/tokens`) and switches
+      their exports from the sources to `dist/`; the root `package.json`
+      holds the one version, `just release` writes it to the packages and
+      the crates (`scripts/versions.test.mjs`). `scripts/packages.sh` packs,
+      checks the tarballs in a SvelteKit app outside the workspace
+      (`scripts/packages/consumer`), and publishes; the crates have their
+      crates.io metadata. CI job "Packages" on every pull request (part of
+      "CI passed"), job "Packages" in `release.yml` after the image on
+      release tags (`NPM_TOKEN` or npm trusted publishing,
+      `CARGO_REGISTRY_TOKEN`). The npm scope `@roedy`, the tokens and the
+      crates.io ownership are the maintainer's to set up before the first
+      release (CONTRIBUTING.md › Packages and crates).
 8. [ ] **Stalwart servers, accounts and tokens**
    1. [ ] **API** – registry and policy, diagnosis and its daily job, DCR,
       accounts with OAuth and PKCE, the token broker with early refresh and

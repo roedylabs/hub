@@ -1,18 +1,49 @@
 {
   "name": "@roedy/tokens",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Design tokens as CSS and TypeScript constants",
+  "keywords": [
+    "roedy",
+    "design-tokens",
+    "css-custom-properties"
+  ],
+  "homepage": "https://github.com/roedylabs/hub/tree/main/packages/tokens#readme",
+  "bugs": "https://github.com/roedylabs/hub/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roedylabs/hub.git",
+    "directory": "packages/tokens"
+  },
   "license": "AGPL-3.0-only",
   "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./tokens.css": "./tokens.css"
   },
+  "files": [
+    "dist",
+    "tokens.css"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./tokens.css": "./tokens.css"
+    }
+  },
   "scripts": {
     "build": "node scripts/build-css.ts",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "pnpm run package && cp ../../LICENSE LICENSE",
+    "postpack": "rm -f LICENSE"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

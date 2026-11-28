@@ -1,0 +1,7 @@
+// svelte-package (pnpm run package): the relative .ts imports become .js in the published files.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rewriteRelativeImportExtensions": true
+  }
+}

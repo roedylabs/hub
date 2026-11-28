@@ -35,3 +35,5 @@ test-results/
 .roedy-restore.lock/
 # Test certificate of scripts/test-cert.sh for deploy/compose.test.yml
 /deploy/.test-tls/
+# Copied into the packages while packing (prepack/postpack)
+/packages/*/LICENSE

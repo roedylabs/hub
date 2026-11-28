@@ -2,11 +2,14 @@
 # Releases in two steps; run via `just` (taken over from Roedy Mail, ../mail):
 #
 #   just release 0.2.0       Branch chore/release-0.2.0 from origin/main, version in
-#                            package.json, Cargo.toml and Cargo.lock, CHANGELOG.md
-#                            (git-cliff), commit, push and PR. A maintainer merges.
+#                            package.json (the source), packages/*/package.json,
+#                            Cargo.toml and Cargo.lock, CHANGELOG.md (git-cliff),
+#                            commit, push and PR. A maintainer merges.
 #   just release-tag 0.2.0   After the merge: checks version and CHANGELOG on
 #                            origin/main, sets the annotated tag v0.2.0 on
-#                            origin/main and pushes it. That starts release.yml.
+#                            origin/main and pushes it. That starts release.yml,
+#                            which publishes the image, then the npm packages
+#                            and crates (scripts/packages.sh).
 #
 # This way the release commit also goes through PR and CI; the pre-push hook
 # keeps no exception. Versions stay 0.x for now; pre-releases such as
@@ -72,7 +75,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 # The rollback of `prepare` removes the release files it may have created
 # (`git reset --hard`); an untracked one from before would be lost with them.
-untracked=$(git ls-files --others --exclude-standard -- package.json Cargo.toml Cargo.lock CHANGELOG.md)
+untracked=$(git ls-files --others --exclude-standard -- package.json 'packages/*/package.json' Cargo.toml Cargo.lock CHANGELOG.md)
 [[ -z $untracked ]] || die "untracked release files would be overwritten: $untracked – move them away first"
 git fetch --quiet origin main --tags
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists"
@@ -92,7 +95,7 @@ prepare)
     local status=$?
     [[ $status -eq 0 ]] && return
     echo "Aborted – discarding $branch and switching back to $original" >&2
-    git add -- package.json Cargo.toml Cargo.lock CHANGELOG.md 2>/dev/null || true
+    git add -- package.json packages/*/package.json Cargo.toml Cargo.lock CHANGELOG.md 2>/dev/null || true
     git reset --quiet --hard
     git switch --quiet "$original"
     git branch --quiet -D "$branch"
@@ -100,11 +103,17 @@ prepare)
   }
   trap rollback EXIT
 
+  # The root package.json is the source; the published npm packages carry
+  # the same version (scripts/versions.test.mjs checks it).
   node -e '
     const fs = require("fs");
-    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-    pkg.version = process.argv[1];
-    fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+    const version = process.argv[1];
+    const files = ["package.json", ...fs.readdirSync("packages").map((p) => "packages/" + p + "/package.json")];
+    for (const file of files.filter((f) => fs.existsSync(f))) {
+      const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+      pkg.version = version;
+      fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+    }
   ' "$version"
   sed -i '/^\[workspace\.package\]/,/^\[/ s/^version = ".*"$/version = "'"$version"'"/' Cargo.toml
   [[ $(cargo_version <Cargo.toml) == "$version" ]] || die "version in Cargo.toml not set"
@@ -125,12 +134,13 @@ prepare)
     fs.writeFileSync("CHANGELOG.md", fs.readFileSync("CHANGELOG.md", "utf8").trimEnd() + "\n");
   '
 
-  git add package.json Cargo.toml Cargo.lock CHANGELOG.md
+  git add package.json packages/*/package.json Cargo.toml Cargo.lock CHANGELOG.md
   message="chore(release): $tag
 
-Version $version in package.json, Cargo.toml and Cargo.lock, CHANGELOG.md
-with git-cliff. After the merge \`just release-tag $version\` sets the tag
-on main; release.yml then builds and publishes the image."
+Version $version in package.json, the packages, Cargo.toml and Cargo.lock,
+CHANGELOG.md with git-cliff. After the merge \`just release-tag $version\`
+sets the tag on main; release.yml then builds and publishes the image, the
+npm packages and the crates."
   if [[ -n ${ROEDY_COMMIT_TRAILERS:-} ]]; then
     message+=$'\n\n'"$ROEDY_COMMIT_TRAILERS"
   fi
@@ -138,9 +148,9 @@ on main; release.yml then builds and publishes the image."
   trap - EXIT
   git push --quiet origin "$branch"
 
-  body="Release **$tag**: version in \`package.json\`, \`Cargo.toml\` and \`Cargo.lock\`, \`CHANGELOG.md\` from the commits since the last tag (git-cliff).
+  body="Release **$tag**: version in \`package.json\`, \`packages/*/package.json\`, \`Cargo.toml\` and \`Cargo.lock\`, \`CHANGELOG.md\` from the commits since the last tag (git-cliff).
 
-After the merge: \`just release-tag $version\` sets the tag on the release commit on \`main\`; \`release.yml\` builds, checks and publishes \`ghcr.io/roedylabs/hub:$version\`.
+After the merge: \`just release-tag $version\` sets the tag on the release commit on \`main\`; \`release.yml\` builds, checks and publishes \`ghcr.io/roedylabs/hub:$version\`, then \`@roedy/tokens\`, \`@roedy/jmap\` and \`@roedy/ui\` on npm and \`roedy-hub-contract\` and \`roedy-jmap\` on crates.io.
 
 ## Changes
 
@@ -157,6 +167,10 @@ tag)
   release_cargo=$(git show "$release:Cargo.toml" | cargo_version)
   [[ $release_package == "$version" && $release_cargo == "$version" ]] ||
     die "release commit ${release:0:7} has version $release_package (package.json) or $release_cargo (Cargo.toml), not $version"
+  for file in $(git ls-tree --name-only "$release" packages/ | sed 's|$|/package.json|'); do
+    published=$(git show "$release:$file" | package_version)
+    [[ $published == "$version" ]] || die "release commit ${release:0:7} has version $published in $file, not $version"
+  done
   # Without -q grep reads everything; otherwise `git show` aborts with SIGPIPE (pipefail).
   git show "$release:CHANGELOG.md" | grep "^## \[$version_re\]" >/dev/null ||
     die "CHANGELOG.md in release commit ${release:0:7} has no section $version"

@@ -1,16 +1,45 @@
 {
   "name": "@roedy/jmap",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "JMAP for the browser: client, session, tokens, batching, sync, EventSource stream, push and contact cards",
+  "keywords": [
+    "roedy",
+    "jmap",
+    "rfc8620",
+    "jscontact",
+    "eventsource"
+  ],
+  "homepage": "https://github.com/roedylabs/hub/tree/main/packages/jmap#readme",
+  "bugs": "https://github.com/roedylabs/hub/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roedylabs/hub.git",
+    "directory": "packages/jmap"
+  },
   "license": "AGPL-3.0-only",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "pnpm run package && cp ../../LICENSE LICENSE",
+    "postpack": "rm -f LICENSE"
   },
   "devDependencies": {
     "fast-check": "4.10.2",
