@@ -362,7 +362,10 @@ export class AppsPage {
         this.rows = this.rows.map((a) =>
           a.slug === slug ? { ...a, enabled: next.enabled, disabled_at: next.disabled_at, events: next.events } : a,
         );
-        if (discarded) void this.load();
+        if (!discarded) return;
+        // Behind queued order writes, as after a failed move: an earlier read would show the old order.
+        if (this.#ordering > 0) this.#reconcile = true;
+        else void this.load();
       },
       failed: (error) => {
         settle();

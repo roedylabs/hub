@@ -278,6 +278,12 @@ impl Streams {
         }
     }
 
+    /// Whether the server shuts down ([`Self::end_all`]): a stream that
+    /// ended for this reason did not end because of its session or app.
+    pub fn shutting_down(&self) -> bool {
+        *self.shutdown.borrow()
+    }
+
     /// The sessions with open streams, sorted.
     pub fn sessions(&self) -> Vec<String> {
         let mut sessions: Vec<String> = self
@@ -439,8 +445,10 @@ mod tests {
         assert!(streams.sessions().is_empty());
 
         assert!(!ended(&mut anonymous));
+        assert!(!streams.shutting_down());
         streams.end_all();
         assert!(ended(&mut anonymous));
+        assert!(streams.shutting_down());
     }
 
     #[test]

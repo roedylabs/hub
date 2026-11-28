@@ -557,12 +557,17 @@ async fn forward(
     let answer = loop {
         tokio::select! {
             biased;
-            () = app_watch.ended() => match gone() {
-                Some(error) => return stopped(error),
+            // Only switching the app off, removing it or the shutdown end
+            // it; a switch-off stops the request even if the app is on
+            // again by now.
+            () = app_watch.ended() => {
+                if !gateway.streams.shutting_down() {
+                    return stopped(gone().unwrap_or(GatewayError::Disabled));
+                }
                 // The server shuts down: the response still goes out, and
                 // its body ends at once.
-                None => break (&mut respond).await,
-            },
+                break (&mut respond).await;
+            }
             () = watch.ended(), if !session_ended => match gone() {
                 Some(error) => return stopped(error),
                 // The session ended: the response still goes out, and its
@@ -610,6 +615,10 @@ async fn forward(
         && gateway.sessions.generation() != generation
     {
         still_valid(state, app, signed).await;
+        // Switched off while that check waited.
+        if let Some(error) = gone() {
+            return stopped(error);
+        }
     }
     let app_upgrade = switching.then(|| hyper::upgrade::on(&mut from_app));
     let (mut parts, incoming) = from_app.into_parts();

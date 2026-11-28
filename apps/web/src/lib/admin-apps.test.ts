@@ -233,6 +233,33 @@ describe('Administration › Apps list', () => {
     expect(p.rows[0]?.events.failing_since).toBeNull();
   });
 
+  it('replaces a load a switch discarded only once the queued order writes settled', async () => {
+    let answerLoad: (reply: { body: unknown }) => void = () => {};
+    const late = new Promise<{ body: unknown }>((resolve) => (answerLoad = resolve));
+    let answerOrder: (reply: { body: unknown }) => void = () => {};
+    const order = new Promise<{ body: unknown }>((resolve) => (answerOrder = resolve));
+    const moved = [pairedApp(), offlineApp({ enabled: false }), pendingApp()];
+    const { p, calls } = await list({
+      'GET admin/apps': [{ body: { apps: APPS } }, () => late, { body: { apps: moved } }],
+      'PATCH admin/apps': [() => order],
+      'PATCH admin/apps/notes': [{ body: { app: offlineApp({ enabled: false }) } }],
+    });
+    void p.load();
+    p.move('notes', -1);
+    p.setEnabled('notes', false);
+    ui.confirmOk();
+    await vi.waitFor(() => expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false));
+    answerLoad({ body: { apps: APPS } });
+    await tick();
+    const loads = () => calls.filter((c) => c.method === 'GET').length;
+    expect(loads()).toBe(2);
+    expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'notes', 'wiki']);
+    answerOrder({ body: { apps: moved } });
+    await vi.waitFor(() => expect(loads()).toBe(3));
+    await vi.waitFor(() => expect(p.rows.map((a) => a.slug)).toEqual(['mail', 'notes', 'wiki']));
+    expect(p.rows.find((a) => a.slug === 'notes')?.enabled).toBe(false);
+  });
+
   it('reloads after a failed switch only once the queued order writes settled', async () => {
     let answer: (reply: { body: unknown }) => void = () => {};
     const order = new Promise<{ body: unknown }>((resolve) => (answer = resolve));
