@@ -41,6 +41,33 @@ describe('service worker of the app', () => {
     expect(container.register).toHaveBeenCalledWith('/mail/service-worker.js', { scope: '/mail/', type: 'module' });
   });
 
+  it('returns the registration of its own scope once its worker is active, not the page’s', async () => {
+    const { container } = stubWorker();
+    const other = { scope: '/' };
+    container.ready = Promise.resolve(other as never);
+    const worker0 = Object.assign(new EventTarget(), { state: 'installing' });
+    const own = { scope: '/mail/', active: null, installing: worker0, waiting: null };
+    container.register.mockResolvedValueOnce(own as never);
+    let done: unknown = null;
+    void worker()
+      .app.register()
+      .then((r) => (done = r));
+    // The worker's listener is in place once the registration has come back.
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(done).toBeNull();
+    worker0.state = 'activated';
+    worker0.dispatchEvent(new Event('statechange'));
+    await vi.waitFor(() => expect(done).toBe(own));
+
+    const broken = Object.assign(new EventTarget(), { state: 'installing' });
+    container.register.mockResolvedValueOnce({ active: null, installing: broken, waiting: null } as never);
+    const failing = worker().app.register();
+    await new Promise((resolve) => setTimeout(resolve));
+    broken.state = 'redundant';
+    broken.dispatchEvent(new Event('statechange'));
+    await expect(failing).rejects.toThrow('redundant');
+  });
+
   it('tries again after a failure', async () => {
     const { container } = stubWorker();
     container.register.mockRejectedValueOnce(new Error('blocked'));
