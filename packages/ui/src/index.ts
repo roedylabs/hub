@@ -6,6 +6,7 @@
 
 // Components
 export { default as AccountMenu } from './components/AccountMenu.svelte';
+export { default as AccountTile } from './components/AccountTile.svelte';
 export { default as ColorEditor } from './components/ColorEditor.svelte';
 export { default as CommandPalette } from './components/CommandPalette.svelte';
 export { default as ConfirmDialog } from './components/ConfirmDialog.svelte';
@@ -54,6 +55,7 @@ export * from './logo.ts';
 export * from './no-connection.svelte.ts';
 export * from './settings.svelte.ts';
 export * from './shell.ts';
+export * from './stalwart.ts';
 export * from './state/devlog.svelte.ts';
 export * from './state/network.svelte.ts';
 export * from './state/ui.svelte.ts';

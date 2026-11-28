@@ -65,7 +65,7 @@ export function loginHref(next: string, reauth = false): string {
 }
 
 /** First path segments that belong to the hub's web app; every other path belongs to an app behind the gateway. */
-const HUB_SEGMENTS = new Set(['', 'login', 'setup', 'invite', 'account', 'admin']);
+const HUB_SEGMENTS = new Set(['', 'login', 'setup', 'invite', 'account', 'admin', 'oauth']);
 
 /** The hub's own page (navigated inside the web app) or an app's (a full page load through the gateway). */
 export function isHubPath(path: string): boolean {
