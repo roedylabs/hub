@@ -45,14 +45,14 @@ cmd=${1:-}
 case $cmd in
 pack)
   dir=${2:?usage: scripts/packages.sh pack <dir>}
-  # The directory is emptied first: only one that holds nothing but tarballs.
-  if [[ -d $dir ]]; then
-    # Fails closed: an unreadable directory stops here as well.
-    other=$(find "$dir" -mindepth 1 ! -name '*.tgz' -print -quit) || die "cannot read $dir"
-    [[ -z $other ]] || die "$dir holds more than tarballs ($other) – pick an empty directory"
-  fi
-  rm -rf "$dir"
+  # A directory that holds nothing but tarball files; the old tarballs are
+  # removed one by one, nothing else is ever deleted.
+  [[ ! -e $dir || -d $dir ]] || die "$dir is not a directory"
   mkdir -p "$dir"
+  # Fails closed: an unreadable directory stops here as well.
+  other=$(find "$dir" -mindepth 1 ! \( -type f -name '*.tgz' \) -print -quit) || die "cannot read $dir"
+  [[ -z $other ]] || die "$dir holds more than tarballs ($other) – pick an empty directory"
+  find "$dir" -mindepth 1 -maxdepth 1 -type f -name '*.tgz' -delete
   dir=$(cd "$dir" && pwd)
   for name in "${npm_packages[@]}"; do
     # prepack builds dist/ and copies the licence in, postpack removes it.
